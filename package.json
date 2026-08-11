@@ -13,6 +13,10 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:content": "vitest run src/content/questions.test.ts src/content/content-contract.test.ts",
+    "test:contracts": "vitest run src/contracts/exam-mode.test.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "test:watch": "vitest",
     "check:any": "node scripts/check-no-any.mjs",
     "check": "pnpm check:any && pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"
@@ -47,6 +51,8 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^26.2.0",
     "@types/react": "~19.2.2",
     "@vitest/coverage-v8": "^4.1.10",

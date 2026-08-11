@@ -56,8 +56,14 @@ export function Chip({ label, selected = false, onPress }: { label: string; sele
 
 export function ProgressBar({ value, label }: { value: number; label?: string }) {
   const percentage = Math.max(0, Math.min(value, 1)) * 100;
+  const roundedPercentage = Math.round(percentage);
   return (
-    <View accessible accessibilityLabel={label ?? `進捗${Math.round(percentage)}パーセント`}>
+    <View
+      accessible
+      accessibilityLabel={label ?? `進捗${roundedPercentage}パーセント`}
+      accessibilityRole="progressbar"
+      accessibilityValue={{ min: 0, max: 100, now: roundedPercentage }}
+    >
       <View style={styles.progressTrack}>
         <View style={[styles.progressFill, { width: `${percentage}%` }]} />
       </View>

@@ -23,6 +23,7 @@ function createQuestion(id = 'jfl-2023-0001'): ProductionQuestion {
     shuffleChoices: true,
     generationMethod: 'independent-case',
     caseFamily: 'test-purpose-basic',
+    promptTemplateFamily: 'basic-question',
     premises: [],
     prompt: '注文管理サービスを確認するとき、テスト目的として最も適切な説明はどれですか。',
     choices: [
@@ -90,6 +91,7 @@ describe('本番問題の品質ゲート', () => {
       { key: 'P1', statement: '品質情報を提供しない' },
       { key: 'P2', statement: '無欠陥を証明する' },
     ];
+    question.promptTemplateFamily = 'two-premise-correction';
     question.choices[0] = { ...question.choices[0]!, addressedPremiseKeys: ['P1'], explanation: 'P1を撤回し、品質情報を提供するため正しい是正です。' };
     question.choices[1] = { ...question.choices[1]!, isCorrect: true, addressedPremiseKeys: ['P2'], explanation: 'P2を撤回し、無欠陥の証明を目的としないため正しい是正です。' };
     question.explanation = 'P1は品質情報を意思決定者へ提供する方針で直接是正し、P2は無欠陥証明をテスト目的から外す方針で直接是正します。';
@@ -107,6 +109,7 @@ describe('本番問題の品質ゲート', () => {
     question.selectionType = 'multiple';
     question.requiredChoiceCount = 2;
     question.premises = [{ key: 'P1', statement: '誤った前提一' }, { key: 'P2', statement: '誤った前提二' }];
+    question.promptTemplateFamily = 'two-premise-correction';
     question.choices[0] = { ...question.choices[0]!, addressedPremiseKeys: ['P1'], explanation: 'P1の誤概念を方針から撤回して直接是正する説明です。' };
     question.choices[1] = { ...question.choices[1]!, isCorrect: true, addressedPremiseKeys: ['P1'], explanation: 'P1だけを重複して是正し、P2を扱わない説明です。' };
     question.explanation = 'P1とP2は独立した誤概念なので、それぞれへ一つずつ直接対応する正答を選び、両方を漏れなく是正する必要があります。';
@@ -115,6 +118,23 @@ describe('本番問題の品質ゲート', () => {
     const report = validateContentBundle(createBundle([question]));
 
     expect(report.issues.some((item) => item.code === 'MULTIPLE_PREMISE_BIJECTION_INVALID')).toBe(true);
+  });
+
+  it('採点前の問題文にpremise keyが露出する場合に拒否する', () => {
+    const question = createQuestion();
+    question.selectionType = 'multiple';
+    question.requiredChoiceCount = 2;
+    question.promptTemplateFamily = 'two-premise-correction';
+    question.prompt = 'P1とP2に示した二つの誤概念を直接是正する対応を、次の選択肢から2つ選んでください。';
+    question.premises = [{ key: 'P1', statement: '誤った前提一' }, { key: 'P2', statement: '誤った前提二' }];
+    question.choices[0] = { ...question.choices[0]!, addressedPremiseKeys: ['P1'], explanation: 'P1の誤概念を方針から撤回して直接是正する説明です。' };
+    question.choices[1] = { ...question.choices[1]!, isCorrect: true, addressedPremiseKeys: ['P2'], explanation: 'P2の誤概念を方針から撤回して直接是正する説明です。' };
+    question.explanation = 'P1とP2は独立した誤概念なので、それぞれへ一つずつ直接対応する正答を選び、両方を漏れなく是正します。';
+    question.contentHash = calculateContentHash(question);
+
+    const report = validateContentBundle(createBundle([question]));
+
+    expect(report.issues.some((item) => item.code === 'PREMISE_KEY_EXPOSED')).toBe(true);
   });
 
   it('重複問題文を拒否する', () => {

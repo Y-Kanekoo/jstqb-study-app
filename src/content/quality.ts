@@ -44,6 +44,14 @@ export interface ContentQualityReport {
   generationMethodDistribution: Record<'independent-case' | 'structured-remediation' | 'parameterized-case', number>;
   parameterDerivedCount: number;
   parameterDerivedRate: number;
+  multiplePromptTemplateDistribution: Record<string, number>;
+  literalPremiseDistractorCount: number;
+  literalPremiseDistractorRate: number;
+  literalPremiseDistractorQuestionCount: number;
+  literalPremiseDistractorQuestionRate: number;
+  multipleCorrectAverageLength: number;
+  multipleIncorrectAverageLength: number;
+  multipleChoiceLengthGapRate: number;
   objectiveCoverage: number;
   issues: ContentQualityIssue[];
   bundle?: ProductionBundle;
@@ -84,6 +92,7 @@ export function canonicalQuestionContent(question: ProductionQuestion): string {
     shuffleChoices: question.shuffleChoices,
     generationMethod: question.generationMethod,
     caseFamily: question.caseFamily,
+    promptTemplateFamily: question.promptTemplateFamily,
     premises: question.premises,
     prompt: question.prompt,
     choices: question.choices.map((choice) => ({
@@ -231,6 +240,9 @@ function validateQuestion(question: ProductionQuestion, issues: ContentQualityIs
       if (!question.explanation.includes(premiseKey)) {
         issues.push(issue('OVERALL_PREMISE_EXPLANATION_MISSING', 'error', `総合解説に${premiseKey}との対応を明示してください。`, question.id));
       }
+    }
+    if (/P[1-4]/u.test(question.prompt) || question.choices.some((choice) => /P[1-4]/u.test(choice.body))) {
+      issues.push(issue('PREMISE_KEY_EXPOSED', 'error', '内部のpremise keyを採点前の問題文・選択肢へ表示しないでください。', question.id));
     }
   }
 
@@ -391,6 +403,10 @@ function validateDistribution(
   chapterDistribution: Record<number, number>,
   kLevelDistribution: Record<ContentKLevel, number>,
   selectionDistribution: Record<'single' | 'multiple', number>,
+  multiplePromptTemplateDistribution: Record<string, number>,
+  literalPremiseDistractorRate: number,
+  literalPremiseDistractorQuestionRate: number,
+  multipleChoiceLengthGapRate: number,
   issues: ContentQualityIssue[],
 ): void {
   if (bundle.questions.length !== 500) {
@@ -416,6 +432,24 @@ function validateDistribution(
       'error',
       `本番問題は複数選択を60題含む必要があります。実数: ${selectionDistribution.multiple}`,
     ));
+  }
+  if (Object.keys(multiplePromptTemplateDistribution).length < 4) {
+    issues.push(issue('MULTIPLE_PROMPT_TEMPLATE_VARIETY_INVALID', 'error', '複数選択の提示形式は4種類以上必要です。'));
+  }
+  const largestTemplateCount = Math.max(0, ...Object.values(multiplePromptTemplateDistribution));
+  if (selectionDistribution.multiple > 0 && largestTemplateCount / selectionDistribution.multiple > 0.4) {
+    issues.push(issue('MULTIPLE_PROMPT_TEMPLATE_CONCENTRATION', 'error', '複数選択の提示形式が一つのテンプレートへ40%を超えて集中しています。'));
+  }
+  if (literalPremiseDistractorRate > 0.2) {
+    issues.push(issue('LITERAL_PREMISE_DISTRACTOR_RATE_HIGH', 'error', `元premise本文そのままの誤答率は20%以下が必要です。実数: ${(literalPremiseDistractorRate * 100).toFixed(1)}%`));
+  }
+  if (literalPremiseDistractorQuestionRate > 0.2) {
+    issues.push(issue('LITERAL_PREMISE_DISTRACTOR_QUESTION_RATE_HIGH', 'error', `元premise本文を誤答に再掲する複数選択問題は20%以下が必要です。実数: ${(literalPremiseDistractorQuestionRate * 100).toFixed(1)}%`));
+  }
+  if (multipleChoiceLengthGapRate > 0.35) {
+    issues.push(issue('CHOICE_LENGTH_CLUE_HIGH', 'error', `複数選択の正誤平均文字数差が大きすぎます。差率: ${(multipleChoiceLengthGapRate * 100).toFixed(1)}%`));
+  } else if (multipleChoiceLengthGapRate > 0.2) {
+    issues.push(issue('CHOICE_LENGTH_CLUE_REVIEW', 'warning', `複数選択の正誤平均文字数差を確認してください。差率: ${(multipleChoiceLengthGapRate * 100).toFixed(1)}%`));
   }
   for (const question of bundle.questions) {
     if (question.selectionType === 'multiple' && question.requiredChoiceCount !== 2) {
@@ -453,6 +487,14 @@ export function validateContentBundle(input: unknown, options: ContentQualityOpt
     'structured-remediation': 0,
     'parameterized-case': 0,
   };
+  const multiplePromptTemplateDistribution: Record<string, number> = {};
+  let literalPremiseDistractorCount = 0;
+  let literalPremiseDistractorQuestionCount = 0;
+  let multipleDistractorCount = 0;
+  let multipleCorrectLengthTotal = 0;
+  let multipleCorrectCount = 0;
+  let multipleIncorrectLengthTotal = 0;
+  let multipleIncorrectCount = 0;
   const releaseGate = options.releaseGate ?? false;
   const enforceDistribution = options.enforceProductionDistribution ?? false;
   const similarityThreshold = options.similarityThreshold ?? 0.82;
@@ -464,11 +506,51 @@ export function validateContentBundle(input: unknown, options: ContentQualityOpt
       statusDistribution[question.status] += 1;
       selectionDistribution[question.selectionType] += 1;
       generationMethodDistribution[question.generationMethod] += 1;
+      if (question.selectionType === 'multiple') {
+        multiplePromptTemplateDistribution[question.promptTemplateFamily] = (multiplePromptTemplateDistribution[question.promptTemplateFamily] ?? 0) + 1;
+        const premiseBodies = new Set(question.premises.map((premise) => normalizeText(premise.statement)));
+        let hasLiteralPremiseDistractor = false;
+        for (const choice of question.choices) {
+          const length = Array.from(choice.body).length;
+          if (choice.isCorrect) {
+            multipleCorrectLengthTotal += length;
+            multipleCorrectCount += 1;
+          } else {
+            multipleIncorrectLengthTotal += length;
+            multipleIncorrectCount += 1;
+            multipleDistractorCount += 1;
+            if (premiseBodies.has(normalizeText(choice.body))) {
+              literalPremiseDistractorCount += 1;
+              hasLiteralPremiseDistractor = true;
+            }
+          }
+        }
+        if (hasLiteralPremiseDistractor) {
+          literalPremiseDistractorQuestionCount += 1;
+        }
+      }
       validateQuestion(question, issues, releaseGate);
     }
     validateUniqueness(bundle, issues, similarityThreshold);
     if (enforceDistribution || releaseGate) {
-      validateDistribution(bundle, chapterDistribution, kLevelDistribution, selectionDistribution, issues);
+      const literalPremiseDistractorRate = multipleDistractorCount === 0 ? 0 : literalPremiseDistractorCount / multipleDistractorCount;
+      const literalPremiseDistractorQuestionRate = selectionDistribution.multiple === 0 ? 0 : literalPremiseDistractorQuestionCount / selectionDistribution.multiple;
+      const correctAverage = multipleCorrectCount === 0 ? 0 : multipleCorrectLengthTotal / multipleCorrectCount;
+      const incorrectAverage = multipleIncorrectCount === 0 ? 0 : multipleIncorrectLengthTotal / multipleIncorrectCount;
+      const lengthGapRate = Math.max(correctAverage, incorrectAverage) === 0
+        ? 0
+        : Math.abs(correctAverage - incorrectAverage) / Math.max(correctAverage, incorrectAverage);
+      validateDistribution(
+        bundle,
+        chapterDistribution,
+        kLevelDistribution,
+        selectionDistribution,
+        multiplePromptTemplateDistribution,
+        literalPremiseDistractorRate,
+        literalPremiseDistractorQuestionRate,
+        lengthGapRate,
+        issues,
+      );
     }
     if (releaseGate && bundle.finalApproval === undefined) {
       issues.push(issue('FINAL_APPROVAL_MISSING', 'error', '本番公開には本人の最終承認が必要です。'));
@@ -484,6 +566,13 @@ export function validateContentBundle(input: unknown, options: ContentQualityOpt
   const parameterDerivedRate = bundle === undefined || bundle.questions.length === 0
     ? 0
     : parameterDerivedCount / bundle.questions.length;
+  const literalPremiseDistractorRate = multipleDistractorCount === 0 ? 0 : literalPremiseDistractorCount / multipleDistractorCount;
+  const literalPremiseDistractorQuestionRate = selectionDistribution.multiple === 0 ? 0 : literalPremiseDistractorQuestionCount / selectionDistribution.multiple;
+  const multipleCorrectAverageLength = multipleCorrectCount === 0 ? 0 : multipleCorrectLengthTotal / multipleCorrectCount;
+  const multipleIncorrectAverageLength = multipleIncorrectCount === 0 ? 0 : multipleIncorrectLengthTotal / multipleIncorrectCount;
+  const multipleChoiceLengthGapRate = Math.max(multipleCorrectAverageLength, multipleIncorrectAverageLength) === 0
+    ? 0
+    : Math.abs(multipleCorrectAverageLength - multipleIncorrectAverageLength) / Math.max(multipleCorrectAverageLength, multipleIncorrectAverageLength);
 
   return {
     valid: errorCount === 0,
@@ -498,6 +587,14 @@ export function validateContentBundle(input: unknown, options: ContentQualityOpt
     generationMethodDistribution,
     parameterDerivedCount,
     parameterDerivedRate,
+    multiplePromptTemplateDistribution,
+    literalPremiseDistractorCount,
+    literalPremiseDistractorRate,
+    literalPremiseDistractorQuestionCount,
+    literalPremiseDistractorQuestionRate,
+    multipleCorrectAverageLength,
+    multipleIncorrectAverageLength,
+    multipleChoiceLengthGapRate,
     objectiveCoverage,
     issues,
     ...(bundle === undefined ? {} : { bundle }),

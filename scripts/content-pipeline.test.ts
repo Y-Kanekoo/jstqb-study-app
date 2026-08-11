@@ -22,6 +22,7 @@ function fixtureBundle(): ProductionBundle {
     shuffleChoices: true,
     generationMethod: 'independent-case',
     caseFamily: 'test-purpose-basic',
+    promptTemplateFamily: 'basic-question',
     premises: [],
     prompt: '在庫管理サービスのテスト目的として、最も適切な説明はどれですか。',
     choices: [

@@ -41,6 +41,7 @@ export const productionQuestionSchema = z.object({
   shuffleChoices: z.boolean(),
   generationMethod: z.enum(['independent-case', 'structured-remediation', 'parameterized-case']),
   caseFamily: z.string().min(3).max(120),
+  promptTemplateFamily: z.string().min(3).max(120),
   premises: z.array(questionPremiseSchema).max(4),
   prompt: z.string().min(15).max(1_500),
   choices: z.array(productionChoiceSchema).min(3).max(6),

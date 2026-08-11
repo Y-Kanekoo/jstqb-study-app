@@ -121,6 +121,7 @@ function questionMetadata(question: ProductionQuestion): Record<string, unknown>
     sourceUrl: question.sourceUrl,
     generationMethod: question.generationMethod,
     caseFamily: question.caseFamily,
+    promptTemplateFamily: question.promptTemplateFamily,
     premises: question.premises,
     choicePremiseMap: question.choices.map((choice) => ({
       choiceId: choice.id,
@@ -286,6 +287,10 @@ function formatReport(report: ContentQualityReport): string {
     `選択方式: ${JSON.stringify(report.selectionDistribution)}`,
     `作成方式: ${JSON.stringify(report.generationMethodDistribution)}`,
     `パラメーター派生: ${report.parameterDerivedCount}題 (${(report.parameterDerivedRate * 100).toFixed(1)}%)`,
+    `複数選択提示形式: ${JSON.stringify(report.multiplePromptTemplateDistribution)}`,
+    `premise本文再掲誤答: ${report.literalPremiseDistractorCount}件 (${(report.literalPremiseDistractorRate * 100).toFixed(1)}%)`,
+    `premise本文再掲問題: ${report.literalPremiseDistractorQuestionCount}題 (${(report.literalPremiseDistractorQuestionRate * 100).toFixed(1)}%)`,
+    `複数選択の平均文字数: 正答${report.multipleCorrectAverageLength.toFixed(1)} / 誤答${report.multipleIncorrectAverageLength.toFixed(1)} / 差率${(report.multipleChoiceLengthGapRate * 100).toFixed(1)}%`,
     `学習目標カバー数: ${report.objectiveCoverage}/64`,
     `状態: ${JSON.stringify(report.statusDistribution)}`,
     `エラー: ${report.errorCount} / 警告: ${report.warningCount}`,

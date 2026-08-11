@@ -89,3 +89,5 @@ GitHub Actionsへモバイル配布を追加する場合は、GitHub Environment
 ## 7. Dependabot
 
 npmとGitHub Actionsを毎週月曜に確認します。minor・patchは本番依存と開発依存に分けてグループ化します。自動マージする場合も通常PRと同じ4検査を必須にし、人間レビュアー追加後は承認1件も必須にします。
+
+Workflowで利用するActionは、検証したリリースcommitの40桁SHAへ固定します。行末の`# vN`は追跡対象のリリース系列を示し、DependabotがSHAと注記を同じPRで更新します。可変tagやbranchへ戻しません。必須checkはGitHub Actions App（integration ID `15368`）が発行したものだけをRulesetで受理します。

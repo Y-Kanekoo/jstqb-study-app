@@ -28,10 +28,10 @@
         "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": true,
         "required_status_checks": [
-          { "context": "quality" },
-          { "context": "e2e" },
-          { "context": "pages" },
-          { "context": "security" }
+          { "context": "quality", "integration_id": 15368 },
+          { "context": "e2e", "integration_id": 15368 },
+          { "context": "pages", "integration_id": 15368 },
+          { "context": "security", "integration_id": 15368 }
         ]
       }
     }

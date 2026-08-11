@@ -24,6 +24,8 @@ export interface Question {
   explanation: string;
   difficulty: QuestionDifficulty;
   sourceReference: string;
+  selectionType?: 'single' | 'multiple';
+  requiredChoiceCount?: number;
   choices: Choice[];
 }
 

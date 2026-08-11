@@ -37,6 +37,8 @@ function createQuestion(seed: QuestionSeed): Question {
     explanation: seed.explanation,
     difficulty: seed.difficulty,
     sourceReference: seed.sourceReference,
+    selectionType: 'single',
+    requiredChoiceCount: 1,
     choices,
   };
 }

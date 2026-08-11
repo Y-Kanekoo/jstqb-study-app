@@ -203,10 +203,15 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
   selectChoice: async (sessionId, questionId, choiceId) => {
     const now = new Date().toISOString();
     const key = `${sessionId}:${questionId}`;
+    const selectionType = getQuestion(questionId)?.selectionType ?? 'single';
     set((state) => {
       const previous = state.drafts[key];
       const isSelected = previous?.selectedChoiceIds.includes(choiceId) ?? false;
-      const selectedChoiceIds = isSelected ? [] : [choiceId];
+      const selectedChoiceIds = selectionType === 'multiple'
+        ? isSelected
+          ? (previous?.selectedChoiceIds ?? []).filter((id) => id !== choiceId)
+          : [...(previous?.selectedChoiceIds ?? []), choiceId]
+        : isSelected ? [] : [choiceId];
       const draft = { sessionId, questionId, selectedChoiceIds, updatedAt: now };
       const event = createOutboxEvent('draft.saved', key, now, { sessionId, questionId, selectedChoiceIds });
       const otherDraftEvents = state.outbox.filter((item) => !(item.kind === 'draft.saved' && item.entityId === key));
@@ -230,8 +235,9 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
   submitAnswer: async (sessionId, questionId) => {
     const question = getQuestion(questionId);
     const draft = get().drafts[`${sessionId}:${questionId}`];
-    if (!question || !draft || draft.selectedChoiceIds.length === 0) {
-      throw new Error('回答を選択してください。');
+    const requiredChoiceCount = question?.requiredChoiceCount ?? 1;
+    if (!question || !draft || draft.selectedChoiceIds.length !== requiredChoiceCount) {
+      throw new Error(`${requiredChoiceCount}つの選択肢を選んでください。`);
     }
     const existing = get().attempts.find((item) => item.sessionId === sessionId && item.questionId === questionId);
     if (existing) {
@@ -305,7 +311,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
     for (const questionId of session.questionIds) {
       const question = getQuestion(questionId);
       const draft = get().drafts[`${sessionId}:${questionId}`];
-      if (!question || !draft || draft.selectedChoiceIds.length === 0 || existingQuestionIds.has(questionId)) {
+      const requiredChoiceCount = question?.requiredChoiceCount ?? 1;
+      if (!question || !draft || draft.selectedChoiceIds.length !== requiredChoiceCount || existingQuestionIds.has(questionId)) {
         continue;
       }
       newAttempts.push({

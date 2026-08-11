@@ -20,11 +20,12 @@
     "test:watch": "vitest",
     "check:any": "node scripts/check-no-any.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
+    "check:security-exceptions": "node scripts/check-security-exceptions.mjs",
     "audit:prod": "pnpm audit --prod --audit-level high",
     "content:verify": "node scripts/verify-content-export.mjs",
     "prepare:pages": "node scripts/prepare-pages.mjs",
     "check:pages": "node scripts/verify-pages-build.mjs",
-    "check": "pnpm check:any && pnpm check:secrets && pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"
+    "check": "pnpm check:any && pnpm check:secrets && pnpm check:security-exceptions && pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"
   },
   "dependencies": {
     "@expo-google-fonts/biz-udpgothic": "^0.4.2",

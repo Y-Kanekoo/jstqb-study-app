@@ -13,6 +13,7 @@ describe('公開サンプル問題のコンテンツ契約', () => {
       expect(question.versionId).toMatch(new RegExp(`^${question.id}-v\\d+$`, 'u'));
       expect(question.objectiveCode).toMatch(/^FL-\d+\.\d+\.\d+$/u);
       expect(question.sourceReference.trim().length).toBeGreaterThan(10);
+      expect(question.explanation.trim().length).toBeGreaterThan(10);
     }
   });
 

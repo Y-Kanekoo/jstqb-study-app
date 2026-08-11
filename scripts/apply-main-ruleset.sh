@@ -10,7 +10,7 @@ if [[ ! -f "${ruleset_file}" ]]; then
   exit 1
 fi
 
-existing_id="$(gh api "repos/${repository}/rulesets" --jq ".[] | select(.name == \"${ruleset_name}\") | .id" | head -n 1)"
+existing_id="$(gh api --paginate "repos/${repository}/rulesets" --jq ".[] | select(.name == \"${ruleset_name}\") | .id" | head -n 1)"
 
 if [[ -n "${existing_id}" ]]; then
   gh api --method PUT "repos/${repository}/rulesets/${existing_id}" --input "${ruleset_file}" >/dev/null

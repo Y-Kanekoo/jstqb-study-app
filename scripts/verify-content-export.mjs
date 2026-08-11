@@ -1,7 +1,12 @@
 import { readFile } from 'node:fs/promises';
 
 const exportPath = process.argv[2];
-const minimumCount = Number.parseInt(process.env.CONTENT_MINIMUM_COUNT ?? '500', 10);
+const minimumCount = Number(process.env.CONTENT_MINIMUM_COUNT ?? '500');
+
+if (!Number.isSafeInteger(minimumCount) || minimumCount < 1) {
+  console.error('CONTENT_MINIMUM_COUNTは1以上の整数である必要があります。');
+  process.exit(2);
+}
 
 if (!exportPath) {
   console.error('使い方: pnpm content:verify <非公開問題エクスポート.json>');
@@ -61,11 +66,24 @@ for (const [index, value] of parsed.entries()) {
     continue;
   }
   const correctCount = value.choices.filter((choice) => typeof choice === 'object' && choice !== null && choice.isCorrect === true).length;
-  if (typeof value.requiredSelectionCount !== 'number' || correctCount !== value.requiredSelectionCount) {
+  if (
+    !Number.isSafeInteger(value.requiredSelectionCount)
+    || value.requiredSelectionCount < 1
+    || correctCount < 1
+    || correctCount !== value.requiredSelectionCount
+  ) {
     violations.push(`${id}: 正答数とrequiredSelectionCountが一致しません`);
   }
   for (const choice of value.choices) {
-    if (typeof choice !== 'object' || choice === null || typeof choice.body !== 'string' || typeof choice.explanation !== 'string') {
+    if (
+      typeof choice !== 'object'
+      || choice === null
+      || typeof choice.body !== 'string'
+      || choice.body.trim() === ''
+      || typeof choice.explanation !== 'string'
+      || choice.explanation.trim() === ''
+      || typeof choice.isCorrect !== 'boolean'
+    ) {
       violations.push(`${id}: 選択肢本文または選択肢別解説がありません`);
     }
   }

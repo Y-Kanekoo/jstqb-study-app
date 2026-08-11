@@ -103,5 +103,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: 追跡ファイルの秘密情報を検査
         run: pnpm check:secrets
+      - name: 脆弱性監査例外の期限を検査
+        run: pnpm check:security-exceptions
       - name: 本番依存関係の重大脆弱性を検査
         run: pnpm audit:prod

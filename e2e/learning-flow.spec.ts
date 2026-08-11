@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 import { chooseFirstAnswer, openHome, startQuickSession } from './helpers';
+import { chapterOneWrongAnswerFixture } from './fixtures';
 
 test.describe('1問単位の保存と学習履歴', () => {
   test('未確定の選択を再読み込み後に復元し、確定した1問を履歴へ反映する', async ({ page }) => {
@@ -40,7 +41,10 @@ test.describe('誤答フィルター', () => {
     await expect(page.getByRole('heading', { name: '学ぶ' })).toBeVisible();
     await page.getByRole('button', { name: 'この章を学ぶ' }).first().click();
 
-    await page.getByRole('radio').first().click();
+    await expect(page.getByRole('heading', { name: chapterOneWrongAnswerFixture.prompt })).toBeVisible();
+    const incorrectChoice = page.getByRole('radio').filter({ hasText: chapterOneWrongAnswerFixture.incorrectChoice });
+    await incorrectChoice.click();
+    await expect(incorrectChoice).toBeChecked();
     await page.getByRole('button', { name: '回答を確定する' }).click();
     await expect(page.getByText('もう一度、整理しましょう')).toBeVisible();
 

@@ -776,3 +776,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
     set({ saving: false });
   },
 }));
+
+export function getCurrentLearningSnapshot(): LearningSnapshot {
+  return extractSnapshot(useLearningStore.getState());
+}

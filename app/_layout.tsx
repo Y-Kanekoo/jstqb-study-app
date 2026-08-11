@@ -41,7 +41,11 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.paper } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="practice/[sessionId]" />
+        <Stack.Screen name="report/[questionId]" options={{ presentation: 'modal' }} />
         <Stack.Screen name="sign-in" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="reset-password" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="account" />
+        <Stack.Screen name="data-management" />
       </Stack>
     </SafeAreaProvider>
   );

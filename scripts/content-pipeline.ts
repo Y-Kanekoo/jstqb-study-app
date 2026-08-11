@@ -112,7 +112,7 @@ function objectiveIdQuery(objectiveCode: string): string {
   return `(select id from public.learning_objectives where code = ${sqlString(objectiveCode)})`;
 }
 
-function questionMetadata(question: ProductionQuestion): Record<string, boolean | string> {
+function questionMetadata(question: ProductionQuestion): Record<string, unknown> {
   return {
     createdBy: question.createdBy,
     createdAt: question.createdAt,
@@ -121,6 +121,11 @@ function questionMetadata(question: ProductionQuestion): Record<string, boolean 
     sourceUrl: question.sourceUrl,
     generationMethod: question.generationMethod,
     caseFamily: question.caseFamily,
+    premises: question.premises,
+    choicePremiseMap: question.choices.map((choice) => ({
+      choiceId: choice.id,
+      addressedPremiseKeys: choice.addressedPremiseKeys,
+    })),
   };
 }
 

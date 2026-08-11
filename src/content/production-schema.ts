@@ -17,6 +17,12 @@ export const productionChoiceSchema = z.object({
   body: z.string().min(4).max(500),
   isCorrect: z.boolean(),
   explanation: z.string().min(15).max(1_000),
+  addressedPremiseKeys: z.array(z.string().regex(/^P[1-4]$/)).max(4),
+});
+
+export const questionPremiseSchema = z.object({
+  key: z.string().regex(/^P[1-4]$/),
+  statement: z.string().min(4).max(500),
 });
 
 export const productionQuestionSchema = z.object({
@@ -35,6 +41,7 @@ export const productionQuestionSchema = z.object({
   shuffleChoices: z.boolean(),
   generationMethod: z.enum(['independent-case', 'structured-remediation', 'parameterized-case']),
   caseFamily: z.string().min(3).max(120),
+  premises: z.array(questionPremiseSchema).max(4),
   prompt: z.string().min(15).max(1_500),
   choices: z.array(productionChoiceSchema).min(3).max(6),
   explanation: z.string().min(40).max(2_000),
@@ -64,5 +71,6 @@ export const productionBundleSchema = z.object({
 
 export type ContentReview = z.infer<typeof contentReviewSchema>;
 export type ProductionChoice = z.infer<typeof productionChoiceSchema>;
+export type QuestionPremise = z.infer<typeof questionPremiseSchema>;
 export type ProductionQuestion = z.infer<typeof productionQuestionSchema>;
 export type ProductionBundle = z.infer<typeof productionBundleSchema>;

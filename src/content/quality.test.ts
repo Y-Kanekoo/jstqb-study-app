@@ -23,12 +23,13 @@ function createQuestion(id = 'jfl-2023-0001'): ProductionQuestion {
     shuffleChoices: true,
     generationMethod: 'independent-case',
     caseFamily: 'test-purpose-basic',
+    premises: [],
     prompt: '注文管理サービスを確認するとき、テスト目的として最も適切な説明はどれですか。',
     choices: [
-      { id: `${id}-A`, label: 'A', body: '品質に関する情報を提供する', isCorrect: true, explanation: '作業成果物を評価し、品質に関する情報を意思決定者へ提供する活動です。' },
-      { id: `${id}-B`, label: 'B', body: '欠陥がないと証明する', isCorrect: false, explanation: '有限のテストで欠陥が存在しないことを完全に証明することはできません。' },
-      { id: `${id}-C`, label: 'C', body: '担当者を評価する', isCorrect: false, explanation: '個人の評価はテストの目的ではなく、欠陥情報を責任追及へ使うべきではありません。' },
-      { id: `${id}-D`, label: 'D', body: '修正コードを作成する', isCorrect: false, explanation: '修正コードの作成はデバッグや開発の活動であり、テスト目的そのものではありません。' },
+      { id: `${id}-A`, label: 'A', body: '品質に関する情報を提供する', isCorrect: true, explanation: '作業成果物を評価し、品質に関する情報を意思決定者へ提供する活動です。', addressedPremiseKeys: [] },
+      { id: `${id}-B`, label: 'B', body: '欠陥がないと証明する', isCorrect: false, explanation: '有限のテストで欠陥が存在しないことを完全に証明することはできません。', addressedPremiseKeys: [] },
+      { id: `${id}-C`, label: 'C', body: '担当者を評価する', isCorrect: false, explanation: '個人の評価はテストの目的ではなく、欠陥情報を責任追及へ使うべきではありません。', addressedPremiseKeys: [] },
+      { id: `${id}-D`, label: 'D', body: '修正コードを作成する', isCorrect: false, explanation: '修正コードの作成はデバッグや開発の活動であり、テスト目的そのものではありません。', addressedPremiseKeys: [] },
     ],
     explanation: 'テストは作業成果物を評価して欠陥や故障を発見し、品質とリスクに関する情報を提供します。完全な無欠陥証明ではありません。',
     sourceReference: 'JSTQB Foundation Level シラバス Version 2023V4.0.J02 1.1 / FL-1.1.1',
@@ -64,6 +65,7 @@ describe('本番問題の品質ゲート', () => {
   it('構造と自動レビューが整った問題を受け入れる', () => {
     const report = validateContentBundle(createBundle([createQuestion()]));
 
+    expect(report.issues).toEqual([]);
     expect(report.valid).toBe(true);
     expect(report.questionCount).toBe(1);
     expect(report.errorCount).toBe(0);
@@ -84,13 +86,35 @@ describe('本番問題の品質ゲート', () => {
     const question = createQuestion();
     question.selectionType = 'multiple';
     question.requiredChoiceCount = 2;
-    question.choices[1] = { ...question.choices[1]!, isCorrect: true };
+    question.premises = [
+      { key: 'P1', statement: '品質情報を提供しない' },
+      { key: 'P2', statement: '無欠陥を証明する' },
+    ];
+    question.choices[0] = { ...question.choices[0]!, addressedPremiseKeys: ['P1'], explanation: 'P1を撤回し、品質情報を提供するため正しい是正です。' };
+    question.choices[1] = { ...question.choices[1]!, isCorrect: true, addressedPremiseKeys: ['P2'], explanation: 'P2を撤回し、無欠陥の証明を目的としないため正しい是正です。' };
+    question.explanation = 'P1は品質情報を意思決定者へ提供する方針で直接是正し、P2は無欠陥証明をテスト目的から外す方針で直接是正します。';
     question.contentHash = calculateContentHash(question);
 
     const report = validateContentBundle(createBundle([question]));
 
+    expect(report.issues).toEqual([]);
     expect(report.valid).toBe(true);
     expect(report.selectionDistribution.multiple).toBe(1);
+  });
+
+  it('複数選択の誤概念と正答が全単射でない場合に拒否する', () => {
+    const question = createQuestion();
+    question.selectionType = 'multiple';
+    question.requiredChoiceCount = 2;
+    question.premises = [{ key: 'P1', statement: '誤った前提一' }, { key: 'P2', statement: '誤った前提二' }];
+    question.choices[0] = { ...question.choices[0]!, addressedPremiseKeys: ['P1'], explanation: 'P1の誤概念を方針から撤回して直接是正する説明です。' };
+    question.choices[1] = { ...question.choices[1]!, isCorrect: true, addressedPremiseKeys: ['P1'], explanation: 'P1だけを重複して是正し、P2を扱わない説明です。' };
+    question.explanation = 'P1とP2は独立した誤概念なので、それぞれへ一つずつ直接対応する正答を選び、両方を漏れなく是正する必要があります。';
+    question.contentHash = calculateContentHash(question);
+
+    const report = validateContentBundle(createBundle([question]));
+
+    expect(report.issues.some((item) => item.code === 'MULTIPLE_PREMISE_BIJECTION_INVALID')).toBe(true);
   });
 
   it('重複問題文を拒否する', () => {

@@ -84,6 +84,7 @@ export function canonicalQuestionContent(question: ProductionQuestion): string {
     shuffleChoices: question.shuffleChoices,
     generationMethod: question.generationMethod,
     caseFamily: question.caseFamily,
+    premises: question.premises,
     prompt: question.prompt,
     choices: question.choices.map((choice) => ({
       id: choice.id,
@@ -91,6 +92,7 @@ export function canonicalQuestionContent(question: ProductionQuestion): string {
       body: choice.body,
       isCorrect: choice.isCorrect,
       explanation: choice.explanation,
+      addressedPremiseKeys: choice.addressedPremiseKeys,
     })),
     explanation: question.explanation,
     sourceReference: question.sourceReference,
@@ -192,6 +194,44 @@ function validateQuestion(question: ProductionQuestion, issues: ContentQualityIs
   }
   if (question.selectionType === 'multiple' && question.requiredChoiceCount < 2) {
     issues.push(issue('MULTIPLE_CHOICE_COUNT_INVALID', 'error', '複数選択問題の必要選択数は2以上です。', question.id));
+  }
+
+  const premiseKeys = question.premises.map((premise) => premise.key);
+  if (new Set(premiseKeys).size !== premiseKeys.length) {
+    issues.push(issue('PREMISE_KEY_DUPLICATE', 'error', '誤概念のpremise keyが重複しています。', question.id));
+  }
+  if (question.selectionType === 'single') {
+    if (question.premises.length !== 0 || question.choices.some((choice) => choice.addressedPremiseKeys.length !== 0)) {
+      issues.push(issue('SINGLE_PREMISE_MAPPING_INVALID', 'error', '単一選択問題に複数選択用のpremise対応を設定できません。', question.id));
+    }
+  } else {
+    if (question.premises.length !== question.requiredChoiceCount) {
+      issues.push(issue('MULTIPLE_PREMISE_COUNT_INVALID', 'error', '複数選択では誤概念数と必要選択数を一致させてください。', question.id));
+    }
+    const correctChoices = question.choices.filter((choice) => choice.isCorrect);
+    const addressedKeys = correctChoices.flatMap((choice) => choice.addressedPremiseKeys);
+    const sortedPremiseKeys = [...premiseKeys].sort();
+    const sortedAddressedKeys = [...addressedKeys].sort();
+    const hasOneToOneMapping = correctChoices.every((choice) => choice.addressedPremiseKeys.length === 1)
+      && new Set(addressedKeys).size === addressedKeys.length
+      && JSON.stringify(sortedPremiseKeys) === JSON.stringify(sortedAddressedKeys);
+    if (!hasOneToOneMapping) {
+      issues.push(issue('MULTIPLE_PREMISE_BIJECTION_INVALID', 'error', '各誤概念Pと各正答Cを1対1かつ漏れなく対応させてください。', question.id));
+    }
+    if (question.choices.some((choice) => !choice.isCorrect && choice.addressedPremiseKeys.length !== 0)) {
+      issues.push(issue('DISTRACTOR_PREMISE_MAPPING_INVALID', 'error', '誤答選択肢を是正済みpremiseとして扱うことはできません。', question.id));
+    }
+    for (const choice of correctChoices) {
+      const premiseKey = choice.addressedPremiseKeys[0];
+      if (premiseKey !== undefined && !choice.explanation.includes(premiseKey)) {
+        issues.push(issue('PREMISE_EXPLANATION_MISSING', 'error', `正答解説に対応先${premiseKey}を明示してください。`, question.id));
+      }
+    }
+    for (const premiseKey of premiseKeys) {
+      if (!question.explanation.includes(premiseKey)) {
+        issues.push(issue('OVERALL_PREMISE_EXPLANATION_MISSING', 'error', `総合解説に${premiseKey}との対応を明示してください。`, question.id));
+      }
+    }
   }
 
   const choiceIds = new Set(question.choices.map((choice) => choice.id));

@@ -148,5 +148,5 @@ jobs:
         run: pnpm check:secrets
       - name: 脆弱性監査例外の期限を検査
         run: pnpm check:security-exceptions
-      - name: 本番依存関係の重大脆弱性を検査
-        run: pnpm audit:prod
+      - name: 実行・ビルド依存関係の重大脆弱性を検査
+        run: pnpm audit:dependencies

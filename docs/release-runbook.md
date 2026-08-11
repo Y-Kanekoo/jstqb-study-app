@@ -22,7 +22,7 @@ mainへ入る前に次のGitHub Checksを必須にします。
 | `quality` | 禁止型、秘密情報、lint、型、単体、契約、コンテンツ、Webビルド |
 | `e2e` | Chromiumデスクトップ・モバイル、保存、誤答、オフライン、アクセシビリティ |
 | `pages` | 本番サブパス成果物、ルーティング、Service WorkerのWeb E2E |
-| `security` | 追跡ファイルの秘密検査、本番依存のhigh以上の脆弱性 |
+| `security` | 全履歴の秘密検査、実行・ビルド依存のhigh以上の脆弱性、例外期限 |
 
 `scripts/apply-main-ruleset.sh`は、上記4検査、会話解決、squash mergeをGitHub Rulesetへ設定します。実行にはGitHub CLIのAdministration write権限が必要です。
 

@@ -14,6 +14,6 @@
 
 2026-08-11時点で監査情報は2.0.3以上を修正版としていますが、npm registryの最新公開版は2.0.2で、修正版へ更新できません。対象はアプリの実行時に利用者の画像を解析する経路ではなく、開発・Web/ネイティブバンドル時のMetro経路です。
 
-`pnpm audit:prod`はこの2 IDだけを除外し、他のhigh以上を引き続き失敗させます。修正版公開後は除外を削除し、lockfile更新、`pnpm check`、E2E、実機ビルドを実行します。
+`pnpm audit:dependencies`は実行時とビルド時の全依存を対象に、この2 IDだけを除外し、他のhigh以上を引き続き失敗させます。修正版公開後は除外を削除し、lockfile更新、`pnpm check`、E2E、実機ビルドを実行します。
 
-`pnpm check:security-exceptions`はCI実行日と次回確認日を比較します。期限を過ぎても例外が残っている場合はCIを失敗させ、根拠の再評価または例外削除を要求します。
+`.github/security-exceptions.json`は例外ごとにAdvisory ID、理由、影響範囲、確認日、期限、解除方法を保持します。`pnpm check:security-exceptions`はpnpm設定・manifest・本文書のIDを照合し、各例外の期限を個別に比較します。期限を過ぎても例外が残っている場合はCIを失敗させ、根拠の再評価または例外削除を要求します。

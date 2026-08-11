@@ -22,7 +22,7 @@
     "check:any": "node scripts/check-no-any.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:security-exceptions": "node scripts/check-security-exceptions.mjs",
-    "audit:prod": "pnpm audit --prod --audit-level high",
+    "audit:dependencies": "pnpm audit --audit-level high",
     "content:verify": "node scripts/verify-content-export.mjs",
     "prepare:pages": "node scripts/prepare-pages.mjs",
     "check:pages": "node scripts/verify-pages-build.mjs",

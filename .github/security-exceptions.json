@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "exceptions": [
+    {
+      "id": "image-size-2.0.3-release-wait",
+      "advisories": [
+        "GHSA-w3rx-r6r6-pgpr",
+        "GHSA-5p2g-fcmc-qvqq"
+      ],
+      "reason": "修正版image-size 2.0.3がnpm registryへ未公開であり、Expo/Metroの推移的依存を解消できないため。",
+      "scope": "利用者入力を解析しないWeb・ネイティブのビルド時Metro経路のみ。",
+      "reviewedOn": "2026-08-11",
+      "expiresOn": "2026-09-12",
+      "remediation": "image-size 2.0.3以上、または修正済みMetro/Expoへ更新して例外を削除する。"
+    }
+  ]
+}

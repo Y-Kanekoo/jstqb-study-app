@@ -23,7 +23,8 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (Platform.OS === 'web' && process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
-      void navigator.serviceWorker.register('/sw.js');
+      const baseUrl = process.env.EXPO_PUBLIC_BASE_URL?.replace(/\/$/u, '') ?? '';
+      void navigator.serviceWorker.register(`${baseUrl}/sw.js`, { scope: `${baseUrl}/` });
     }
   }, []);
 

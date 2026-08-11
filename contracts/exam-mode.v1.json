@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "mode": "exam",
+  "questionCount": 40,
+  "durationMinutes": 60,
+  "passingScore": 26,
+  "scoring": "complete-match",
+  "answerReveal": "after-submit",
+  "timer": "wall-clock",
+  "autosave": [
+    "selection",
+    "confirmation",
+    "position"
+  ],
+  "offline": "supported",
+  "stoppedQuestionPolicy": "exclude-from-denominator"
+}

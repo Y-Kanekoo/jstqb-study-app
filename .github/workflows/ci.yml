@@ -4,35 +4,149 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  check:
+  quality:
+    name: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: ソースを取得
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: pnpmを準備
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 11.21.0
       - name: Node.jsを準備
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
-      - name: 依存関係をインストール
+      - name: 依存関係を固定してインストール
         run: pnpm install --frozen-lockfile
-      - name: 禁止型を検査
-        run: pnpm check:any
-      - name: lint
-        run: pnpm lint
-      - name: 型検査
-        run: pnpm typecheck
-      - name: 単体テスト
-        run: pnpm test
-      - name: Webビルド
+      - name: 静的検査・単体テスト・契約テスト・Webビルド
+        run: pnpm check
+      - name: Webビルド成果物を保存
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: web-dist
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  e2e:
+    name: e2e
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: pnpmを準備
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 11.21.0
+      - name: Node.jsを準備
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 依存関係を固定してインストール
+        run: pnpm install --frozen-lockfile
+      - name: Webビルド成果物を取得
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: web-dist
+          path: dist
+      - name: Chromiumを準備
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Web E2Eとアクセシビリティ検査
+        run: pnpm test:e2e
+      - name: E2E診断結果を保存
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 14
+          if-no-files-found: ignore
+
+  pages:
+    name: pages
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      E2E_BASE_PATH: /${{ github.event.repository.name }}
+      EXPO_PUBLIC_BASE_URL: /${{ github.event.repository.name }}
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: pnpmを準備
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 11.21.0
+      - name: Node.jsを準備
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 依存関係を固定してインストール
+        run: pnpm install --frozen-lockfile
+      - name: Pagesサブパス用Web成果物を作成
         run: pnpm build:web
+      - name: SPAフォールバックとJekyll除外を作成
+        run: pnpm prepare:pages
+      - name: Pages成果物を静的検証
+        run: pnpm check:pages
+      - name: Chromiumを準備
+        run: pnpm exec playwright install --with-deps chromium
+      - name: PagesサブパスでWeb E2Eを実行
+        run: pnpm test:e2e
+      - name: Pages E2E診断結果を保存
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pages-playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 14
+          if-no-files-found: ignore
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: ソースを履歴付きで取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: pnpmを準備
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 11.21.0
+      - name: Node.jsを準備
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 依存関係を固定してインストール
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: 追跡ファイルの秘密情報を検査
+        run: pnpm check:secrets
+      - name: 脆弱性監査例外の期限を検査
+        run: pnpm check:security-exceptions
+      - name: 実行・ビルド依存関係の重大脆弱性を検査
+        run: pnpm audit:dependencies

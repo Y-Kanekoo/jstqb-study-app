@@ -13,9 +13,20 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:content": "vitest run src/content/questions.test.ts src/content/content-contract.test.ts",
+    "test:contracts": "vitest run src/contracts/exam-mode.test.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:ops": "node --test scripts/*.test.mjs",
     "test:watch": "vitest",
     "check:any": "node scripts/check-no-any.mjs",
-    "check": "pnpm check:any && pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:security-exceptions": "node scripts/check-security-exceptions.mjs",
+    "audit:dependencies": "pnpm audit --audit-level high",
+    "content:verify": "node scripts/verify-content-export.mjs",
+    "prepare:pages": "node scripts/prepare-pages.mjs",
+    "check:pages": "node scripts/verify-pages-build.mjs",
+    "check": "pnpm check:any && pnpm check:secrets && pnpm check:security-exceptions && pnpm lint && pnpm typecheck && pnpm test && pnpm test:ops && pnpm build:web"
   },
   "dependencies": {
     "@expo-google-fonts/biz-udpgothic": "^0.4.2",
@@ -47,6 +58,8 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^26.2.0",
     "@types/react": "~19.2.2",
     "@vitest/coverage-v8": "^4.1.10",

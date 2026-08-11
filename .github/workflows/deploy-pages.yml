@@ -1,0 +1,103 @@
+name: Web本番デプロイ
+
+on:
+  workflow_run:
+    workflows: [品質検査]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: github-pages-production
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify-source:
+    name: deploy-source
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit_sha: ${{ steps.verify.outputs.commit_sha }}
+    steps:
+      - name: 信頼済みデプロイ検証コードを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: mainの必須検査成功をGitHub APIで確認
+        id: verify
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_EVENT: ${{ github.event_name }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: node scripts/verify-deploy-source.mjs
+
+  build:
+    name: pages-build
+    needs: verify-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EXPO_PUBLIC_BASE_URL: /${{ github.event.repository.name }}
+      EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+      EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+    steps:
+      - name: 検査済みのmainを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.verify-source.outputs.commit_sha }}
+      - name: pnpmを準備
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 11.21.0
+      - name: Node.jsを準備
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 同期環境変数を確認
+        shell: bash
+        run: |
+          if [[ -z "${EXPO_PUBLIC_SUPABASE_URL}" || -z "${EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY}" ]]; then
+            echo "::notice::SupabaseのRepository Variablesが未設定です。Web版は端末内保存のみで公開します。"
+          else
+            echo "Supabaseの公開接続設定をWebビルドへ反映します。"
+          fi
+      - name: 依存関係を固定してインストール
+        run: pnpm install --frozen-lockfile
+      - name: 検査してPages用Web成果物を作成
+        run: pnpm check
+      - name: SPAフォールバックとJekyll除外を作成
+        run: pnpm prepare:pages
+      - name: Pagesのサブパス成果物を検証
+        run: pnpm check:pages
+      - name: Pagesを準備
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+      - name: Pages成果物を保存
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: dist
+
+  deploy:
+    name: pages-deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: GitHub Pagesへ公開
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5

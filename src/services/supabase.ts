@@ -21,6 +21,25 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
   })
   : null;
 
+export async function handleAuthCallback(url: string): Promise<void> {
+  if (!supabase) return;
+  const parsedUrl = new URL(url);
+  const fragment = new URLSearchParams(parsedUrl.hash.replace(/^#/, ''));
+  const accessToken = fragment.get('access_token');
+  const refreshToken = fragment.get('refresh_token');
+  if (accessToken && refreshToken) {
+    const { error } = await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+    if (error) throw new Error('再設定用の認証情報を確認できませんでした。', { cause: error });
+    return;
+  }
+
+  const code = parsedUrl.searchParams.get('code');
+  if (code) {
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) throw new Error('再設定用の認証情報を交換できませんでした。', { cause: error });
+  }
+}
+
 if (supabase && Platform.OS !== 'web') {
   AppState.addEventListener('change', (state) => {
     if (state === 'active') {

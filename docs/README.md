@@ -12,7 +12,10 @@
 8. [テスト計画](test-plan.md)
 9. [運用設計](operations.md)
 10. [実装状況](implementation-status.md)
-11. [ADR](adr/README.md)
+11. [リリース手順](release-runbook.md)
+12. [実機受入チェックリスト](device-acceptance-checklist.md)
+13. [セキュリティ例外](security-exceptions.md)
+14. [ADR](adr/README.md)
 
 ## 設計原則
 

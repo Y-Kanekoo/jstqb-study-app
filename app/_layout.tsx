@@ -16,12 +16,20 @@ export default function RootLayout() {
   const initialize = useLearningStore((state) => state.initialize);
   const initializeAuth = useAuthStore((state) => state.initialize);
   const hydrated = useLearningStore((state) => state.hydrated);
+  const storageOwnerId = useLearningStore((state) => state.storageOwnerId);
+  const authInitialized = useAuthStore((state) => state.initialized);
+  const userId = useAuthStore((state) => state.session?.user.id ?? null);
   const [fontsLoaded, fontError] = useAppFonts();
 
   useEffect(() => {
-    void initialize();
     void initializeAuth();
-  }, [initialize, initializeAuth]);
+  }, [initializeAuth]);
+
+  useEffect(() => {
+    if (authInitialized) {
+      void initialize(userId);
+    }
+  }, [authInitialized, initialize, userId]);
 
   useEffect(() => {
     const processUrl = (url: string | null) => {
@@ -45,7 +53,7 @@ export default function RootLayout() {
   if (fontError) {
     return <View style={styles.center}><Text style={styles.error}>フォントを読み込めませんでした。</Text></View>;
   }
-  if (!fontsLoaded || !hydrated) {
+  if (!fontsLoaded || !authInitialized || !hydrated || storageOwnerId !== userId) {
     return <View style={styles.center}><ActivityIndicator color={colors.brand} size="large" /></View>;
   }
 

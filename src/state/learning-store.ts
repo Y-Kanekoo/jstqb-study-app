@@ -18,7 +18,8 @@ import type {
 } from '@/domain/types';
 import { getStoredValue, setStoredValue } from '@/storage/persistence';
 
-const snapshotKey = 'learning-snapshot-v1';
+const legacySnapshotKey = 'learning-snapshot-v1';
+const snapshotKeyPrefix = 'learning-snapshot-v2';
 
 const initialSnapshot: LearningSnapshot = {
   schemaVersion: 2,
@@ -36,9 +37,10 @@ const initialSnapshot: LearningSnapshot = {
 
 interface LearningStore extends LearningSnapshot {
   hydrated: boolean;
+  storageOwnerId: string | null;
   saving: boolean;
   storageError: string | null;
-  initialize: () => Promise<void>;
+  initialize: (userId?: string | null) => Promise<void>;
   startSession: (mode: SessionMode, title: string, questionIds: string[]) => Promise<string>;
   startExam: (questionIds: string[]) => Promise<string>;
   selectChoice: (sessionId: string, questionId: string, choiceId: string) => Promise<void>;
@@ -74,10 +76,46 @@ function extractSnapshot(store: LearningStore): LearningSnapshot {
 }
 
 let persistenceChain = Promise.resolve();
+let activeStorageKey = `${snapshotKeyPrefix}:guest`;
+let initializationRevision = 0;
+let mutationRevision = 0;
+const durableSnapshots = new Map<string, LearningSnapshot>();
 
-function queueSnapshot(snapshot: LearningSnapshot): Promise<void> {
-  persistenceChain = persistenceChain.then(() => setStoredValue(snapshotKey, JSON.stringify(snapshot)));
-  return persistenceChain;
+function getSnapshotKey(userId: string | null): string {
+  return userId ? `${snapshotKeyPrefix}:user:${encodeURIComponent(userId)}` : `${snapshotKeyPrefix}:guest`;
+}
+
+function queueSnapshot(storageKey: string, snapshot: LearningSnapshot): Promise<void> {
+  const operation = persistenceChain
+    .catch(() => undefined)
+    .then(() => setStoredValue(storageKey, JSON.stringify(snapshot)));
+  persistenceChain = operation.then(() => undefined, () => undefined);
+  return operation;
+}
+
+async function persistCurrentState(
+  get: () => LearningStore,
+  set: (partial: Partial<LearningStore>) => void,
+  fallbackMessage: string,
+): Promise<void> {
+  const storageKey = activeStorageKey;
+  const revision = ++mutationRevision;
+  const snapshot = extractSnapshot(get());
+
+  try {
+    await queueSnapshot(storageKey, snapshot);
+    durableSnapshots.set(storageKey, snapshot);
+    if (storageKey === activeStorageKey && revision === mutationRevision) {
+      set({ saving: false, storageError: null });
+    }
+  } catch (error: unknown) {
+    if (storageKey === activeStorageKey && revision === mutationRevision) {
+      const durableSnapshot = durableSnapshots.get(storageKey) ?? initialSnapshot;
+      const message = error instanceof Error ? error.message : fallbackMessage;
+      set({ ...durableSnapshot, saving: false, storageError: message });
+    }
+    throw error;
+  }
 }
 
 function createOutboxEvent(
@@ -92,24 +130,50 @@ function createOutboxEvent(
 export const useLearningStore = create<LearningStore>((set, get) => ({
   ...initialSnapshot,
   hydrated: false,
+  storageOwnerId: null,
   saving: false,
   storageError: null,
 
-  initialize: async () => {
+  initialize: async (userId = null) => {
+    const storageKey = getSnapshotKey(userId);
+    const revision = ++initializationRevision;
+    activeStorageKey = storageKey;
+    mutationRevision += 1;
+    set({
+      ...initialSnapshot,
+      hydrated: false,
+      storageOwnerId: userId,
+      saving: false,
+      storageError: null,
+    });
+
     try {
-      const stored = await getStoredValue(snapshotKey);
+      await persistenceChain;
+      if (revision !== initializationRevision || storageKey !== activeStorageKey) return;
+
+      let stored = await getStoredValue(storageKey);
+      if (stored === null && userId === null) {
+        stored = await getStoredValue(legacySnapshotKey);
+      }
       if (stored !== null) {
         const parsed: unknown = JSON.parse(stored);
         const snapshot = parseLearningSnapshot(parsed);
         if (snapshot) {
-          set({ ...snapshot, hydrated: true, storageError: null });
+          if (revision !== initializationRevision || storageKey !== activeStorageKey) return;
+          durableSnapshots.set(storageKey, snapshot);
+          if (userId === null && await getStoredValue(storageKey) === null) {
+            await queueSnapshot(storageKey, snapshot);
+          }
+          set({ ...snapshot, hydrated: true, storageOwnerId: userId, storageError: null });
           return;
         }
       }
-      set({ hydrated: true, storageError: null });
+      durableSnapshots.set(storageKey, initialSnapshot);
+      set({ hydrated: true, storageOwnerId: userId, storageError: null });
     } catch (error: unknown) {
+      if (revision !== initializationRevision || storageKey !== activeStorageKey) return;
       const message = error instanceof Error ? error.message : '保存データを読み込めませんでした。';
-      set({ hydrated: true, storageError: message });
+      set({ hydrated: true, storageOwnerId: userId, storageError: message });
     }
   },
 
@@ -142,12 +206,9 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
     });
     set((state) => ({ sessions: [session, ...state.sessions], outbox: [...state.outbox, event], saving: true, storageError: null }));
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, 'セッションを保存できませんでした。');
       return session.id;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'セッションを保存できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -190,12 +251,9 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       storageError: null,
     }));
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, '模試を保存できませんでした。');
       return session.id;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '模試を保存できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -223,11 +281,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       };
     });
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, '回答の選択を保存できませんでした。');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '回答の選択を保存できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -284,12 +339,9 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       storageError: null,
     }));
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, '回答を保存できませんでした。次の問題へは進めません。');
       return { attempt, questionState };
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '回答を保存できませんでした。次の問題へは進めません。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -364,11 +416,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       storageError: null,
     }));
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, '模試結果を保存できませんでした。');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '模試結果を保存できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
 
@@ -388,11 +437,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       storageError: null,
     }));
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, '進捗を保存できませんでした。');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '進捗を保存できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -405,8 +451,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         : session),
       saving: true,
     }));
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    await persistCurrentState(get, set, '進捗を保存できませんでした。');
   },
 
   toggleReviewMark: async (sessionId, questionId) => {
@@ -433,11 +478,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       storageError: null,
     }));
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, '見直し印を保存できませんでした。');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '見直し印を保存できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -454,8 +496,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         saving: true,
       };
     });
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    await persistCurrentState(get, set, 'ブックマークを保存できませんでした。');
   },
 
   saveNote: async (questionId, questionVersionId, body) => {
@@ -487,11 +528,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       };
     });
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, 'メモを保存できませんでした。');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'メモを保存できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -527,30 +565,23 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       storageError: null,
     }));
     try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
+      await persistCurrentState(get, set, '問題報告を保存できませんでした。');
       return issueId;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '問題報告を保存できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
 
   setDailyGoal: async (goal) => {
     set({ dailyGoal: Math.max(1, Math.min(100, goal)), saving: true });
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    await persistCurrentState(get, set, '1日の目標を保存できませんでした。');
   },
 
   restoreSnapshot: async (snapshot) => {
     set({ ...snapshot, saving: true, storageError: null });
     try {
-      await queueSnapshot(snapshot);
-      set({ saving: false });
+      await persistCurrentState(get, set, 'バックアップを復元できませんでした。');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'バックアップを復元できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -558,11 +589,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
   clearLearningData: async () => {
     set({ ...initialSnapshot, saving: true, storageError: null });
     try {
-      await queueSnapshot(initialSnapshot);
-      set({ saving: false });
+      await persistCurrentState(get, set, '端末の学習データを削除できませんでした。');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '端末の学習データを削除できませんでした。';
-      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -574,8 +602,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       issues: state.issues.map((issue) => eventIdSet.has(issue.eventId) ? { ...issue, syncStatus: 'synced' } : issue),
       saving: true,
     }));
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    await persistCurrentState(get, set, '同期済み状態を保存できませんでした。');
   },
 
   applyRemoteEvents: async (events) => {
@@ -772,8 +799,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         saving: true,
       };
     });
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    await persistCurrentState(get, set, '同期データを保存できませんでした。');
   },
 }));
 

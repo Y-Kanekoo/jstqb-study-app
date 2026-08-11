@@ -50,6 +50,7 @@ let syncPromise: Promise<void> | null = null;
 async function runSync(userId: string): Promise<void> {
   if (!supabase) return;
   const store = useLearningStore.getState();
+  if (!store.hydrated || store.storageOwnerId !== userId) return;
   const pending = store.outbox;
 
   if (pending.length > 0) {
@@ -63,6 +64,7 @@ async function runSync(userId: string): Promise<void> {
     }));
     const { error } = await supabase.from('sync_events').upsert(rows, { onConflict: 'event_id', ignoreDuplicates: true });
     if (error) throw new Error('学習履歴の送信に失敗しました。', { cause: error });
+    if (useLearningStore.getState().storageOwnerId !== userId) return;
     await useLearningStore.getState().markOutboxSynced(pending.map((event) => event.id));
   }
 
@@ -82,6 +84,7 @@ async function runSync(userId: string): Promise<void> {
       ? rawRows.map(parseRemoteEvent).filter((event): event is RemoteSyncEvent => event !== null)
       : [];
     if (events.length > 0) {
+      if (useLearningStore.getState().storageOwnerId !== userId) return;
       await useLearningStore.getState().applyRemoteEvents(events);
       cursor = events.at(-1)?.sequence ?? cursor;
     }
@@ -101,16 +104,18 @@ function scheduleSync(userId: string): void {
 export function LearningSyncCoordinator() {
   const userId = useAuthStore((state) => state.session?.user.id);
   const outboxCount = useLearningStore((state) => state.outbox.length);
+  const storageOwnerId = useLearningStore((state) => state.storageOwnerId);
+  const hydrated = useLearningStore((state) => state.hydrated);
 
   useEffect(() => {
-    if (!userId) return undefined;
+    if (!userId || !hydrated || storageOwnerId !== userId) return undefined;
     const firstSync = setTimeout(() => scheduleSync(userId), outboxCount > 0 ? 800 : 0);
     const periodicSync = setInterval(() => scheduleSync(userId), 30_000);
     return () => {
       clearTimeout(firstSync);
       clearInterval(periodicSync);
     };
-  }, [outboxCount, userId]);
+  }, [hydrated, outboxCount, storageOwnerId, userId]);
 
   return null;
 }

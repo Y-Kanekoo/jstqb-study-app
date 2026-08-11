@@ -1,0 +1,79 @@
+name: Web本番デプロイ
+
+on:
+  workflow_run:
+    workflows: [品質検査]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: github-pages-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: pages-build
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EXPO_PUBLIC_BASE_URL: /${{ github.event.repository.name }}
+      EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+      EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+    steps:
+      - name: 検査済みのmainを取得
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: pnpmを準備
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.21.0
+      - name: Node.jsを準備
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 同期環境変数を確認
+        shell: bash
+        run: |
+          if [[ -z "${EXPO_PUBLIC_SUPABASE_URL}" || -z "${EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY}" ]]; then
+            echo "::notice::SupabaseのRepository Variablesが未設定です。Web版は端末内保存のみで公開します。"
+          else
+            echo "Supabaseの公開接続設定をWebビルドへ反映します。"
+          fi
+      - name: 依存関係を固定してインストール
+        run: pnpm install --frozen-lockfile
+      - name: 検査してPages用Web成果物を作成
+        run: pnpm check
+      - name: SPAフォールバックとJekyll除外を作成
+        run: pnpm prepare:pages
+      - name: Pagesのサブパス成果物を検証
+        run: pnpm check:pages
+      - name: Pagesを準備
+        uses: actions/configure-pages@v5
+      - name: Pages成果物を保存
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    name: pages-deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: GitHub Pagesへ公開
+        id: deployment
+        uses: actions/deploy-pages@v4

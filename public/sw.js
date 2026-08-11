@@ -1,5 +1,6 @@
 const cacheName = 'jstqb-study-shell-v1';
-const appShell = ['/', '/manifest.webmanifest', '/app-icon.svg'];
+const scopePath = new URL(self.registration.scope).pathname.replace(/\/$/u, '');
+const appShell = [`${scopePath}/`, `${scopePath}/manifest.webmanifest`, `${scopePath}/app-icon.svg`];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll(appShell)));
@@ -22,6 +23,6 @@ self.addEventListener('fetch', (event) => {
         caches.open(cacheName).then((cache) => cache.put(event.request, copy));
         return response;
       })
-      .catch(() => caches.match(event.request).then((response) => response ?? caches.match('/'))),
+      .catch(() => caches.match(event.request).then((response) => response ?? caches.match(`${scopePath}/`))),
   );
 });

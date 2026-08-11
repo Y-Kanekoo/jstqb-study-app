@@ -71,6 +71,7 @@ describe('非公開コンテンツSQLハーネス', () => {
     expect(sql).toContain('公開リポジトリへ追加しないこと');
     expect(sql).toContain('where not exists (');
     expect(sql).toContain('異なるcontent hash');
+    expect(sql).toContain('選択方式・必要選択数・正答choice数');
   });
 
   it('回答履歴がある場合に停止するロールバックSQLを生成する', () => {

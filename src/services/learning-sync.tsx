@@ -11,7 +11,11 @@ const syncKinds: ReadonlySet<string> = new Set([
   'draft.saved',
   'answer.submitted',
   'session.advanced',
+  'session.submitted',
+  'session.review-marked',
   'bookmark.changed',
+  'note.saved',
+  'issue.reported',
 ]);
 
 function isPayload(value: unknown): value is OutboxEvent['payload'] {

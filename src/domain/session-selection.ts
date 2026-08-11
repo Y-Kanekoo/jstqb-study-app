@@ -59,11 +59,45 @@ export function selectPracticeQuestionIds(
 }
 
 export function selectExamQuestionIds(allQuestions: Question[], random: RandomSource = Math.random): string[] {
-  const selected = Object.entries(examConfig.chapterQuestionCounts).flatMap(([chapter, count]) => {
-    const chapterNumber = Number(chapter);
-    return shuffle(allQuestions.filter((question) => question.chapterNumber === chapterNumber), random)
-      .slice(0, count)
-      .map((question) => question.id);
-  });
+  const chapterNumbers = [1, 2, 3, 4, 5, 6] as const;
+  const kLevels = [1, 2, 3] as const;
+  const capacities = chapterNumbers.map((chapterNumber) => kLevels.map((kLevel) => allQuestions.filter(
+    (question) => question.chapterNumber === chapterNumber && question.kLevel === kLevel,
+  ).length));
+  const allocations: number[][] = [];
+
+  function allocateChapter(index: number, remainingK: number[]): boolean {
+    if (index === chapterNumbers.length) return remainingK.every((count) => count === 0);
+    const chapterNumber = chapterNumbers[index];
+    if (chapterNumber === undefined) return false;
+    const required = examConfig.chapterQuestionCounts[chapterNumber];
+    const capacity = capacities[index] ?? [0, 0, 0];
+    for (let k1 = 0; k1 <= Math.min(required, capacity[0] ?? 0, remainingK[0] ?? 0); k1 += 1) {
+      for (let k2 = 0; k2 <= Math.min(required - k1, capacity[1] ?? 0, remainingK[1] ?? 0); k2 += 1) {
+        const k3 = required - k1 - k2;
+        if (k3 < 0 || k3 > (capacity[2] ?? 0) || k3 > (remainingK[2] ?? 0)) continue;
+        allocations[index] = [k1, k2, k3];
+        if (allocateChapter(index + 1, [
+          (remainingK[0] ?? 0) - k1,
+          (remainingK[1] ?? 0) - k2,
+          (remainingK[2] ?? 0) - k3,
+        ])) return true;
+      }
+    }
+    allocations[index] = [];
+    return false;
+  }
+
+  const hasAllocation = allocateChapter(0, [
+    examConfig.kLevelQuestionCounts[1],
+    examConfig.kLevelQuestionCounts[2],
+    examConfig.kLevelQuestionCounts[3],
+  ]);
+  if (!hasAllocation) return [];
+
+  const selected = chapterNumbers.flatMap((chapterNumber, chapterIndex) => kLevels.flatMap((kLevel, kIndex) => shuffle(
+    allQuestions.filter((question) => question.chapterNumber === chapterNumber && question.kLevel === kLevel),
+    random,
+  ).slice(0, allocations[chapterIndex]?.[kIndex] ?? 0).map((question) => question.id)));
   return selected.length === examConfig.questionCount ? shuffle(selected, random) : [];
 }

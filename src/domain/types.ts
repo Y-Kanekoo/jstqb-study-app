@@ -20,6 +20,7 @@ export interface Question {
   chapterNumber: number;
   chapterTitle: string;
   objectiveCode: string;
+  kLevel?: 1 | 2 | 3;
   prompt: string;
   explanation: string;
   difficulty: QuestionDifficulty;

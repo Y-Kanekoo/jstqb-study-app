@@ -16,6 +16,15 @@ const contentTypes = {
 
 createServer((request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  if (process.env.E2E_FIXTURES_ENABLED === 'true' && url.pathname === '/__e2e__/account/profile') {
+    response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    response.end(JSON.stringify({
+      authorization: request.headers.authorization ?? '認証なし',
+      cookie: request.headers.cookie ?? 'Cookieなし',
+      method: request.method ?? '不明',
+    }));
+    return;
+  }
   const safePath = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.(\/|\\|$))+/, '');
   const candidate = join(distDirectory, safePath);
   const filePath = existsSync(candidate) && statSync(candidate).isFile() ? candidate : join(distDirectory, 'index.html');

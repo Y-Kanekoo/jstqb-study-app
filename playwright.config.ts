@@ -22,13 +22,22 @@ export default defineConfig({
     serviceWorkers: 'allow',
   },
   expect: { timeout: 10_000 },
-  webServer: {
-    command: 'pnpm preview:web',
-    env: { PORT: String(port) },
-    port,
-    reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
-  },
+  webServer: [
+    {
+      command: 'pnpm preview:web',
+      env: { E2E_FIXTURES_ENABLED: 'true', PORT: String(port) },
+      port,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      command: 'node scripts/serve-e2e-api.mjs',
+      env: { E2E_API_PORT: '4174' },
+      port: 4174,
+      reuseExistingServer: !process.env.CI,
+      timeout: 10_000,
+    },
+  ],
   projects: [
     {
       name: 'chromium-desktop',

@@ -1,0 +1,20 @@
+{
+  "name": "JSTQB 学習のしおり",
+  "short_name": "学習のしおり",
+  "description": "JSTQB Foundation Levelの個人学習アプリ",
+  "lang": "ja",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F6F8FB",
+  "theme_color": "#17324D",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

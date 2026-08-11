@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "JSTQB 学習のしおり",
+    "slug": "jstqb-study-app",
+    "scheme": "jstqbstudy",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.ykanekoo.jstqbstudy",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "dev.ykanekoo.jstqbstudy",
+      "predictiveBackGestureEnabled": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

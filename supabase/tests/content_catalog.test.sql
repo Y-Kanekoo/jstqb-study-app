@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(16);
+select plan(20);
 
 insert into public.chapters (id, syllabus_version_id, number, title)
 select
@@ -23,6 +23,22 @@ values (
   'テストの目的を識別する',
   2
 );
+
+insert into public.syllabus_versions (
+  id,
+  certification_id,
+  version,
+  status,
+  source_url
+)
+select hidden.id, c.id, hidden.version, hidden.status::public.content_status, 'https://example.test/hidden'
+from public.certifications c
+cross join (
+  values
+    ('cccccccc-cccc-4ccc-8ccc-cccccccccccc'::uuid, 'catalog-draft', 'draft'),
+    ('dddddddd-dddd-4ddd-8ddd-dddddddddddd'::uuid, 'catalog-suspended', 'suspended')
+) hidden(id, version, status)
+where c.code = 'JSTQB-FL';
 
 insert into auth.users (
   id,
@@ -62,7 +78,13 @@ where id = '11111111-1111-4111-8111-111111111111';
 insert into public.questions (id, certification_id)
 select sample.id, c.id
 from public.certifications c
-cross join (values ('catalog-public'), ('catalog-review')) sample(id)
+cross join (
+  values
+    ('catalog-public'),
+    ('catalog-review'),
+    ('catalog-draft'),
+    ('catalog-suspended')
+) sample(id)
 where c.code = 'JSTQB-FL';
 
 insert into public.question_versions (
@@ -106,6 +128,55 @@ cross join (
 where c.code = 'JSTQB-FL'
   and sv.version = '2023V4.0.J02';
 
+insert into public.question_versions (
+  id,
+  question_id,
+  version_no,
+  syllabus_version_id,
+  learning_objective_id,
+  status,
+  selection_type,
+  required_choice_count,
+  prompt,
+  explanation,
+  difficulty,
+  source_reference,
+  content_hash,
+  shuffle_choices
+)
+select
+  hidden.version_id,
+  hidden.question_id,
+  1,
+  hidden.syllabus_version_id,
+  'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  hidden.question_status::public.content_status,
+  'single',
+  1,
+  hidden.prompt,
+  '非公開シラバスの総合解説',
+  2,
+  '非公開シラバス参照',
+  encode(digest(hidden.version_id, 'sha256'), 'hex'),
+  true
+from (
+  values
+    (
+      'catalog-draft-v1',
+      'catalog-draft',
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc'::uuid,
+      'reviewing',
+      'SECRET_DRAFT_SYLLABUS'
+    ),
+    (
+      'catalog-suspended-v1',
+      'catalog-suspended',
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd'::uuid,
+      'published',
+      'SECRET_SUSPENDED_SYLLABUS'
+    )
+) hidden(version_id, question_id, syllabus_version_id, question_status, prompt);
+
 insert into public.choices (
   id,
   question_version_id,
@@ -129,18 +200,29 @@ cross join (
     ('A', '正答', true, '正答の根拠', 0),
     ('B', '誤答', false, '誤答の根拠', 1)
 ) choice(label, body, is_correct, explanation, sort_order)
-where qv.id in ('catalog-public-v1', 'catalog-review-v1');
+where qv.id in (
+  'catalog-public-v1',
+  'catalog-review-v1',
+  'catalog-draft-v1',
+  'catalog-suspended-v1'
+);
 
 insert into public.question_answer_keys (question_version_id, correct_choice_ids)
 values
   ('catalog-public-v1', array['catalog-public-v1-A']),
-  ('catalog-review-v1', array['catalog-review-v1-A'])
+  ('catalog-review-v1', array['catalog-review-v1-A']),
+  ('catalog-draft-v1', array['catalog-draft-v1-A']),
+  ('catalog-suspended-v1', array['catalog-suspended-v1-A'])
 on conflict (question_version_id) do update
 set correct_choice_ids = excluded.correct_choice_ids;
 
 update public.questions
 set current_version_id = 'catalog-public-v1'
 where id = 'catalog-public';
+
+update public.questions
+set current_version_id = 'catalog-suspended-v1'
+where id = 'catalog-suspended';
 
 set local role anon;
 
@@ -180,6 +262,20 @@ select throws_ok(
   '42501',
   null,
   '匿名利用者は内部revision表を直接参照できない'
+);
+
+select throws_ok(
+  $$select public.get_question_catalog_v1('JSTQB-FL', 'catalog-draft', null, 'public')$$,
+  '22023',
+  '指定した資格・シラバス版は存在しません。',
+  'publicはdraftシラバスを取得できない'
+);
+
+select throws_ok(
+  $$select public.get_question_catalog_v1('JSTQB-FL', 'catalog-suspended', null, 'public')$$,
+  '22023',
+  '指定した資格・シラバス版は存在しません。',
+  'publicはsuspendedシラバスを取得できない'
 );
 
 reset role;
@@ -230,6 +326,20 @@ select unlike(
   )::text,
   '%reviewer@example.test%',
   'カタログへ作成者・reviewer識別情報を含めない'
+);
+
+select throws_ok(
+  $$select public.get_question_catalog_v1('JSTQB-FL', 'catalog-draft', null, 'personal_preview')$$,
+  '22023',
+  '指定した資格・シラバス版は存在しません。',
+  'reviewerもdraftシラバスを取得できない'
+);
+
+select throws_ok(
+  $$select public.get_question_catalog_v1('JSTQB-FL', 'catalog-suspended', null, 'personal_preview')$$,
+  '22023',
+  '指定した資格・シラバス版は存在しません。',
+  'reviewerもsuspendedシラバスを取得できない'
 );
 
 select throws_ok(

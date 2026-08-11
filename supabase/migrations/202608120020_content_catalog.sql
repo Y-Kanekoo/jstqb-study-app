@@ -310,6 +310,9 @@ create trigger track_question_version_catalog_change
 after insert or update or delete on public.question_versions
 for each row execute function public.track_question_version_catalog_change();
 
+revoke all on function public.track_question_version_catalog_change()
+  from public, anon, authenticated;
+
 create or replace function public.track_question_catalog_dependency_change()
 returns trigger
 language plpgsql
@@ -375,6 +378,9 @@ create trigger track_answer_key_catalog_change
 after insert or update or delete on public.question_answer_keys
 for each row execute function public.track_question_catalog_dependency_change();
 
+revoke all on function public.track_question_catalog_dependency_change()
+  from public, anon, authenticated;
+
 create or replace function public.track_learning_metadata_catalog_change()
 returns trigger
 language plpgsql
@@ -433,6 +439,9 @@ drop trigger if exists track_chapter_catalog_change on public.chapters;
 create trigger track_chapter_catalog_change
 after update of number, title on public.chapters
 for each row execute function public.track_learning_metadata_catalog_change();
+
+revoke all on function public.track_learning_metadata_catalog_change()
+  from public, anon, authenticated;
 
 create or replace function public.track_question_catalog_selection_change()
 returns trigger
@@ -551,6 +560,9 @@ create trigger track_question_catalog_selection_change
 after update of current_version_id, retired_at on public.questions
 for each row execute function public.track_question_catalog_selection_change();
 
+revoke all on function public.track_question_catalog_selection_change()
+  from public, anon, authenticated;
+
 create or replace function public.get_question_catalog_v1(
   certification_code text,
   syllabus_version text,
@@ -609,7 +621,20 @@ begin
     join public.certifications c on c.id = sv.certification_id
    where c.code = certification_code
      and sv.version = syllabus_version
-     and c.active;
+     and c.active
+     and (
+       (
+         target_channel = 'public'::public.content_catalog_channel
+         and sv.status = 'published'::public.content_status
+       )
+       or (
+         target_channel = 'personal_preview'::public.content_catalog_channel
+         and sv.status in (
+           'published'::public.content_status,
+           'reviewing'::public.content_status
+         )
+       )
+     );
 
   if target_syllabus_version_id is null then
     raise exception using errcode = '22023', message = '指定した資格・シラバス版は存在しません。';

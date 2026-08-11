@@ -18,12 +18,18 @@ describe('content catalog migration', () => {
     expect(migration).toContain("qv.status = 'published'::public.content_status");
     expect(migration).toContain("target_channel = 'personal_preview'::public.content_catalog_channel");
     expect(migration).toContain("p.role in ('reviewer', 'admin')");
+    expect(migration).toContain("and sv.status = 'published'::public.content_status");
+    expect(migration).toMatch(/target_channel = 'personal_preview'[\s\S]*and sv\.status in \([\s\S]*'reviewing'/u);
   });
 
   it('内部streamを遮断しRPCだけを公開する', () => {
     expect(migration).toContain('revoke all on table public.content_catalog_streams from public, anon, authenticated');
     expect(migration).toContain('revoke all on table public.content_catalog_changes from public, anon, authenticated');
     expect(migration).toContain('grant execute on function public.get_question_catalog_v1');
+    expect(migration).toContain('revoke all on function public.track_question_version_catalog_change()');
+    expect(migration).toContain('revoke all on function public.track_question_catalog_dependency_change()');
+    expect(migration).toContain('revoke all on function public.track_learning_metadata_catalog_change()');
+    expect(migration).toContain('revoke all on function public.track_question_catalog_selection_change()');
   });
 
   it('単調revision・tombstone・応答上限を定義する', () => {

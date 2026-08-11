@@ -15,10 +15,10 @@
 | 引数 | `certification_code text`, `syllabus_version text`, `since_revision bigint`, `channel text` |
 | 戻り値 | `CatalogSnapshot` JSON |
 | 公開上限 | 2,000問、JSON 10 MiB |
-| `public` | 匿名・認証済みが利用可能。`questions.current_version_id`の`published`だけを返す |
-| `personal_preview` | 認証済み`profiles.role=reviewer/admin`だけが利用可能。最新の`reviewing/published`を返す |
+| `public` | 匿名・認証済みが利用可能。`published`シラバスに属する`questions.current_version_id`の`published`だけを返す |
+| `personal_preview` | 認証済み`profiles.role=reviewer/admin`だけが利用可能。`published/reviewing`シラバスに属する最新の`reviewing/published`を返す |
 
-`personal_preview`の権限判定にはJWTの`auth.uid()`だけを使用します。利用者IDをRPC引数として受け取らないため、他者を指定した権限昇格はできません。内部revision表と差分表はRLSを有効にし、`anon` / `authenticated`からの直接参照権限を付与しません。
+`personal_preview`の権限判定にはJWTの`auth.uid()`だけを使用します。利用者IDをRPC引数として受け取らないため、他者を指定した権限昇格はできません。`draft/suspended/retired`シラバスは、権限付きプレビューでも取得できません。内部revision表と差分表はRLSを有効にし、`anon` / `authenticated`からの直接参照権限を付与しません。trigger用の`SECURITY DEFINER`関数も直接実行権限を付与しません。
 
 ## 3. 応答DTO
 

@@ -1,9 +1,10 @@
 export type QuestionDifficulty = 1 | 2 | 3;
-export type SessionMode = 'chapter' | 'random' | 'wrong' | 'review';
+export type SessionMode = 'chapter' | 'random' | 'wrong' | 'review' | 'exam';
 export type SessionStatus = 'active' | 'completed';
 export type LatestOutcome = 'correct' | 'wrong' | null;
 export type SyncStatus = 'synced' | 'queued' | 'syncing' | 'auth-required' | 'error';
 export type WrongFilter = 'unresolved' | 'latest-wrong' | 'last-7-days' | 'last-30-days' | 'last-90-days' | 'ever' | 'recovered';
+export type ContentIssueCategory = 'incorrect_answer' | 'unclear' | 'outdated' | 'typo' | 'other';
 
 export interface Choice {
   id: string;
@@ -34,6 +35,10 @@ export interface LearningSession {
   currentIndex: number;
   answeredQuestionIds: string[];
   status: SessionStatus;
+  reviewQuestionIds?: string[];
+  durationMinutes?: number | null;
+  expiresAt?: string | null;
+  submittedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -70,21 +75,51 @@ export interface UserQuestionState {
   correctCount: number;
 }
 
+export interface QuestionNote {
+  questionId: string;
+  questionVersionId: string;
+  body: string;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface ContentIssue {
+  id: string;
+  eventId: string;
+  questionId: string;
+  questionVersionId: string;
+  category: ContentIssueCategory;
+  description: string;
+  createdAt: string;
+  syncStatus: 'queued' | 'synced';
+}
+
 export interface OutboxEvent {
   id: string;
-  kind: 'session.created' | 'draft.saved' | 'answer.submitted' | 'session.advanced' | 'bookmark.changed';
+  kind:
+    | 'session.created'
+    | 'draft.saved'
+    | 'answer.submitted'
+    | 'session.advanced'
+    | 'session.submitted'
+    | 'session.review-marked'
+    | 'bookmark.changed'
+    | 'note.saved'
+    | 'issue.reported';
   entityId: string;
   occurredAt: string;
   payload: Record<string, boolean | number | string | string[]>;
 }
 
 export interface LearningSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 2;
   sessions: LearningSession[];
   drafts: Record<string, AnswerDraft>;
   attempts: AnswerAttempt[];
   questionStates: Record<string, UserQuestionState>;
   bookmarks: string[];
+  notes: Record<string, QuestionNote>;
+  issues: ContentIssue[];
   outbox: OutboxEvent[];
   syncCursor: number;
   dailyGoal: number;
@@ -97,4 +132,10 @@ export interface RemoteSyncEvent extends OutboxEvent {
 export interface SubmitAnswerResult {
   attempt: AnswerAttempt;
   questionState: UserQuestionState;
+}
+
+export interface ExamResult {
+  correctCount: number;
+  totalCount: number;
+  passed: boolean;
 }

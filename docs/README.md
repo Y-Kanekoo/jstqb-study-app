@@ -11,7 +11,8 @@
 7. [問題コンテンツ方針](content-policy.md)
 8. [テスト計画](test-plan.md)
 9. [運用設計](operations.md)
-10. [ADR](adr/README.md)
+10. [実装状況](implementation-status.md)
+11. [ADR](adr/README.md)
 
 ## 設計原則
 
@@ -20,4 +21,3 @@
 - 問題公開後の内容は上書きせず、新しい版を作る。
 - 公開GitHubと本番問題データ・秘密情報を分離する。
 - 個人利用でも試作品扱いにせず、本番データの復旧性を確保する。
-

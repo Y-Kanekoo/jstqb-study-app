@@ -13,6 +13,11 @@
 - Supabase Auth、RLS、append-only同期イベント、サーバー再採点
 - SQLite / IndexedDB、Outbox、PWA shell
 - 学習記録、章別カバレッジ、レスポンシブUI
+- 問題カタログRPC、revision差分、tombstone、hash付きIndexedDB / SQLite cache基盤
+
+## 未接続の実装基盤
+
+- 問題カタログcacheは基盤と統合契約まで実装済みです。画面、`learning-store`、演習開始処理からの利用は別変更で接続します。
 
 ## 本番開始までに外部設定・承認が必要
 

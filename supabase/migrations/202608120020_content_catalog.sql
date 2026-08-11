@@ -112,19 +112,21 @@ begin
     p_syllabus_version_id,
     p_channel,
     1,
-    encode(digest(p_syllabus_version_id::text || ':' || p_channel::text || ':1', 'sha256'), 'hex'),
+    pg_catalog.md5(p_syllabus_version_id::text || ':' || p_channel::text || ':1') ||
+      pg_catalog.md5('content-catalog:' || p_syllabus_version_id::text || ':' || p_channel::text || ':1'),
     clock_timestamp()
   )
   on conflict (syllabus_version_id, channel) do update
     set revision = public.content_catalog_streams.revision + 1,
-        etag = encode(
-          digest(
+        etag =
+          pg_catalog.md5(
             p_syllabus_version_id::text || ':' || p_channel::text || ':' ||
-              (public.content_catalog_streams.revision + 1)::text,
-            'sha256'
+              (public.content_catalog_streams.revision + 1)::text
+          ) ||
+          pg_catalog.md5(
+            'content-catalog:' || p_syllabus_version_id::text || ':' || p_channel::text || ':' ||
+              (public.content_catalog_streams.revision + 1)::text
           ),
-          'hex'
-        ),
         generated_at = clock_timestamp()
   returning revision into next_revision;
 
@@ -649,10 +651,10 @@ begin
   current_revision := coalesce(current_revision, 0);
   current_etag := coalesce(
     current_etag,
-    encode(
-      digest(target_syllabus_version_id::text || ':' || target_channel::text || ':0', 'sha256'),
-      'hex'
-    )
+    pg_catalog.md5(target_syllabus_version_id::text || ':' || target_channel::text || ':0') ||
+      pg_catalog.md5(
+        'content-catalog:' || target_syllabus_version_id::text || ':' || target_channel::text || ':0'
+      )
   );
   current_generated_at := coalesce(current_generated_at, now());
 
@@ -927,10 +929,33 @@ select
          )
        )
   ) then 1 else 0 end,
-  encode(
-    digest(
-      sv.id::text || ':' || catalog_channel.channel::text || ':' ||
-      case when exists (
+  pg_catalog.md5(
+    sv.id::text || ':' || catalog_channel.channel::text || ':' ||
+    case when exists (
+      select 1
+        from public.questions q
+        join public.question_versions qv on qv.question_id = q.id
+       where qv.syllabus_version_id = sv.id
+         and q.retired_at is null
+         and (
+           (
+             catalog_channel.channel = 'public'::public.content_catalog_channel
+             and q.current_version_id = qv.id
+             and qv.status = 'published'::public.content_status
+           )
+           or (
+             catalog_channel.channel = 'personal_preview'::public.content_catalog_channel
+             and qv.status in (
+               'published'::public.content_status,
+               'reviewing'::public.content_status
+             )
+           )
+         )
+    ) then '1' else '0' end
+  ) ||
+  pg_catalog.md5(
+    'content-catalog:' || sv.id::text || ':' || catalog_channel.channel::text || ':' ||
+    case when exists (
         select 1
           from public.questions q
           join public.question_versions qv on qv.question_id = q.id
@@ -950,10 +975,7 @@ select
                )
              )
            )
-      ) then '1' else '0' end,
-      'sha256'
-    ),
-    'hex'
+    ) then '1' else '0' end
   ),
   now()
 from public.syllabus_versions sv

@@ -116,7 +116,7 @@ select
   '総合解説',
   2,
   'JSTQB FL 2023V4.0.J02 1.1節 / FL-1.1.1',
-  encode(digest(sample.version_id, 'sha256'), 'hex'),
+  repeat('a', 64),
   true
 from public.syllabus_versions sv
 join public.certifications c on c.id = sv.certification_id
@@ -157,7 +157,7 @@ select
   '非公開シラバスの総合解説',
   2,
   '非公開シラバス参照',
-  encode(digest(hidden.version_id, 'sha256'), 'hex'),
+  repeat('b', 64),
   true
 from (
   values
@@ -467,7 +467,7 @@ select
   '総合解説',
   1,
   'JSTQB FL 2023V4.0.J02 1.1節 / FL-1.1.1',
-  encode(digest(q.id, 'sha256'), 'hex'),
+  repeat('c', 64),
   true
 from public.questions q
 cross join public.syllabus_versions sv

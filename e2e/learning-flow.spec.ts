@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { chooseFirstAnswer, openHome, startQuickSession } from './helpers';
+import { appPath, chooseFirstAnswer, openHome, startQuickSession } from './helpers';
 import { chapterOneWrongAnswerFixture } from './fixtures';
 
 test.describe('1問単位の保存と学習履歴', () => {
@@ -15,7 +15,7 @@ test.describe('1問単位の保存と学習履歴', () => {
     await page.getByRole('button', { name: '回答を確定する' }).click();
     await expect(page.getByText(/正解です|もう一度、整理しましょう/u)).toBeVisible();
 
-    await page.goto('/records');
+    await page.goto(appPath('/records'));
     const totalAnswers = page.getByText('総回答').locator('..');
     await expect(totalAnswers).toContainText('1');
     await expect(totalAnswers).toContainText('問');
@@ -37,7 +37,7 @@ test.describe('1問単位の保存と学習履歴', () => {
 
 test.describe('誤答フィルター', () => {
   test('誤答を未克服と過去すべての両方から開始できる', async ({ page }) => {
-    await page.goto('/learn');
+    await page.goto(appPath('/learn'));
     await expect(page.getByRole('heading', { name: '学ぶ' })).toBeVisible();
     await page.getByRole('button', { name: 'この章を学ぶ' }).first().click();
 
@@ -48,7 +48,7 @@ test.describe('誤答フィルター', () => {
     await page.getByRole('button', { name: '回答を確定する' }).click();
     await expect(page.getByText('もう一度、整理しましょう')).toBeVisible();
 
-    await page.goto('/wrong');
+    await page.goto(appPath('/wrong'));
     await expect(page.getByRole('heading', { name: '誤答だけを解く' })).toBeVisible();
     await expect(page.getByText('1問を出題できます')).toBeVisible();
 

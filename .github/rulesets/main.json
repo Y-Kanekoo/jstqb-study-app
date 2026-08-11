@@ -30,6 +30,7 @@
         "required_status_checks": [
           { "context": "quality" },
           { "context": "e2e" },
+          { "context": "pages" },
           { "context": "security" }
         ]
       }

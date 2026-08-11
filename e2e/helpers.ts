@@ -1,8 +1,15 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+const basePath = (process.env.E2E_BASE_PATH ?? '').trim().replace(/\/$/u, '');
+
+export function appPath(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${basePath}${normalizedPath}` || '/';
+}
+
 export async function openHome(page: Page): Promise<void> {
-  await page.goto('/');
+  await page.goto(appPath('/'));
   await expect(page.getByRole('heading', { name: '今日も、ひとつずつ。' })).toBeVisible();
 }
 

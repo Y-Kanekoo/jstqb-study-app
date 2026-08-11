@@ -4,6 +4,10 @@ import { extname, join, normalize } from 'node:path';
 
 const port = Number.parseInt(process.env.PORT ?? '8081', 10);
 const distDirectory = new URL('../dist/', import.meta.url).pathname;
+const previewBaseUrl = (process.env.PREVIEW_BASE_URL ?? '').trim().replace(/\/$/u, '');
+if (previewBaseUrl && (!previewBaseUrl.startsWith('/') || previewBaseUrl.includes('..'))) {
+  throw new Error('PREVIEW_BASE_URLは/から始まる安全なパスである必要があります。');
+}
 const contentTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -25,7 +29,13 @@ createServer((request, response) => {
     }));
     return;
   }
-  const safePath = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.(\/|\\|$))+/, '');
+  if (previewBaseUrl && url.pathname !== previewBaseUrl && !url.pathname.startsWith(`${previewBaseUrl}/`)) {
+    response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    response.end('プレビュー対象外のパスです。');
+    return;
+  }
+  const scopedPath = previewBaseUrl ? url.pathname.slice(previewBaseUrl.length) || '/' : url.pathname;
+  const safePath = normalize(decodeURIComponent(scopedPath)).replace(/^(\.\.(\/|\\|$))+/, '');
   const candidate = join(distDirectory, safePath);
   const filePath = existsSync(candidate) && statSync(candidate).isFile() ? candidate : join(distDirectory, 'index.html');
   const contentType = contentTypes[extname(filePath)] ?? 'application/octet-stream';

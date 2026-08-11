@@ -17,6 +17,7 @@
     "test:contracts": "vitest run src/contracts/exam-mode.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
+    "test:ops": "node --test scripts/*.test.mjs",
     "test:watch": "vitest",
     "check:any": "node scripts/check-no-any.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
@@ -25,7 +26,7 @@
     "content:verify": "node scripts/verify-content-export.mjs",
     "prepare:pages": "node scripts/prepare-pages.mjs",
     "check:pages": "node scripts/verify-pages-build.mjs",
-    "check": "pnpm check:any && pnpm check:secrets && pnpm check:security-exceptions && pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"
+    "check": "pnpm check:any && pnpm check:secrets && pnpm check:security-exceptions && pnpm lint && pnpm typecheck && pnpm test && pnpm test:ops && pnpm build:web"
   },
   "dependencies": {
     "@expo-google-fonts/biz-udpgothic": "^0.4.2",

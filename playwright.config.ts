@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const port = 4173;
+const basePath = (process.env.E2E_BASE_PATH ?? '').trim().replace(/\/$/u, '');
 
 export default defineConfig({
   testDir: './e2e',
@@ -25,7 +26,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'pnpm preview:web',
-      env: { E2E_FIXTURES_ENABLED: 'true', PORT: String(port) },
+      env: { E2E_FIXTURES_ENABLED: 'true', PORT: String(port), PREVIEW_BASE_URL: basePath },
       port,
       reuseExistingServer: !process.env.CI,
       timeout: 30_000,

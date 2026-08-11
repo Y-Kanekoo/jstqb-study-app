@@ -19,3 +19,11 @@ supabase/.temp/
 *.db-shm
 *.db-wal
 
+# 本番問題・正答キー・レビュー記録は公開リポジトリへ含めない
+/private-content/
+/content/private/
+/outputs/private-content/
+*.questions.json
+*.review-manifest.json
+*.seed.sql
+*.rollback.sql

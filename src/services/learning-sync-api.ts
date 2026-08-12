@@ -1,16 +1,115 @@
+import { z } from 'zod';
+
 import type { OutboxEvent, RemoteSyncEvent } from '@/domain/types';
 
-const syncKinds: ReadonlySet<string> = new Set([
-  'session.created',
-  'draft.saved',
-  'answer.submitted',
-  'session.advanced',
-  'session.submitted',
-  'session.review-marked',
-  'bookmark.changed',
-  'note.saved',
-  'issue.reported',
+const sessionModeSchema = z.enum(['chapter', 'random', 'wrong', 'review', 'exam']);
+const stringArraySchema = z.array(z.string());
+
+const sessionCreatedPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  mode: sessionModeSchema,
+  title: z.string(),
+  questionIds: stringArraySchema,
+  questionVersionIds: stringArraySchema,
+  createdAt: z.string().min(1),
+  startedAt: z.string().min(1),
+  durationMinutes: z.number().positive().nullable(),
+  expiresAt: z.string().min(1).nullable(),
+}).strict();
+
+const draftSavedPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  questionId: z.string().min(1),
+  selectedChoiceIds: stringArraySchema,
+  questionVersionId: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+  deviceId: z.string(),
+  updatedAt: z.string().min(1),
+  expectedRevision: z.number().int().nonnegative().optional(),
+}).strict();
+
+const answerSubmittedPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  questionId: z.string().min(1),
+  questionVersionId: z.string().min(1),
+  selectedChoiceIds: stringArraySchema,
+  isCorrect: z.boolean(),
+  answeredAt: z.string().min(1),
+  invalidated: z.boolean().optional(),
+}).strict();
+
+const sessionAdvancedPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  questionId: z.string().min(1),
+  currentIndex: z.number().int().nonnegative(),
+}).strict();
+
+const sessionSubmittedPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  submittedAt: z.string().min(1),
+  answeredQuestionIds: stringArraySchema,
+  expired: z.boolean(),
+}).strict();
+
+const sessionReviewMarkedPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  questionId: z.string().min(1),
+  marked: z.boolean(),
+}).strict();
+
+const bookmarkChangedPayloadSchema = z.object({
+  questionId: z.string().min(1),
+  enabled: z.boolean(),
+}).strict();
+
+const noteSavedPayloadSchema = z.object({
+  questionId: z.string().min(1),
+  questionVersionId: z.string().min(1),
+  body: z.string(),
+  revision: z.number().int().nonnegative(),
+  updatedAt: z.string().min(1),
+  expectedRevision: z.number().int().nonnegative().optional(),
+}).strict();
+
+const issueReportedPayloadSchema = z.object({
+  issueId: z.string().min(1),
+  questionId: z.string().min(1),
+  questionVersionId: z.string().min(1),
+  category: z.enum(['incorrect_answer', 'unclear', 'outdated', 'typo', 'other']),
+  description: z.string(),
+  createdAt: z.string().min(1),
+}).strict();
+
+const remoteEventBaseSchema = {
+  sequence: z.number().int().nonnegative(),
+  event_id: z.string().min(1),
+  entity_id: z.string().min(1),
+  occurred_at: z.string().min(1),
+};
+
+const remoteEventSchema = z.discriminatedUnion('kind', [
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('session.created'), payload: sessionCreatedPayloadSchema }).strict(),
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('draft.saved'), payload: draftSavedPayloadSchema }).strict(),
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('answer.submitted'), payload: answerSubmittedPayloadSchema }).strict(),
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('session.advanced'), payload: sessionAdvancedPayloadSchema }).strict(),
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('session.submitted'), payload: sessionSubmittedPayloadSchema }).strict(),
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('session.review-marked'), payload: sessionReviewMarkedPayloadSchema }).strict(),
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('bookmark.changed'), payload: bookmarkChangedPayloadSchema }).strict(),
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('note.saved'), payload: noteSavedPayloadSchema }).strict(),
+  z.object({ ...remoteEventBaseSchema, kind: z.literal('issue.reported'), payload: issueReportedPayloadSchema }).strict(),
 ]);
+
+const requestIdentityKeys: Record<OutboxEvent['kind'], readonly string[]> = {
+  'session.created': ['sessionId', 'mode', 'title', 'questionIds'],
+  'draft.saved': ['sessionId', 'questionId', 'selectedChoiceIds'],
+  'answer.submitted': ['sessionId', 'questionId', 'questionVersionId', 'selectedChoiceIds'],
+  'session.advanced': ['sessionId', 'questionId'],
+  'session.submitted': ['sessionId'],
+  'session.review-marked': ['sessionId', 'questionId', 'marked'],
+  'bookmark.changed': ['questionId', 'enabled'],
+  'note.saved': ['questionId', 'questionVersionId', 'body'],
+  'issue.reported': ['issueId', 'questionId', 'questionVersionId', 'category', 'description'],
+};
 
 export type LearningSyncErrorCode =
   | 'AUTH_REQUIRED'
@@ -39,31 +138,16 @@ function classifyError(message: string): LearningSyncErrorCode {
   return 'NETWORK_ERROR';
 }
 
-function isPayload(value: unknown): value is OutboxEvent['payload'] {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  return Object.values(value).every((item) => item === null
-    || typeof item === 'string'
-    || typeof item === 'number'
-    || typeof item === 'boolean'
-    || (Array.isArray(item) && item.every((entry) => typeof entry === 'string')));
-}
-
 export function parseRemoteEvent(value: unknown): RemoteSyncEvent | null {
-  if (typeof value !== 'object' || value === null) return null;
-  if (!('sequence' in value) || typeof value.sequence !== 'number' || !Number.isInteger(value.sequence) || value.sequence < 0
-    || !('event_id' in value) || typeof value.event_id !== 'string' || value.event_id.length === 0
-    || !('kind' in value) || typeof value.kind !== 'string' || !syncKinds.has(value.kind)
-    || !('entity_id' in value) || typeof value.entity_id !== 'string' || value.entity_id.length === 0
-    || !('occurred_at' in value) || typeof value.occurred_at !== 'string' || value.occurred_at.length === 0
-    || !('payload' in value) || !isPayload(value.payload)) return null;
-
+  const result = remoteEventSchema.safeParse(value);
+  if (!result.success) return null;
   return {
-    sequence: value.sequence,
-    id: value.event_id,
-    kind: value.kind as OutboxEvent['kind'],
-    entityId: value.entity_id,
-    occurredAt: value.occurred_at,
-    payload: value.payload,
+    sequence: result.data.sequence,
+    id: result.data.event_id,
+    kind: result.data.kind,
+    entityId: result.data.entity_id,
+    occurredAt: result.data.occurred_at,
+    payload: result.data.payload as OutboxEvent['payload'],
   };
 }
 
@@ -79,7 +163,26 @@ export function parseRemoteEventRows(value: unknown): RemoteSyncEvent[] {
     }
     events.push(event);
   }
+  if (events.length !== value.length) {
+    throw new LearningSyncError('NETWORK_ERROR', '学習履歴の件数を確認できませんでした。');
+  }
   return events;
+}
+
+function samePayloadValue(left: OutboxEvent['payload'], right: OutboxEvent['payload'], key: string): boolean {
+  const leftValue = left[key];
+  const rightValue = right[key];
+  if (Array.isArray(leftValue)) {
+    return Array.isArray(rightValue)
+      && leftValue.length === rightValue.length
+      && leftValue.every((value, index) => value === rightValue[index]);
+  }
+  return leftValue === rightValue;
+}
+
+export function isCanonicalEventForRequest(canonical: RemoteSyncEvent, request: OutboxEvent): boolean {
+  if (canonical.id !== request.id || canonical.kind !== request.kind || canonical.entityId !== request.entityId) return false;
+  return requestIdentityKeys[request.kind].every((key) => samePayloadValue(request.payload, canonical.payload, key));
 }
 
 function toRpcEvent(event: OutboxEvent) {
@@ -126,6 +229,9 @@ export async function ingestLearningEvents(events: OutboxEvent[]): Promise<Remot
   const parsed = parseRemoteEventRows(rawData);
   if (parsed.length !== events.length) {
     throw new LearningSyncError('NETWORK_ERROR', '同期サーバーの応答形式を確認できませんでした。');
+  }
+  if (parsed.some((event, index) => !event || !isCanonicalEventForRequest(event, events[index]!))) {
+    throw new LearningSyncError('INVALID_EVENT', '同期サーバーの回答が要求イベントと一致しません。');
   }
   return parsed;
 }

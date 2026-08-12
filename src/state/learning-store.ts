@@ -495,7 +495,10 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       selectedChoiceIds,
     });
     set((state) => ({
-      outbox: [...state.outbox, event],
+      // 通信失敗後の再送では既存eventを再利用するため、同じIDをappendしない。
+      outbox: pendingAnswerEvent
+        ? [...state.outbox.filter((item) => item.id !== event.id), event]
+        : [...state.outbox, event],
       saving: true,
       storageError: null,
       syncStatus: 'syncing',

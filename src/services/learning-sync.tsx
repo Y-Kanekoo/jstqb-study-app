@@ -3,7 +3,12 @@ import { useEffect } from 'react';
 import { useAuthStore } from '@/state/auth-store';
 import { useLearningStore } from '@/state/learning-store';
 
-import { fetchLearningEventsAfter, ingestLearningEvents, LearningSyncError } from './learning-sync-api';
+import {
+  fetchLearningEventsAfter,
+  ingestLearningEvents,
+  isCanonicalEventForRequest,
+  LearningSyncError,
+} from './learning-sync-api';
 import { supabase } from './supabase';
 
 let syncPromise: Promise<void> | null = null;
@@ -13,7 +18,7 @@ function isCurrentOwner(userId: string): boolean {
   return state.hydrated && state.storageOwnerId === userId;
 }
 
-async function pushOutbox(userId: string): Promise<void> {
+export async function pushOutbox(userId: string): Promise<void> {
   while (isCurrentOwner(userId)) {
     const pending = useLearningStore.getState().outbox
       .filter((event) => !event.blocked && !event.resolved)
@@ -24,6 +29,10 @@ async function pushOutbox(userId: string): Promise<void> {
       try {
         const canonicalEvents = await ingestLearningEvents([event]);
         if (!isCurrentOwner(userId)) return;
+        const canonicalEvent = canonicalEvents[0];
+        if (!canonicalEvent || !isCanonicalEventForRequest(canonicalEvent, event)) {
+          throw new LearningSyncError('INVALID_EVENT', '同期サーバーの回答が要求イベントと一致しません。');
+        }
         await useLearningStore.getState().applyRemoteEvents(canonicalEvents, 'ack');
         if (!isCurrentOwner(userId)) return;
         await useLearningStore.getState().markOutboxSynced([event.id]);

@@ -124,6 +124,56 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  database:
+    name: database
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Supabase CLIを準備
+        uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          version: 2.113.0
+      - name: DockerとCLIを確認
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          supabase --version
+      - name: ローカルSupabaseを起動
+        run: supabase start
+      - name: 全migrationを空DBへ再適用
+        run: supabase db reset
+      - name: RLS・関数・pgTAPを実DBで検証
+        run: supabase test db
+      - name: DB失敗時の診断ログを表示
+        if: failure()
+        shell: bash
+        run: |
+          echo "稼働中・停止済みのSupabaseコンテナを確認します。"
+          docker ps --all --filter "name=supabase_" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+          echo "PostgreSQLの末尾300行を表示します。"
+          docker logs --tail 300 supabase_db_jstqb-study-app 2>&1 || true
+      - name: ローカルSupabaseを確実に停止
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if command -v supabase >/dev/null 2>&1; then
+            supabase stop --no-backup
+            stop_status=$?
+          else
+            stop_status=0
+          fi
+          remaining_containers="$(docker ps --all --quiet --filter "name=supabase_" 2>/dev/null)"
+          if [[ -n "${remaining_containers}" ]]; then
+            echo "::error::Supabaseコンテナがcleanup後も残っています。"
+            docker ps --all --filter "name=supabase_" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+            exit 1
+          fi
+          exit "${stop_status}"
+
   security:
     name: security
     runs-on: ubuntu-latest

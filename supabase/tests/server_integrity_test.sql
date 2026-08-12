@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path = public, extensions;
 
-select plan(35);
+select plan(46);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -47,6 +47,9 @@ create temporary table test_question_distribution (
   k_level integer not null,
   sequence_in_cell integer not null
 ) on commit drop;
+
+-- RPC呼び出しはauthenticatedで実行するため、fixtureの読み取りだけを限定許可する。
+grant select on test_question_distribution to authenticated;
 
 insert into test_question_distribution (question_id, chapter_number, k_level, sequence_in_cell)
 select 'server-q-' || allocation.chapter_number || '-' || allocation.k_level || '-' || item_number,
@@ -104,6 +107,45 @@ update public.questions
 set current_version_id = id || '-v1'
 where id like 'server-q-%';
 
+insert into public.certifications (id, code, name)
+values ('70000000-0000-4000-8000-000000000001', 'SERVER-OTHER', 'サーバー完全性試験（別認定）');
+
+insert into public.syllabus_versions (id, certification_id, version, status, source_url)
+values (
+  '71000000-0000-4000-8000-000000000001',
+  '70000000-0000-4000-8000-000000000001',
+  'SERVER-OTHER-1',
+  'published',
+  'https://example.invalid/server-integrity'
+);
+
+insert into public.questions (id, certification_id, current_version_id, created_at)
+values (
+  'server-q-mismatched-catalog',
+  (select id from public.certifications where code = 'JSTQB-FL'),
+  null,
+  now()
+);
+
+insert into public.question_versions (
+  id, question_id, version_no, syllabus_version_id, learning_objective_id,
+  status, selection_type, required_choice_count, prompt, explanation,
+  difficulty, source_reference, content_hash, published_at
+)
+values (
+  'server-q-mismatched-catalog-v1',
+  'server-q-mismatched-catalog',
+  1,
+  '71000000-0000-4000-8000-000000000001',
+  (select id from public.learning_objectives where code = 'TEST-FL-1-K1'),
+  'published', 'single', 1, '不整合検証用問題', '不整合検証用解説',
+  1, '試験用', encode(digest('server-q-mismatched-catalog', 'sha256'), 'hex'), now()
+);
+
+update public.questions
+set current_version_id = 'server-q-mismatched-catalog-v1'
+where id = 'server-q-mismatched-catalog';
+
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
 select set_config('request.jwt.claims', jsonb_build_object(
@@ -112,6 +154,132 @@ select set_config('request.jwt.claims', jsonb_build_object(
   'session_id', '20000000-0000-4000-8000-000000000001',
   'amr', jsonb_build_array(jsonb_build_object('method', 'password', 'timestamp', extract(epoch from now())::bigint))
 )::text, true);
+
+select throws_ok(
+  $$select prompt, explanation from public.question_versions limit 1$$,
+  '42501',
+  'permission denied for table question_versions',
+  'authenticatedは問題版の基底テーブルを直接SELECTできない'
+);
+
+select throws_ok(
+  $$select body, is_correct, explanation from public.choices limit 1$$,
+  '42501',
+  'permission denied for table choices',
+  'authenticatedは選択肢・正答・解説を直接SELECTできない'
+);
+
+select throws_ok(
+  $$select id, retired_at from public.questions limit 1$$,
+  '42501',
+  'permission denied for table questions',
+  'authenticatedは問題基底テーブルを直接SELECTできない'
+);
+
+select throws_ok(
+  $$select id, question_ids from public.learning_sessions limit 1$$,
+  '42501',
+  'permission denied for table learning_sessions',
+  'authenticatedはセッション基底テーブルを直接SELECTできない'
+);
+
+select throws_ok(
+  $$select id, is_correct from public.answer_attempts limit 1$$,
+  '42501',
+  'permission denied for table answer_attempts',
+  'authenticatedはattempt基底テーブルを直接SELECTできない'
+);
+
+select throws_ok(
+  $$select session_id, question_id from public.learning_session_items limit 1$$,
+  '42501',
+  'permission denied for table learning_session_items',
+  'authenticatedは固定項目基底テーブルを直接SELECTできない'
+);
+
+set local role anon;
+select set_config('request.jwt.claims', jsonb_build_object('role', 'anon')::text, true);
+
+select throws_ok(
+  $$select prompt, explanation from public.question_versions limit 1$$,
+  '42501',
+  'permission denied for table question_versions',
+  'anonは問題版の基底テーブルを直接SELECTできない'
+);
+
+select throws_ok(
+  $$select body, is_correct, explanation from public.choices limit 1$$,
+  '42501',
+  'permission denied for table choices',
+  'anonは選択肢・正答・解説を直接SELECTできない'
+);
+
+select throws_ok(
+  $$select id, retired_at from public.questions limit 1$$,
+  '42501',
+  'permission denied for table questions',
+  'anonは問題基底テーブルを直接SELECTできない'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', jsonb_build_object(
+  'sub', '10000000-0000-4000-8000-000000000001',
+  'role', 'authenticated',
+  'session_id', '20000000-0000-4000-8000-000000000001',
+  'amr', jsonb_build_array(jsonb_build_object('method', 'password', 'timestamp', extract(epoch from now())::bigint))
+)::text, true);
+
+reset role;
+update public.questions
+set retired_at = now()
+where id = 'server-q-1-1-1';
+set local role authenticated;
+
+select throws_ok(
+  $$
+    select * from public.ingest_learning_sync_events('[{
+      "eventId":"30000000-0000-4000-8000-000000000040",
+      "kind":"session.created",
+      "entityId":"40000000-0000-4000-8000-000000000040",
+      "occurredAt":"2026-08-12T00:00:00Z",
+      "payload":{
+        "sessionId":"40000000-0000-4000-8000-000000000040",
+        "mode":"random",
+        "title":"retired問題拒否試験",
+        "questionIds":["server-q-1-1-1"]
+      }
+    }]'::jsonb)
+  $$,
+  '22023',
+  'INVALID_EVENT: セッションの問題は同一certification・syllabusの未retiredなpublished版で指定してください。',
+  'retired済み問題をセッションへ追加できない'
+);
+
+reset role;
+update public.questions
+set retired_at = null
+where id = 'server-q-1-1-1';
+set local role authenticated;
+
+select throws_ok(
+  $$
+    select * from public.ingest_learning_sync_events('[{
+      "eventId":"30000000-0000-4000-8000-000000000041",
+      "kind":"session.created",
+      "entityId":"40000000-0000-4000-8000-000000000041",
+      "occurredAt":"2026-08-12T00:00:00Z",
+      "payload":{
+        "sessionId":"40000000-0000-4000-8000-000000000041",
+        "mode":"random",
+        "title":"certification・syllabus不整合試験",
+        "questionIds":["server-q-1-1-1","server-q-mismatched-catalog"]
+      }
+    }]'::jsonb)
+  $$,
+  '22023',
+  'INVALID_EVENT: セッションの問題は同一certification・syllabusの未retiredなpublished版で指定してください。',
+  '異なるcertification・syllabusの問題を同一セッションへ追加できない'
+);
 
 select lives_ok(
   $$
@@ -131,6 +299,7 @@ select lives_ok(
   '章・K配分を満たす模試を作成できる'
 );
 
+reset role;
 select is(
   (select extract(epoch from expires_at - started_at)::integer from public.learning_sessions where id = '40000000-0000-4000-8000-000000000001'),
   3600,
@@ -143,6 +312,7 @@ select is(
   '模試開始時に40件の問題版を固定する'
 );
 
+set local role authenticated;
 reset role;
 update public.learning_sessions
 set expires_at = now() - interval '1 second'
@@ -285,12 +455,14 @@ select lives_ok(
   '通常回答をサーバーで確定できる'
 );
 
+reset role;
 select is(
   (select is_correct from public.answer_attempts where id = '50000000-0000-4000-8000-000000000001'),
   false,
   'クライアント値を信用せず誤答へ再採点する'
 );
 
+set local role authenticated;
 select is(
   (select (payload ->> 'isCorrect')::boolean from public.sync_events where event_id = '30000000-0000-4000-8000-000000000005'),
   false,
@@ -349,12 +521,14 @@ select lives_ok(
   '移動先の問題を指定して進捗位置を更新できる'
 );
 
+reset role;
 select is(
   (select current_index from public.learning_sessions where id = '40000000-0000-4000-8000-000000000003'),
   0,
   'session.advancedは移動先問題のordinalを保存する'
 );
 
+set local role authenticated;
 select throws_ok(
   $$
     select * from public.ingest_learning_sync_events('[{
@@ -416,13 +590,19 @@ select throws_ok(
 );
 
 reset role;
-alter table public.question_versions disable trigger protect_published_question_versions;
-update public.question_versions
-set status = 'retired'
-where id = 'server-q-1-1-2-v1';
-alter table public.question_versions enable trigger protect_published_question_versions;
+select set_config('request.jwt.claims', jsonb_build_object('role', 'service_role')::text, true);
+select public.transition_question_version_status(
+  'server-q-1-1-2-v1', 'retired', 'サーバー完全性試験の正式なretire'
+);
 set local role authenticated;
+select set_config('request.jwt.claims', jsonb_build_object(
+  'sub', '10000000-0000-4000-8000-000000000001',
+  'role', 'authenticated',
+  'session_id', '20000000-0000-4000-8000-000000000001',
+  'amr', jsonb_build_array(jsonb_build_object('method', 'password', 'timestamp', extract(epoch from now())::bigint))
+)::text, true);
 
+reset role;
 select is(
   (select count(*)::integer from public.question_versions where id = 'server-q-1-1-2-v1'),
   1,
@@ -434,6 +614,8 @@ select is(
   2,
   '固定後にretiredになった問題版の選択肢をセッション所有者は読める'
 );
+
+set local role authenticated;
 
 select lives_ok(
   $$
@@ -472,12 +654,17 @@ select lives_ok(
 );
 
 reset role;
-alter table public.question_versions disable trigger protect_published_question_versions;
-update public.question_versions
-set status = 'suspended'
-where id = 'server-q-1-2-1-v1';
-alter table public.question_versions enable trigger protect_published_question_versions;
+select set_config('request.jwt.claims', jsonb_build_object('role', 'service_role')::text, true);
+select public.transition_question_version_status(
+  'server-q-1-2-1-v1', 'suspended', 'サーバー完全性試験の緊急suspend'
+);
 set local role authenticated;
+select set_config('request.jwt.claims', jsonb_build_object(
+  'sub', '10000000-0000-4000-8000-000000000001',
+  'role', 'authenticated',
+  'session_id', '20000000-0000-4000-8000-000000000001',
+  'amr', jsonb_build_array(jsonb_build_object('method', 'password', 'timestamp', extract(epoch from now())::bigint))
+)::text, true);
 
 select throws_ok(
   $$
@@ -627,12 +814,14 @@ select lives_ok(
   '直近パスワード認証後はアカウントを削除できる'
 );
 
+reset role;
 select is(
   (select count(*)::integer from auth.users where id = '10000000-0000-4000-8000-000000000002'),
   0,
   '削除RPCが対象本人だけを削除する'
 );
 
+set local role authenticated;
 select throws_ok(
   $$select * from public.ingest_learning_sync_events('{}'::jsonb)$$,
   '42501',

@@ -4,7 +4,6 @@ import { StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { Screen } from '@/components/screen';
 import { Button, Card, Chip } from '@/components/ui';
-import { getQuestion } from '@/content/questions';
 import { getSessionQuestion } from '@/domain/session-question';
 import type { ContentIssueCategory } from '@/domain/types';
 import { useLearningStore } from '@/state/learning-store';
@@ -22,7 +21,7 @@ export default function ReportQuestionScreen() {
   const router = useRouter();
   const { questionId, sessionId } = useLocalSearchParams<{ questionId: string; sessionId?: string }>();
   const session = useLearningStore((state) => state.sessions.find((item) => item.id === sessionId));
-  const question = session ? getSessionQuestion(session, questionId) : getQuestion(questionId);
+  const question = session ? getSessionQuestion(session, questionId) : undefined;
   const reportIssue = useLearningStore((state) => state.reportIssue);
   const [category, setCategory] = useState<ContentIssueCategory>('incorrect_answer');
   const [description, setDescription] = useState('');
@@ -32,7 +31,7 @@ export default function ReportQuestionScreen() {
 
   if (!question) {
     return (
-      <Screen title="問題を確認できません" description="問題データが更新された可能性があります。">
+      <Screen title="問題を確認できません" description="問題報告には、問題を開いた学習セッションが必要です。">
         <Button label="戻る" onPress={() => router.back()} />
       </Screen>
     );

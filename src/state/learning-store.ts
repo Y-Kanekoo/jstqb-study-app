@@ -2,7 +2,7 @@ import { randomUUID } from 'expo-crypto';
 import { create } from 'zustand';
 
 import { examConfig } from '@/config/exam';
-import { parseLearningSnapshot, preparePortableRestore } from '@/domain/backup';
+import { parseLearningSnapshot, preparePortableRestore, sanitizeLearningSnapshot } from '@/domain/backup';
 import { advanceSession, updateQuestionState } from '@/domain/learning';
 import { createQuestionSnapshots, getSessionQuestion } from '@/domain/session-question';
 import { fetchLearningEventsAfter, ingestLearningEvents } from '@/services/learning-sync-api';
@@ -73,7 +73,7 @@ interface LearningStore extends LearningSnapshot {
 }
 
 function extractSnapshot(store: LearningStore): LearningSnapshot {
-  return {
+  return sanitizeLearningSnapshot({
     schemaVersion: 2,
     sessions: store.sessions,
     drafts: store.drafts,
@@ -87,7 +87,7 @@ function extractSnapshot(store: LearningStore): LearningSnapshot {
     dailyGoal: store.dailyGoal,
     conflicts: store.conflicts,
     syncMode: store.syncMode,
-  };
+  });
 }
 
 function pendingOutboxCount(snapshot: LearningSnapshot): number {

@@ -87,7 +87,7 @@ export default function PracticeScreen() {
           <Text style={styles.resultTitle}>{correctCount} / {denominator}問 正解</Text>
           <Text style={styles.resultCopy}>
             {session.mode === 'exam'
-              ? `${examConfig.passScore}点以上で合格です。未回答は${Math.max(0, denominator - sessionAttempts.length)}問でした。正誤と解説は「解答を見直す」から確認できます。`
+              ? `${examConfig.passScore}点以上で合格です。未回答は${Math.max(0, denominator - sessionAttempts.length)}問でした。正誤は「解答を見直す」から確認できます。`
               : '間違えた問題は「誤答」へ追加されました。別セッションで2回続けて正解すると克服になります。'}
           </Text>
         </Card>
@@ -292,8 +292,7 @@ export default function PracticeScreen() {
       {attempt ? (
         <Card style={[styles.feedbackCard, attempt.isCorrect ? styles.feedbackCorrect : styles.feedbackWrong]}>
           <Text style={[styles.feedbackResult, attempt.isCorrect ? styles.correctText : styles.wrongText]}>{attempt.isCorrect ? '正解です' : 'もう一度、整理しましょう'}</Text>
-          <Text style={styles.feedbackExplanation}>{question.explanation}</Text>
-          <View style={styles.sourceLine} /><Text style={styles.source}>{question.sourceReference} · 独自作成問題</Text>
+          <Text style={styles.feedbackNotice}>正誤はサーバーで確定しています。</Text>
           <Button
             label={isExamReview && isLastQuestion ? '結果へ戻る' : isLastQuestion ? '結果を見る' : '次の問題へ'}
             loading={saving}
@@ -307,7 +306,6 @@ export default function PracticeScreen() {
       ) : isExamReview ? (
         <Card style={[styles.feedbackCard, styles.feedbackWrong]}>
           <Text style={[styles.feedbackResult, styles.wrongText]}>未回答でした</Text>
-          <Text style={styles.feedbackExplanation}>{question.explanation}</Text>
           <Button
             label={isLastQuestion ? '結果へ戻る' : '次の問題へ'}
             onPress={() => isLastQuestion ? setReviewExamResults(false) : void navigateExam(session.currentIndex + 1)}
@@ -403,7 +401,6 @@ const styles = StyleSheet.create({
   choiceLabelTextSelected: { color: colors.surface },
   choiceCopy: { flex: 1, gap: 5 },
   choiceBody: { color: colors.ink, fontFamily: fonts.bodyMedium, fontSize: 14, lineHeight: 23 },
-  choiceExplanation: { color: colors.inkMuted, fontFamily: fonts.body, fontSize: 11, lineHeight: 18 },
   questionActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 },
   questionActionButton: { minHeight: 40, paddingVertical: 8, paddingHorizontal: 13 },
   versionLabel: { color: colors.inkMuted, fontFamily: fonts.body, fontSize: 10 },
@@ -421,9 +418,7 @@ const styles = StyleSheet.create({
   feedbackResult: { fontFamily: fonts.display, fontSize: 20 },
   correctText: { color: colors.success },
   wrongText: { color: colors.warning },
-  feedbackExplanation: { color: colors.ink, fontFamily: fonts.body, fontSize: 14, lineHeight: 25 },
-  sourceLine: { height: 1, backgroundColor: colors.border, opacity: 0.65 },
-  source: { color: colors.inkMuted, fontFamily: fonts.body, fontSize: 10 },
+  feedbackNotice: { color: colors.inkMuted, fontFamily: fonts.body, fontSize: 12, lineHeight: 20 },
   examNavigation: { flexDirection: 'row', gap: 10 },
   examNavigationButton: { flex: 1 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(23, 50, 77, 0.55)', justifyContent: 'center', padding: 18 },

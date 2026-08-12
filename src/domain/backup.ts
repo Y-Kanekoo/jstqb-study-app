@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import type { LearningSnapshot } from './types';
+import { clonePreAnswerQuestionSnapshot } from './pre-answer-snapshot';
+import type { LearningSession, LearningSnapshot, PreAnswerQuestionSnapshot } from './types';
 
 const payloadValueSchema = z.union([
   z.string(),
@@ -24,7 +25,6 @@ const questionSnapshotSchema = z.object({
   objectiveCode: z.string(),
   kLevel: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
   prompt: z.string(),
-  explanation: z.string(),
   difficulty: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   sourceReference: z.string(),
   selectionType: z.enum(['single', 'multiple']).optional(),
@@ -148,7 +148,7 @@ const conflictNoteSchema = z.object({
 const conflictSchema = z.discriminatedUnion('kind', [conflictDraftSchema, conflictNoteSchema]);
 
 const snapshotSchema = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2)]),
+  schemaVersion: z.literal(2),
   sessions: z.array(sessionSchema),
   drafts: z.record(z.string(), draftSchema),
   attempts: z.array(attemptSchema),
@@ -163,11 +163,69 @@ const snapshotSchema = z.object({
   syncMode: z.enum(['active', 'portable-local']).optional(),
 }).strict();
 
+// schemaVersion 1には回答前snapshotへ解説・正答属性が混在したデータがあるため、
+// migrationでは受け付けるが、下記のwhitelistだけを残して破棄する。
+const legacyChoiceSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  body: z.string(),
+}).passthrough();
+
+const legacyQuestionSnapshotSchema = z.object({
+  id: z.string(),
+  versionId: z.string(),
+  chapterNumber: z.number().int(),
+  chapterTitle: z.string(),
+  objectiveCode: z.string(),
+  kLevel: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+  prompt: z.string(),
+  difficulty: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  sourceReference: z.string(),
+  selectionType: z.enum(['single', 'multiple']).optional(),
+  requiredChoiceCount: z.number().int().positive().optional(),
+  choices: z.array(legacyChoiceSchema),
+}).passthrough();
+
+const legacySessionSchema = z.object({
+  id: z.string().min(1),
+  mode: z.enum(['chapter', 'random', 'wrong', 'review', 'exam']),
+  title: z.string(),
+  questionIds: z.array(z.string()),
+  questionVersionIds: z.array(z.string()).optional(),
+  questionSnapshots: z.array(legacyQuestionSnapshotSchema).optional(),
+  currentIndex: z.number().int().nonnegative(),
+  answeredQuestionIds: z.array(z.string()),
+  status: z.enum(['active', 'submitting', 'completed']),
+  reviewQuestionIds: z.array(z.string()).default([]),
+  durationMinutes: z.number().positive().nullable().default(null),
+  expiresAt: z.string().nullable().default(null),
+  startedAt: z.string().nullable().default(null),
+  submittedAt: z.string().nullable().default(null),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).passthrough();
+
+const legacySnapshotSchema = z.object({
+  schemaVersion: z.literal(1),
+  sessions: z.array(legacySessionSchema),
+  drafts: z.record(z.string(), draftSchema),
+  attempts: z.array(attemptSchema),
+  questionStates: z.record(z.string(), questionStateSchema),
+  bookmarks: z.array(z.string()),
+  notes: z.record(z.string(), noteSchema).default({}),
+  issues: z.array(issueSchema).default([]),
+  outbox: z.array(outboxEventSchema),
+  syncCursor: z.number().int().nonnegative().default(0),
+  dailyGoal: z.number().int().min(1).max(100).default(10),
+  conflicts: z.array(conflictSchema).optional(),
+  syncMode: z.enum(['active', 'portable-local']).optional(),
+}).passthrough();
+
 const backupEnvelopeSchema = z.object({
   format: z.literal('jstqb-learning-backup'),
   formatVersion: z.literal(1),
   exportedAt: z.string(),
-  snapshot: snapshotSchema,
+  snapshot: z.unknown(),
 }).strict();
 
 export interface LearningBackup {
@@ -175,6 +233,49 @@ export interface LearningBackup {
   formatVersion: 1;
   exportedAt: string;
   snapshot: LearningSnapshot;
+}
+
+function cloneSession(session: LearningSession): LearningSession {
+  const cloned: LearningSession = {
+    id: session.id,
+    mode: session.mode,
+    title: session.title,
+    questionIds: [...session.questionIds],
+    currentIndex: session.currentIndex,
+    answeredQuestionIds: [...session.answeredQuestionIds],
+    status: session.status,
+    reviewQuestionIds: [...(session.reviewQuestionIds ?? [])],
+    durationMinutes: session.durationMinutes ?? null,
+    expiresAt: session.expiresAt ?? null,
+    startedAt: session.startedAt ?? null,
+    submittedAt: session.submittedAt ?? null,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+  };
+  if (session.questionVersionIds !== undefined) cloned.questionVersionIds = [...session.questionVersionIds];
+  if (session.questionSnapshots !== undefined) {
+    cloned.questionSnapshots = session.questionSnapshots.map(clonePreAnswerQuestionSnapshot);
+  }
+  return cloned;
+}
+
+export function sanitizeLearningSnapshot(snapshot: LearningSnapshot): LearningSnapshot {
+  const sanitized: LearningSnapshot = {
+    schemaVersion: 2,
+    sessions: snapshot.sessions.map(cloneSession),
+    drafts: snapshot.drafts,
+    attempts: snapshot.attempts,
+    questionStates: snapshot.questionStates,
+    bookmarks: [...snapshot.bookmarks],
+    notes: snapshot.notes,
+    issues: snapshot.issues,
+    outbox: snapshot.outbox,
+    syncCursor: snapshot.syncCursor,
+    dailyGoal: snapshot.dailyGoal,
+  };
+  if (snapshot.conflicts !== undefined) sanitized.conflicts = snapshot.conflicts;
+  if (snapshot.syncMode !== undefined) sanitized.syncMode = snapshot.syncMode;
+  return sanitized;
 }
 
 function normalizeSnapshot(value: z.output<typeof snapshotSchema>): LearningSnapshot {
@@ -193,7 +294,74 @@ function normalizeSnapshot(value: z.output<typeof snapshotSchema>): LearningSnap
   };
   if (value.conflicts !== undefined) normalized.conflicts = value.conflicts;
   if (value.syncMode !== undefined) normalized.syncMode = value.syncMode;
-  return normalized;
+  return sanitizeLearningSnapshot(normalized);
+}
+
+function migrateLegacyQuestionSnapshot(
+  question: z.output<typeof legacyQuestionSnapshotSchema>,
+): PreAnswerQuestionSnapshot {
+  const migrated: PreAnswerQuestionSnapshot = {
+    id: question.id,
+    versionId: question.versionId,
+    chapterNumber: question.chapterNumber,
+    chapterTitle: question.chapterTitle,
+    objectiveCode: question.objectiveCode,
+    prompt: question.prompt,
+    difficulty: question.difficulty,
+    sourceReference: question.sourceReference,
+    choices: question.choices.map((choice) => ({
+      id: choice.id,
+      label: choice.label,
+      body: choice.body,
+    })),
+  };
+  if (question.kLevel !== undefined) migrated.kLevel = question.kLevel;
+  if (question.selectionType !== undefined) migrated.selectionType = question.selectionType;
+  if (question.requiredChoiceCount !== undefined) migrated.requiredChoiceCount = question.requiredChoiceCount;
+  return migrated;
+}
+
+function migrateLegacySession(session: z.output<typeof legacySessionSchema>): LearningSession {
+  const migrated: LearningSession = {
+    id: session.id,
+    mode: session.mode,
+    title: session.title,
+    questionIds: [...session.questionIds],
+    currentIndex: session.currentIndex,
+    answeredQuestionIds: [...session.answeredQuestionIds],
+    status: session.status,
+    reviewQuestionIds: [...session.reviewQuestionIds],
+    durationMinutes: session.durationMinutes,
+    expiresAt: session.expiresAt,
+    startedAt: session.startedAt,
+    submittedAt: session.submittedAt,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+  };
+  if (session.questionVersionIds !== undefined) migrated.questionVersionIds = [...session.questionVersionIds];
+  if (session.questionSnapshots !== undefined) {
+    migrated.questionSnapshots = session.questionSnapshots.map(migrateLegacyQuestionSnapshot);
+  }
+  return migrated;
+}
+
+function migrateLegacySnapshot(value: z.output<typeof legacySnapshotSchema>): LearningSnapshot {
+  const migrated: LearningSnapshot = {
+    schemaVersion: 2,
+    sessions: value.sessions.map(migrateLegacySession),
+    drafts: value.drafts,
+    attempts: value.attempts,
+    questionStates: value.questionStates,
+    bookmarks: value.bookmarks,
+    notes: value.notes,
+    issues: value.issues,
+    outbox: value.outbox,
+    syncCursor: value.syncCursor,
+    dailyGoal: value.dailyGoal,
+  };
+  if (value.conflicts !== undefined) migrated.conflicts = value.conflicts;
+  if (value.syncMode !== undefined) migrated.syncMode = value.syncMode;
+  return sanitizeLearningSnapshot(migrated);
 }
 
 function hasValidSessionSnapshot(snapshot: LearningSnapshot): boolean {
@@ -209,16 +377,22 @@ function hasValidSessionSnapshot(snapshot: LearningSnapshot): boolean {
   });
 }
 
-function isLearningSnapshot(value: z.output<typeof snapshotSchema>): boolean {
-  const snapshot = normalizeSnapshot(value);
+function isLearningSnapshot(snapshot: LearningSnapshot): boolean {
   return hasValidSessionSnapshot(snapshot)
     && new Set(snapshot.outbox.map((event) => event.id)).size === snapshot.outbox.length
     && new Set(snapshot.attempts.map((attempt) => attempt.id)).size === snapshot.attempts.length;
 }
 
 export function parseLearningSnapshot(value: unknown): LearningSnapshot | null {
-  const result = snapshotSchema.safeParse(value);
-  return result.success && isLearningSnapshot(result.data) ? normalizeSnapshot(result.data) : null;
+  const currentResult = snapshotSchema.safeParse(value);
+  if (currentResult.success) {
+    const snapshot = normalizeSnapshot(currentResult.data);
+    return isLearningSnapshot(snapshot) ? snapshot : null;
+  }
+  const legacyResult = legacySnapshotSchema.safeParse(value);
+  if (!legacyResult.success) return null;
+  const snapshot = migrateLegacySnapshot(legacyResult.data);
+  return isLearningSnapshot(snapshot) ? snapshot : null;
 }
 
 export function createLearningBackup(snapshot: LearningSnapshot, exportedAt = new Date().toISOString()): LearningBackup {
@@ -226,7 +400,7 @@ export function createLearningBackup(snapshot: LearningSnapshot, exportedAt = ne
     format: 'jstqb-learning-backup',
     formatVersion: 1,
     exportedAt,
-    snapshot,
+    snapshot: sanitizeLearningSnapshot(snapshot),
   };
 }
 
@@ -261,7 +435,7 @@ export function parseLearningBackup(text: string): LearningBackup | null {
  */
 export function preparePortableRestore(snapshot: LearningSnapshot): LearningSnapshot {
   return {
-    ...snapshot,
+    ...sanitizeLearningSnapshot(snapshot),
     outbox: [],
     syncCursor: 0,
     conflicts: [],

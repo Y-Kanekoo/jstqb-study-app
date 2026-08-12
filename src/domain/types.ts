@@ -38,9 +38,23 @@ export interface SessionChoice {
   body: string;
 }
 
-export interface SessionQuestionSnapshot extends Omit<Question, 'choices'> {
+export interface PreAnswerQuestionSnapshot {
+  id: string;
+  versionId: string;
+  chapterNumber: number;
+  chapterTitle: string;
+  objectiveCode: string;
+  kLevel?: 1 | 2 | 3 | undefined;
+  prompt: string;
+  difficulty: QuestionDifficulty;
+  sourceReference: string;
+  selectionType?: 'single' | 'multiple' | undefined;
+  requiredChoiceCount?: number | undefined;
   choices: SessionChoice[];
 }
+
+/** 回答前snapshotの旧名称。回答・正答情報はこの型に含めない。 */
+export type SessionQuestionSnapshot = PreAnswerQuestionSnapshot;
 
 export interface LearningSession {
   id: string;
@@ -48,7 +62,7 @@ export interface LearningSession {
   title: string;
   questionIds: string[];
   questionVersionIds?: string[] | undefined;
-  questionSnapshots?: SessionQuestionSnapshot[] | undefined;
+  questionSnapshots?: PreAnswerQuestionSnapshot[] | undefined;
   currentIndex: number;
   answeredQuestionIds: string[];
   status: SessionStatus;

@@ -1,112 +1,135 @@
 import { useEffect } from 'react';
 
-import type { OutboxEvent, RemoteSyncEvent } from '@/domain/types';
 import { useAuthStore } from '@/state/auth-store';
 import { useLearningStore } from '@/state/learning-store';
 
+import {
+  fetchLearningEventsAfter,
+  ingestLearningEvents,
+  isCanonicalEventForRequest,
+  LearningSyncError,
+} from './learning-sync-api';
+import { validateRemoteEventBatch } from './learning-sync-contract';
 import { supabase } from './supabase';
-
-const syncKinds: ReadonlySet<string> = new Set([
-  'session.created',
-  'draft.saved',
-  'answer.submitted',
-  'session.advanced',
-  'bookmark.changed',
-]);
-
-function isPayload(value: unknown): value is OutboxEvent['payload'] {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  return Object.values(value).every((item) => typeof item === 'string'
-    || typeof item === 'number'
-    || typeof item === 'boolean'
-    || (Array.isArray(item) && item.every((entry) => typeof entry === 'string')));
-}
-
-function parseRemoteEvent(value: unknown): RemoteSyncEvent | null {
-  if (typeof value !== 'object' || value === null) return null;
-  if (!('sequence' in value) || typeof value.sequence !== 'number'
-    || !('event_id' in value) || typeof value.event_id !== 'string'
-    || !('kind' in value) || typeof value.kind !== 'string' || !syncKinds.has(value.kind)
-    || !('entity_id' in value) || typeof value.entity_id !== 'string'
-    || !('occurred_at' in value) || typeof value.occurred_at !== 'string'
-    || !('payload' in value) || !isPayload(value.payload)) return null;
-
-  return {
-    sequence: value.sequence,
-    id: value.event_id,
-    kind: value.kind as OutboxEvent['kind'],
-    entityId: value.entity_id,
-    occurredAt: value.occurred_at,
-    payload: value.payload,
-  };
-}
 
 let syncPromise: Promise<void> | null = null;
 
-async function runSync(userId: string): Promise<void> {
-  if (!supabase) return;
-  const store = useLearningStore.getState();
-  const pending = store.outbox;
+function isCurrentOwner(userId: string): boolean {
+  const state = useLearningStore.getState();
+  return state.hydrated && state.storageOwnerId === userId;
+}
 
-  if (pending.length > 0) {
-    const rows = pending.map((event) => ({
-      event_id: event.id,
-      user_id: userId,
-      kind: event.kind,
-      entity_id: event.entityId,
-      occurred_at: event.occurredAt,
-      payload: event.payload,
-    }));
-    const { error } = await supabase.from('sync_events').upsert(rows, { onConflict: 'event_id', ignoreDuplicates: true });
-    if (error) throw new Error('学習履歴の送信に失敗しました。', { cause: error });
-    await useLearningStore.getState().markOutboxSynced(pending.map((event) => event.id));
+export async function pushOutbox(userId: string): Promise<void> {
+  while (isCurrentOwner(userId)) {
+    const pending = useLearningStore.getState().outbox
+      .filter((event) => !event.blocked && !event.resolved)
+      .slice(0, 100);
+    if (pending.length === 0) return;
+
+    for (const event of pending) {
+      try {
+        const canonicalEvents = await ingestLearningEvents([event]);
+        if (!isCurrentOwner(userId)) return;
+        const canonicalEvent = canonicalEvents[0];
+        if (!canonicalEvent || !isCanonicalEventForRequest(canonicalEvent, event)) {
+          throw new LearningSyncError('INVALID_EVENT', '同期サーバーの回答が要求イベントと一致しません。');
+        }
+        const violation = validateRemoteEventBatch(canonicalEvents);
+        if (violation) throw new LearningSyncError(violation.code, violation.message);
+        await useLearningStore.getState().applyRemoteEvents(canonicalEvents, 'ack');
+        if (!isCurrentOwner(userId)) return;
+        await useLearningStore.getState().markOutboxSynced([event.id]);
+      } catch (error: unknown) {
+        if (error instanceof LearningSyncError
+          && ['INVALID_EVENT', 'LEGACY_EVENT', 'IDEMPOTENCY_KEY_REUSED', 'REVISION_CONFLICT', 'SESSION_FROZEN'].includes(error.syncCode)) {
+          await useLearningStore.getState().blockOutboxEvent(event.id, error.message);
+          continue;
+        }
+        throw error;
+      }
+    }
   }
+}
 
+export async function pullRemoteEvents(userId: string): Promise<void> {
+  if (!supabase) return;
+  if (useLearningStore.getState().syncMode !== 'active') return;
   let cursor = useLearningStore.getState().syncCursor;
   let hasMore = true;
-  while (hasMore) {
-    const { data, error } = await supabase
-      .from('sync_events')
-      .select('sequence,event_id,kind,entity_id,occurred_at,payload')
-      .eq('user_id', userId)
-      .gt('sequence', cursor)
-      .order('sequence', { ascending: true })
-      .limit(500);
-    if (error) throw new Error('学習履歴の受信に失敗しました。', { cause: error });
-    const rawRows: unknown = data;
-    const events = Array.isArray(rawRows)
-      ? rawRows.map(parseRemoteEvent).filter((event): event is RemoteSyncEvent => event !== null)
-      : [];
+  while (hasMore && isCurrentOwner(userId)) {
+    const events = await fetchLearningEventsAfter(userId, cursor);
     if (events.length > 0) {
-      await useLearningStore.getState().applyRemoteEvents(events);
+      if (!isCurrentOwner(userId)) return;
+      const violation = validateRemoteEventBatch(events);
+      if (violation) throw new LearningSyncError(violation.code, violation.message);
+      await useLearningStore.getState().applyRemoteEvents(events, 'pull');
       cursor = events.at(-1)?.sequence ?? cursor;
     }
     hasMore = events.length === 500;
   }
 }
 
+function syncErrorState(error: unknown): { status: 'auth-required' | 'conflict' | 'error'; message: string } {
+  if (error instanceof LearningSyncError) {
+    if (error.syncCode === 'AUTH_REQUIRED') {
+      return { status: 'auth-required', message: '認証の有効期限が切れました。再度ログインしてください。' };
+    }
+    if (error.syncCode === 'REVISION_CONFLICT') {
+      return { status: 'conflict', message: '別の端末で途中回答またはメモが更新されています。同期の復旧操作が必要です。' };
+    }
+    if (error.syncCode === 'SESSION_FROZEN') {
+      return { status: 'conflict', message: '模試の制限時間がサーバー上で終了しました。保存済み回答を提出してください。' };
+    }
+    if (error.syncCode === 'INVALID_EVENT' || error.syncCode === 'LEGACY_EVENT' || error.syncCode === 'IDEMPOTENCY_KEY_REUSED') {
+      return { status: 'error', message: `${error.message} 未同期データを保持しています。` };
+    }
+  }
+  return { status: 'error', message: '同期できませんでした。端末への保存は維持し、通信回復後に再試行します。' };
+}
+
+async function runSync(userId: string): Promise<void> {
+  if (!supabase || !isCurrentOwner(userId)) return;
+  useLearningStore.getState().setSyncState('syncing');
+  try {
+    await pushOutbox(userId);
+    await pullRemoteEvents(userId);
+    if (isCurrentOwner(userId)) {
+      const state = useLearningStore.getState();
+      const hasBlocked = state.outbox.some((event) => event.blocked && !event.resolved);
+      const hasPending = state.outbox.some((event) => !event.blocked && !event.resolved);
+      useLearningStore.getState().setSyncState(
+        hasBlocked || (state.conflicts?.length ?? 0) > 0 ? 'conflict' : hasPending ? 'queued' : 'synced',
+      );
+    }
+  } catch (error: unknown) {
+    if (isCurrentOwner(userId)) {
+      const syncError = syncErrorState(error);
+      useLearningStore.getState().setSyncState(syncError.status, syncError.message);
+    }
+  }
+}
+
 function scheduleSync(userId: string): void {
   if (syncPromise) return;
-  syncPromise = runSync(userId)
-    .catch(() => {
-      // 同期失敗時もローカル学習を継続し、次回の自動同期で再試行します。
-    })
-    .finally(() => { syncPromise = null; });
+  syncPromise = runSync(userId).finally(() => { syncPromise = null; });
 }
 
 export function LearningSyncCoordinator() {
   const userId = useAuthStore((state) => state.session?.user.id);
   const outboxCount = useLearningStore((state) => state.outbox.length);
+  const storageOwnerId = useLearningStore((state) => state.storageOwnerId);
+  const hydrated = useLearningStore((state) => state.hydrated);
+  const syncMode = useLearningStore((state) => state.syncMode);
 
   useEffect(() => {
-    if (!userId) return undefined;
+    if (!userId || !hydrated || storageOwnerId !== userId || syncMode !== 'active') return undefined;
     const firstSync = setTimeout(() => scheduleSync(userId), outboxCount > 0 ? 800 : 0);
     const periodicSync = setInterval(() => scheduleSync(userId), 30_000);
     return () => {
       clearTimeout(firstSync);
       clearInterval(periodicSync);
     };
-  }, [outboxCount, userId]);
+  }, [hydrated, outboxCount, storageOwnerId, syncMode, userId]);
 
   return null;
 }

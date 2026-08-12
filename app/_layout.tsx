@@ -1,4 +1,5 @@
 import { Stack } from 'expo-router';
+import * as Linking from 'expo-linking';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
@@ -8,18 +9,40 @@ import { useLearningStore } from '@/state/learning-store';
 import { useAuthStore } from '@/state/auth-store';
 import { colors, fonts } from '@/theme/tokens';
 import { LearningSyncCoordinator } from '@/services/learning-sync';
+import { handleAuthCallback } from '@/services/supabase';
 import { useAppFonts } from '@/hooks/use-app-fonts';
 
 export default function RootLayout() {
   const initialize = useLearningStore((state) => state.initialize);
   const initializeAuth = useAuthStore((state) => state.initialize);
   const hydrated = useLearningStore((state) => state.hydrated);
+  const storageOwnerId = useLearningStore((state) => state.storageOwnerId);
+  const authInitialized = useAuthStore((state) => state.initialized);
+  const userId = useAuthStore((state) => state.session?.user.id ?? null);
   const [fontsLoaded, fontError] = useAppFonts();
 
   useEffect(() => {
-    void initialize();
     void initializeAuth();
-  }, [initialize, initializeAuth]);
+  }, [initializeAuth]);
+
+  useEffect(() => {
+    if (authInitialized) {
+      void initialize(userId);
+    }
+  }, [authInitialized, initialize, userId]);
+
+  useEffect(() => {
+    const processUrl = (url: string | null) => {
+      if (url) {
+        void handleAuthCallback(url).catch(() => {
+          // 再設定画面でリンクの再実行手順を案内します。
+        });
+      }
+    };
+    void Linking.getInitialURL().then(processUrl);
+    const subscription = Linking.addEventListener('url', ({ url }) => processUrl(url));
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     if (Platform.OS === 'web' && process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
@@ -31,7 +54,7 @@ export default function RootLayout() {
   if (fontError) {
     return <View style={styles.center}><Text style={styles.error}>フォントを読み込めませんでした。</Text></View>;
   }
-  if (!fontsLoaded || !hydrated) {
+  if (!fontsLoaded || !authInitialized || !hydrated || storageOwnerId !== userId) {
     return <View style={styles.center}><ActivityIndicator color={colors.brand} size="large" /></View>;
   }
 
@@ -42,7 +65,11 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.paper } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="practice/[sessionId]" />
+        <Stack.Screen name="report/[questionId]" options={{ presentation: 'modal' }} />
         <Stack.Screen name="sign-in" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="reset-password" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="account" />
+        <Stack.Screen name="data-management" />
       </Stack>
     </SafeAreaProvider>
   );

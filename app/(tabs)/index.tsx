@@ -23,8 +23,9 @@ export default function HomeScreen() {
   const dailyGoal = useLearningStore((state) => state.dailyGoal);
   const startSession = useLearningStore((state) => state.startSession);
   const activeSessions = sessions.filter((session) => session.status === 'active').slice(0, 3);
-  const todayCount = attempts.filter((attempt) => isToday(attempt.answeredAt)).length;
-  const answeredTotal = new Set(attempts.map((attempt) => attempt.questionId)).size;
+  const validAttempts = attempts.filter((attempt) => !attempt.invalidated);
+  const todayCount = validAttempts.filter((attempt) => isToday(attempt.answeredAt)).length;
+  const answeredTotal = new Set(validAttempts.map((attempt) => attempt.questionId)).size;
   const columns = width >= 760;
 
   const openSession = (sessionId: string) => {

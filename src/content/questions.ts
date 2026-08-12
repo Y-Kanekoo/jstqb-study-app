@@ -15,6 +15,14 @@ interface QuestionSeed {
 
 const labels = ['A', 'B', 'C', 'D'] as const;
 
+// full Questionを使えるのは、公開問題DBへ移行する前の固定サンプルだけに限定する。
+// 新しい問題IDはこの経路から取得できず、公開問題版のsnapshotがない限り表示されない。
+const localSampleQuestionIds: ReadonlySet<string> = new Set([
+  'fl-001', 'fl-002', 'fl-003', 'fl-004', 'fl-005', 'fl-006',
+  'fl-007', 'fl-008', 'fl-009', 'fl-010', 'fl-011', 'fl-012',
+  'fl-013', 'fl-014', 'fl-015', 'fl-016', 'fl-017', 'fl-018',
+]);
+
 function createQuestion(seed: QuestionSeed): Question {
   const sourceBodies = [seed.correct, ...seed.distractors];
   const offset = Number.parseInt(seed.id.slice(-3), 10) % sourceBodies.length;
@@ -37,6 +45,8 @@ function createQuestion(seed: QuestionSeed): Question {
     explanation: seed.explanation,
     difficulty: seed.difficulty,
     sourceReference: seed.sourceReference,
+    selectionType: 'single',
+    requiredChoiceCount: 1,
     choices,
   };
 }
@@ -191,6 +201,7 @@ const seeds: QuestionSeed[] = [
 export const questions = seeds.map(createQuestion);
 
 export function getQuestion(questionId: string): Question | undefined {
+  if (!localSampleQuestionIds.has(questionId)) return undefined;
   return questions.find((question) => question.id === questionId);
 }
 

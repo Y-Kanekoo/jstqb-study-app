@@ -47,6 +47,15 @@ export default function SettingsScreen() {
         <View style={styles.chips}>{goalOptions.map((goal) => <Chip key={goal} label={`${goal}問`} selected={dailyGoal === goal} onPress={() => void setDailyGoal(goal)} />)}</View>
       </Card>
 
+      <Card style={styles.dataCard}>
+        <Text style={styles.cardTitle}>データとアカウント</Text>
+        <Text style={styles.cardDescription}>JSONバックアップ、回答履歴CSV、復元、アカウント削除を管理します。</Text>
+        <View style={styles.dataActions}>
+          <Button label="データ管理" variant="secondary" style={styles.dataAction} onPress={() => router.push('/data-management')} />
+          <Button label="アカウント管理" variant="quiet" style={styles.dataAction} onPress={() => router.push('/account')} />
+        </View>
+      </Card>
+
       <Card style={styles.infoCard}>
         <Text style={styles.cardTitle}>コンテンツについて</Text>
         <Text style={styles.cardDescription}>JSTQB公式問題の転載ではありません。シラバスを基に作成し、正答根拠・表現・類似性をレビューした独自問題だけを公開します。</Text>
@@ -73,6 +82,9 @@ const styles = StyleSheet.create({
   errorBox: { backgroundColor: colors.dangerSoft, borderRadius: 10, padding: 12 },
   errorText: { color: colors.danger, fontFamily: fonts.body, fontSize: 12 },
   goalCard: { gap: 12 },
+  dataCard: { gap: 12 },
+  dataActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  dataAction: { flex: 1, minWidth: 180 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
   infoCard: { gap: 12, shadowOpacity: 0 },
   divider: { height: 1, backgroundColor: colors.borderSoft },

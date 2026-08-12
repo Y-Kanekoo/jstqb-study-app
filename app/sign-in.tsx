@@ -9,27 +9,36 @@ import { colors, fonts, radii } from '@/theme/tokens';
 
 export default function SignInScreen() {
   const router = useRouter();
-  const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [mode, setMode] = useState<'sign-in' | 'sign-up' | 'reset'>('sign-in');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
+  const [resetSent, setResetSent] = useState(false);
   const loading = useAuthStore((state) => state.loading);
   const error = useAuthStore((state) => state.error);
   const signIn = useAuthStore((state) => state.signIn);
   const signUp = useAuthStore((state) => state.signUp);
+  const requestPasswordReset = useAuthStore((state) => state.requestPasswordReset);
 
   const submit = async () => {
-    if (!email.includes('@') || password.length < 8) {
-      setLocalError('メールアドレスと8文字以上のパスワードを入力してください。');
+    if (!email.includes('@') || (mode !== 'reset' && password.length < 8)) {
+      setLocalError(mode === 'reset' ? 'メールアドレスを入力してください。' : 'メールアドレスと8文字以上のパスワードを入力してください。');
       return;
     }
     setLocalError(null);
     try {
+      if (mode === 'reset') {
+        await requestPasswordReset(email.trim());
+        setResetSent(true);
+        return;
+      }
       if (mode === 'sign-in') await signIn(email.trim(), password);
       else await signUp(email.trim(), password);
       router.back();
     } catch {
-      setLocalError(mode === 'sign-in' ? 'ログインできませんでした。入力内容をご確認ください。' : 'アカウントを作成できませんでした。');
+      setLocalError(mode === 'sign-in'
+        ? 'ログインできませんでした。入力内容をご確認ください。'
+        : mode === 'sign-up' ? 'アカウントを作成できませんでした。' : '再設定メールを送信できませんでした。');
     }
   };
 
@@ -45,6 +54,7 @@ export default function SignInScreen() {
             <Chip label="ログイン" selected={mode === 'sign-in'} onPress={() => setMode('sign-in')} />
             <Chip label="新規登録" selected={mode === 'sign-up'} onPress={() => setMode('sign-up')} />
           </View>
+          {resetSent && <Text accessibilityRole="alert" style={styles.success}>再設定メールを送信しました。メール内のリンクから新しいパスワードを設定してください。</Text>}
           <View style={styles.field}>
             <Text style={styles.label}>メールアドレス</Text>
             <TextInput
@@ -59,7 +69,7 @@ export default function SignInScreen() {
               value={email}
             />
           </View>
-          <View style={styles.field}>
+          {mode !== 'reset' && <View style={styles.field}>
             <Text style={styles.label}>パスワード</Text>
             <TextInput
               accessibilityLabel="パスワード"
@@ -72,9 +82,15 @@ export default function SignInScreen() {
               style={styles.input}
               value={password}
             />
-          </View>
+          </View>}
           {(localError || error) && <Text accessibilityRole="alert" style={styles.error}>{localError ?? '認証処理に失敗しました。'}</Text>}
-          <Button label={mode === 'sign-in' ? 'ログインする' : 'アカウントを作る'} loading={loading} onPress={() => void submit()} />
+          <Button label={mode === 'sign-in' ? 'ログインする' : mode === 'sign-up' ? 'アカウントを作る' : '再設定メールを送る'} loading={loading} onPress={() => void submit()} />
+          {mode === 'sign-in'
+            ? <Button label="パスワードを忘れた" variant="quiet" onPress={() => {
+              setLocalError(null);
+              setMode('reset');
+            }} />
+            : mode === 'reset' && <Button label="ログインへ戻る" variant="quiet" onPress={() => setMode('sign-in')} />}
           <Text style={styles.privacy}>認証情報はSupabase Authで管理し、パスワードをアプリの学習DBへ保存しません。</Text>
         </Card>
       </KeyboardAvoidingView>
@@ -95,5 +111,6 @@ const styles = StyleSheet.create({
   label: { color: colors.ink, fontFamily: fonts.bodyMedium, fontSize: 13 },
   input: { minHeight: 50, borderWidth: 1, borderColor: colors.border, borderRadius: radii.medium, paddingHorizontal: 14, color: colors.ink, backgroundColor: colors.surface, fontFamily: fonts.body, fontSize: 15 },
   error: { color: colors.danger, backgroundColor: colors.dangerSoft, borderRadius: radii.small, padding: 11, fontFamily: fonts.body, fontSize: 12 },
+  success: { color: colors.success, backgroundColor: colors.successSoft, borderRadius: radii.small, padding: 11, fontFamily: fonts.body, fontSize: 12, lineHeight: 20 },
   privacy: { color: colors.inkMuted, fontFamily: fonts.body, fontSize: 10, lineHeight: 17, textAlign: 'center' },
 });

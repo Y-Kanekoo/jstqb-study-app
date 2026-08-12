@@ -26,7 +26,7 @@ const providerPatterns = [
   { name: '認証情報付きデータベースURL', pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s/:]+:[^\s/@]+@/u },
 ];
 const jwtPattern = /\b[A-Za-z0-9_-]{8,}\.([A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{16,}\b/gu;
-const sensitiveAssignmentPattern = /\b(?:[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL)|[a-z][a-z0-9_]*(?:_key|_token|_secret|_password|_credential)|[a-z][A-Za-z0-9]*(?:Key|Token|Secret|Password|Credential)|token|secret|password|credential)\b\s*[:=]\s*["'`]([^"'`\s]{20,})["'`]/gu;
+const sensitiveAssignmentPattern = /\b(?:[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL)|[a-z][a-z0-9_]*(?:_key|_token|_secret|_password|_credential)|[a-z][A-Za-z0-9]*(?:Key|Token|Secret|Password|Credential)|token|secret|password|credential)\b\s*[:=]\s*(["'`])([^"'`\s]{20,})\1/gu;
 const highRiskJwtRoles = new Set(['postgres', 'service_role', 'supabase_admin']);
 
 function runGit(args, options = {}) {
@@ -67,6 +67,36 @@ function decodeJwtPayload(encodedPayload) {
   }
 }
 
+function removeTemplateInterpolations(value) {
+  let literal = '';
+  let index = 0;
+  while (index < value.length) {
+    if (value[index] === '\\') {
+      literal += value[index] ?? '';
+      literal += value[index + 1] ?? '';
+      index += 2;
+      continue;
+    }
+    if (value.startsWith('${', index)) {
+      let depth = 1;
+      index += 2;
+      while (index < value.length && depth > 0) {
+        if (value[index] === '\\') {
+          index += 2;
+          continue;
+        }
+        if (value[index] === '{') depth += 1;
+        if (value[index] === '}') depth -= 1;
+        index += 1;
+      }
+      continue;
+    }
+    literal += value[index] ?? '';
+    index += 1;
+  }
+  return literal;
+}
+
 export function detectSecretFindings(content) {
   const findings = new Set();
   for (const { name, pattern } of providerPatterns) {
@@ -82,9 +112,11 @@ export function detectSecretFindings(content) {
   }
 
   for (const match of content.matchAll(sensitiveAssignmentPattern)) {
-    const value = match[1] ?? '';
-    if (/example|fixture|placeholder|dummy|your[-_]/iu.test(value)) continue;
-    if (value.length >= 24 && shannonEntropy(value) >= 3.8) {
+    const quote = match[1] ?? '';
+    const value = match[2] ?? '';
+    const literalValue = quote === '`' ? removeTemplateInterpolations(value) : value;
+    if (/example|fixture|placeholder|dummy|your[-_]/iu.test(literalValue)) continue;
+    if (literalValue.length >= 24 && shannonEntropy(literalValue) >= 3.8) {
       findings.add('機密名へ代入された高エントロピー値');
     }
   }
@@ -117,7 +149,7 @@ for (const relativePath of trackedFiles) {
   checkContent(relativePath, await readFile(filePath, 'utf8'), violations);
 }
 
-const reachableObjects = runGit(['-c', 'core.quotePath=false', 'rev-list', '--objects', '--all'])
+const reachableObjects = runGit(['-c', 'core.quotePath=false', 'rev-list', '--objects', 'HEAD'])
   .split('\n')
   .filter(Boolean);
 const pathsByObjectId = new Map();

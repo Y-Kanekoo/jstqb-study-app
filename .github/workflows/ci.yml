@@ -141,38 +141,169 @@ jobs:
           set -euo pipefail
           docker info >/dev/null
           supabase --version
-      - name: ローカルSupabaseを起動
-        run: supabase start >/dev/null 2>&1
-      - name: 全migrationを空DBへ再適用
-        run: supabase db reset
-      - name: RLS・関数・pgTAPを実DBで検証
-        run: supabase test db
-      - name: DB失敗時の診断ログを表示
-        if: failure()
+      - name: Supabase同一projectの事前確認
+        id: database-preflight
         shell: bash
         run: |
-          echo "稼働中・停止済みのSupabaseコンテナを確認します。"
-          docker ps --all --filter "name=supabase_" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
-          echo "PostgreSQLの末尾300行を表示します。"
-          docker logs --tail 300 supabase_db_jstqb-study-app 2>&1 || true
-      - name: ローカルSupabaseを確実に停止
-        if: always()
+          set -euo pipefail
+          project_label='com.supabase.cli.project=jstqb-study-app'
+          ownership_file="${RUNNER_TEMP}/supabase-owned-containers"
+          existing_status=0
+          existing_ids="$(docker ps --all --filter "label=${project_label}" --format '{{.ID}}')" || existing_status=$?
+          if [[ "${existing_status}" -ne 0 ]]; then
+            echo "::error::${project_label}の事前確認に失敗したため、DB操作を中止します。"
+            exit "${existing_status}"
+          fi
+          if [[ -n "${existing_ids}" ]]; then
+            echo "::error::${project_label}の既存containerを検出したため、他agentのDBを操作せず中止します。"
+            docker ps --all --filter "label=${project_label}" --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}'
+            exit 1
+          fi
+          {
+            echo 'known=false'
+          } > "${ownership_file}"
+      - name: ローカルSupabaseを起動
+        id: database-start
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_label='com.supabase.cli.project=jstqb-study-app'
+          ownership_file="${RUNNER_TEMP}/supabase-owned-containers"
+          log_file="${RUNNER_TEMP}/supabase-start.log"
+          redact_log() {
+            sed -E \
+              -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+              -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+              -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+              -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi'
+          }
+          set +e
+          supabase start > "${log_file}" 2>&1
+          start_status=$?
+          owned_ids_status=0
+          owned_ids="$(docker ps --all --filter "label=${project_label}" --format '{{.ID}}')" || owned_ids_status=$?
+          set -e
+          if [[ "${owned_ids_status}" -eq 0 ]]; then
+            echo 'known=true' > "${ownership_file}"
+            while IFS= read -r container_id; do
+              [[ -z "${container_id}" ]] || echo "id=${container_id}" >> "${ownership_file}"
+            done <<< "${owned_ids}"
+          fi
+          if [[ "${start_status}" -ne 0 ]]; then
+            echo "::error::supabase startに失敗しました。"
+            redact_log < "${log_file}"
+            exit "${start_status}"
+          fi
+          if [[ "${owned_ids_status}" -ne 0 || -z "${owned_ids}" ]]; then
+            echo "::error::起動後の${project_label}所有確認に失敗したため、中止します。"
+            exit 1
+          fi
+      - name: 全migrationを空DBへ再適用
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/supabase-reset.log"
+          set +e
+          supabase db reset > "${log_file}" 2>&1
+          command_status=$?
+          set -e
+          if [[ "${command_status}" -ne 0 ]]; then
+            echo "::error::supabase db resetに失敗しました。"
+            sed -E \
+              -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+              -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+              -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+              -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi' < "${log_file}"
+            exit "${command_status}"
+          fi
+      - name: RLS・関数・pgTAPを実DBで検証
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/supabase-test.log"
+          set +e
+          supabase test db > "${log_file}" 2>&1
+          command_status=$?
+          set -e
+          if [[ "${command_status}" -ne 0 ]]; then
+            echo "::error::supabase test dbに失敗しました。"
+            sed -E \
+              -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+              -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+              -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+              -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi' < "${log_file}"
+            exit "${command_status}"
+          fi
+      - name: DB失敗時の診断ログを表示
+        if: failure() && steps.database-preflight.outcome == 'success'
         shell: bash
         run: |
           set +e
-          if command -v supabase >/dev/null 2>&1; then
-            supabase stop --no-backup >/dev/null 2>&1
-            stop_status=$?
-          else
-            stop_status=0
-          fi
-          remaining_containers="$(docker ps --all --quiet --filter "name=supabase_" 2>/dev/null)"
-          if [[ -n "${remaining_containers}" ]]; then
-            echo "::error::Supabaseコンテナがcleanup後も残っています。"
-            docker ps --all --filter "name=supabase_" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+          project_label='com.supabase.cli.project=jstqb-study-app'
+          echo "稼働中・停止済みのSupabaseコンテナを確認します。"
+          docker ps --all --filter "label=${project_label}" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}"
+          echo "PostgreSQLの末尾300行を表示します。"
+          docker logs --tail 300 supabase_db_jstqb-study-app 2>&1 \
+            | sed -E \
+              -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+              -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+              -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+              -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi' \
+            || true
+      - name: ローカルSupabaseを確実に停止
+        if: always() && steps.database-preflight.outcome == 'success'
+        shell: bash
+        run: |
+          set +e
+          project_label='com.supabase.cli.project=jstqb-study-app'
+          ownership_file="${RUNNER_TEMP}/supabase-owned-containers"
+          if [[ ! -f "${ownership_file}" ]] || ! grep -q '^known=true$' "${ownership_file}"; then
+            echo "::error::Supabaseの所有状態を確認できないため、他agentのDBを停止せずcleanupを中止します。"
             exit 1
           fi
-          exit "${stop_status}"
+          current_status=0
+          current_ids="$(docker ps --all --filter "label=${project_label}" --format '{{.ID}}')" || current_status=$?
+          if [[ "${current_status}" -ne 0 ]]; then
+            echo "::error::cleanup前の${project_label}所有確認に失敗したため、停止を中止します。"
+            exit "${current_status}"
+          fi
+          owned_ids="$(sed -n 's/^id=//p' "${ownership_file}")"
+          unknown_ids=""
+          while IFS= read -r container_id; do
+            [[ -z "${container_id}" ]] && continue
+            if ! grep -Fxq "${container_id}" <<< "${owned_ids}"; then
+              unknown_ids+="${container_id}\n"
+            fi
+          done <<< "${current_ids}"
+          if [[ -n "${unknown_ids}" ]]; then
+            echo "::error::未知の同project containerを検出したため、他agentのDBを停止せずcleanupを中止します。"
+            exit 1
+          fi
+          if [[ -n "${current_ids}" ]]; then
+            stop_log="${RUNNER_TEMP}/supabase-stop.log"
+            supabase stop --no-backup > "${stop_log}" 2>&1
+            stop_status=$?
+            if [[ "${stop_status}" -ne 0 ]]; then
+              echo "::error::supabase stop --no-backupに失敗しました。"
+              sed -E \
+                -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+                -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+                -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+                -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi' < "${stop_log}"
+              exit "${stop_status}"
+            fi
+          fi
+          remaining_status=0
+          remaining_containers="$(docker ps --all --quiet --filter "label=${project_label}")" || remaining_status=$?
+          if [[ "${remaining_status}" -ne 0 ]]; then
+            echo "::error::cleanup後の${project_label}残留確認に失敗しました。"
+            exit "${remaining_status}"
+          fi
+          if [[ -n "${remaining_containers}" ]]; then
+            echo "::error::cleanup後も${project_label}のcontainerが残っています。"
+            docker ps --all --filter "label=${project_label}" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
+            exit 1
+          fi
 
   security:
     name: security

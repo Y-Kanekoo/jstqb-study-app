@@ -44,12 +44,23 @@ describe('GitHub Actionsの信頼境界', () => {
     assert.match(databaseJob, new RegExp(`uses: supabase/setup-cli@${setupCliSha}`, 'u'));
     assert.match(databaseJob, /version: 2\.113\.0/u);
 
-    const startIndex = databaseJob.indexOf('run: supabase start');
-    const resetIndex = databaseJob.indexOf('run: supabase db reset');
-    const testIndex = databaseJob.indexOf('run: supabase test db');
+    const preflightIndex = databaseJob.indexOf('Supabase同一projectの事前確認');
+    const startIndex = databaseJob.indexOf('supabase start');
+    const resetIndex = databaseJob.indexOf('supabase db reset');
+    const testIndex = databaseJob.indexOf('supabase test db');
     assert.ok(startIndex >= 0 && startIndex < resetIndex && resetIndex < testIndex, 'Supabase検証順が不正です。');
-    assert.match(databaseJob, /if: failure\(\)[\s\S]*docker logs --tail 300 supabase_db_jstqb-study-app/u);
-    assert.match(databaseJob, /if: always\(\)[\s\S]*supabase stop --no-backup/u);
+    assert.ok(preflightIndex >= 0 && preflightIndex < startIndex, '同project preflightがstartより前にありません。');
+    assert.match(databaseJob, /com\.supabase\.cli\.project=jstqb-study-app/u);
+    assert.match(databaseJob, /--filter "label=\$\{project_label\}"/u);
+    assert.match(databaseJob, /if: failure\(\) && steps\.database-preflight\.outcome == 'success'[\s\S]*docker logs --tail 300 supabase_db_jstqb-study-app/u);
+    assert.match(databaseJob, /if: always\(\) && steps\.database-preflight\.outcome == 'success'[\s\S]*supabase stop --no-backup/u);
+    assert.match(databaseJob, /supabase start > "\$\{log_file\}" 2>&1/u);
+    assert.match(databaseJob, /supabase db reset > "\$\{log_file\}" 2>&1/u);
+    assert.match(databaseJob, /supabase test db > "\$\{log_file\}" 2>&1/u);
+    assert.match(databaseJob, /supabase stop --no-backup > "\$\{stop_log\}" 2>&1/u);
+    assert.match(databaseJob, /redact_log|機密値を伏せました/u);
+    assert.match(databaseJob, /JWTを伏せました/u);
+    assert.doesNotMatch(databaseJob, /name=supabase_/u);
     assert.doesNotMatch(databaseJob, /SUPABASE_(?:DB_PASSWORD|SERVICE_ROLE_KEY)|postgres(?:ql)?:\/\//u);
   });
 });

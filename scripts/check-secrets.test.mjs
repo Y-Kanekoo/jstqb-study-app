@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
+import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 
 import { detectSecretFindings } from './check-secrets.mjs';
@@ -55,5 +56,16 @@ describe('秘密情報パターン検出', () => {
   it('公開可能なSupabase publishable keyとfixture値は許可する', () => {
     const findings = detectSecretFindings("EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY='sb_publishable_fixture-value'");
     assert.deepEqual(findings, []);
+  });
+
+  it('template interpolationを固定secret literalと誤検知しない', () => {
+    const findings = detectSecretFindings('const activeStorageKey = `${snapshotKeyPrefix}:guest`;');
+    assert.deepEqual(findings, []);
+  });
+
+  it('秘密履歴scanをHEAD到達履歴に限定する', async () => {
+    const source = await readFile(new URL('./check-secrets.mjs', import.meta.url), 'utf8');
+    assert.match(source, /rev-list', '--objects', 'HEAD'/u);
+    assert.doesNotMatch(source, /rev-list', '--objects', '--all'/u);
   });
 });

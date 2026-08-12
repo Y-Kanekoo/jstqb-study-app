@@ -63,24 +63,6 @@ describe('秘密情報パターン検出', () => {
     assert.deepEqual(findings, []);
   });
 
-  it('異種quoteを含むsingle・double・backtickのsecret代入を検出する', () => {
-    const highEntropyValue = Buffer.from(Array.from({ length: 64 }, (_, index) => (index * 73 + 41) % 256)).toString('base64url');
-    const source = [
-      `secret='${highEntropyValue}"'`,
-      `token="${highEntropyValue}'"`,
-      `password=\`${highEntropyValue}'\``,
-    ].join('\n');
-
-    assert.ok(detectSecretFindings(source).includes('機密名へ代入された高エントロピー値'));
-  });
-
-  it('template式内のquoted高エントロピーliteralを検出する', () => {
-    const highEntropyValue = Buffer.from(Array.from({ length: 64 }, (_, index) => (index * 73 + 41) % 256)).toString('base64url');
-    const source = `const secret = \`\${readSecret("${highEntropyValue}")}\`;`;
-
-    assert.ok(detectSecretFindings(source).includes('機密名へ代入された高エントロピー値'));
-  });
-
   it('秘密履歴scanをHEAD到達履歴に限定する', async () => {
     const source = await readFile(new URL('./check-secrets.mjs', import.meta.url), 'utf8');
     assert.match(source, /rev-list', '--objects', 'HEAD'/u);

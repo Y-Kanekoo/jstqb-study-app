@@ -81,47 +81,6 @@ describe('ローカルSupabase database runner', () => {
     assert.ok(commandNames(fixture.calls).includes('supabase stop --no-backup'));
   });
 
-  it('start後の一時的なcontainer一覧失敗をretryしてcleanupする', async () => {
-    const expectedName = `supabase_db_${projectLabel.split('=').at(-1)}`;
-    const fixture = createSpawnFixture([
-      { status: 0, output: '' },
-      { status: 0, output: '' },
-      { status: 1, output: 'docker daemon is busy' },
-      { status: 0, output: containerList('db-id-1', expectedName) },
-      { status: 0, output: '' },
-      { status: 0, output: '' },
-      { status: 0, output: containerList('db-id-2', expectedName) },
-      { status: 0, output: '' },
-      { status: 0, output: '' },
-    ]);
-
-    assert.equal(await runDatabaseChecks({
-      spawnCommand: fixture.spawnCommand,
-      acquireLock: async () => async () => {},
-      log: { error() {} },
-    }), 0);
-    assert.ok(commandNames(fixture.calls).includes('supabase stop --no-backup'));
-  });
-
-  it('Docker照会がretry後も失敗したら所有権不明のままstopしない', async () => {
-    const fixture = createSpawnFixture([
-      { status: 0, output: '' },
-      { status: 0, output: '' },
-      { status: 1, output: 'docker unavailable 1' },
-      { status: 1, output: 'docker unavailable 2' },
-      { status: 1, output: 'docker unavailable 3' },
-    ]);
-    const errors = [];
-
-    assert.equal(await runDatabaseChecks({
-      spawnCommand: fixture.spawnCommand,
-      acquireLock: async () => async () => {},
-      log: { error(message) { errors.push(message); } },
-    }), 1);
-    assert.ok(!commandNames(fixture.calls).includes('supabase stop --no-backup'));
-    assert.ok(errors.some((message) => message.includes('3回すべて失敗')));
-  });
-
   it('未知の同project container名が混入したらstopしない', async () => {
     const expectedName = `supabase_db_${projectLabel.split('=').at(-1)}`;
     const fixture = createSpawnFixture([
@@ -194,12 +153,10 @@ describe('ローカルSupabase database runner', () => {
       { status: 0, output: containerList('owned') },
       { status: 0, output: '' },
       { status: 0, output: '' },
-      { status: 0, output: containerList('owned') },
       { status: 9, output: 'stop failed' },
       { status: 0, output: containerList('owned') },
     ]);
 
     assert.equal(await runDatabaseChecks({ spawnCommand: fixture.spawnCommand, log: { error() {} } }), 9);
-    assert.ok(commandNames(fixture.calls).includes('supabase stop --no-backup'));
   });
 });

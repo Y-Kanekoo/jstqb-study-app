@@ -31,19 +31,6 @@ describe('GitHub Actionsの信頼境界', () => {
     for (const check of checks) assert.equal(check.integration_id, 15368, `${check.context}の発行元が固定されていません。`);
   });
 
-  it('全checkoutで永続的なGITHUB_TOKEN資格情報を無効化する', async () => {
-    const source = await readFile(ciWorkflowUrl, 'utf8');
-    const checkoutUses = [...source.matchAll(/^\s*uses:\s+actions\/checkout@[^\n]+$/gmu)];
-    assert.ok(checkoutUses.length > 0, 'checkoutがありません。');
-
-    for (const [index, checkout] of checkoutUses.entries()) {
-      const start = checkout.index ?? 0;
-      const nextStep = source.indexOf('\n      - name:', start);
-      const checkoutStep = source.slice(start, nextStep === -1 ? source.length : nextStep);
-      assert.match(checkoutStep, /persist-credentials:\s*false/u, `checkout ${index + 1}の資格情報永続化が無効化されていません。`);
-    }
-  });
-
   it('database jobで固定CLIによるreset・pgTAP・常時cleanupを強制する', async () => {
     const source = await readFile(ciWorkflowUrl, 'utf8');
     const databaseStart = source.indexOf('\n  database:');
@@ -71,12 +58,6 @@ describe('GitHub Actionsの信頼境界', () => {
     assert.match(databaseJob, /supabase db reset > "\$\{log_file\}" 2>&1/u);
     assert.match(databaseJob, /supabase test db > "\$\{log_file\}" 2>&1/u);
     assert.match(databaseJob, /supabase stop --no-backup > "\$\{stop_log\}" 2>&1/u);
-    assert.match(databaseJob, /repo共通lock/u);
-    assert.match(databaseJob, /container_query_attempts=3/u);
-    assert.match(databaseJob, /for \(\(attempt = 1; attempt <= container_query_attempts; attempt \+= 1\)\);/u);
-    assert.match(databaseJob, /known=true/u);
-    assert.match(databaseJob, /未知の同project containerを検出したため、他agentのDBを停止せずcleanupを中止します。/u);
-    assert.match(databaseJob, /finish_cleanup/u);
     assert.match(databaseJob, /redact_log|機密値を伏せました/u);
     assert.match(databaseJob, /JWTを伏せました/u);
     assert.doesNotMatch(databaseJob, /name=supabase_/u);

@@ -13,6 +13,7 @@
 9. [運用設計](operations.md)
 10. [実装状況](implementation-status.md)
 11. [ADR](adr/README.md)
+12. [問題カタログ配信・端末キャッシュ統合契約](api-content-catalog.md)
 
 ## 設計原則
 

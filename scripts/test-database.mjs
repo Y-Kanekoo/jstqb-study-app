@@ -77,8 +77,11 @@ async function listProjectContainers(runCommand) {
       projectContainerFormat,
     ]);
     if (result.status === 0) return { ...result, containers: parseContainers(result.output) };
-    if (attempt < containerQueryAttempts) {
+    const retryable = /(?:daemon|temporar|busy|unavailable|connection|timeout)/iu.test(result.output);
+    if (attempt < containerQueryAttempts && retryable) {
       await new Promise((resolveResult) => setTimeout(resolveResult, containerQueryRetryDelayMs));
+    } else {
+      break;
     }
   }
   return { ...result, containers: [] };

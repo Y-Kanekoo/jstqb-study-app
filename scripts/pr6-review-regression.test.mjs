@@ -56,6 +56,15 @@ describe('PR #6レビュー回帰', () => {
       .includes('機密名へ代入された高エントロピー値'));
   });
 
+  it('空白・改行を含むtemplate式内のsecret literalを検出する', () => {
+    const value = Buffer.from(Array.from({ length: 64 }, (_, index) => (index * 73 + 41) % 256)).toString('base64url');
+    const spaced = `const secret = \`\${ readSecret("${value}") }\`;`;
+    const multiline = `const apiToken = \`prefix-\${\n  readSecret(\n    '${value}'\n  )\n}\`;`;
+
+    assert.ok(detectSecretFindings(spaced).includes('機密名へ代入された高エントロピー値'));
+    assert.ok(detectSecretFindings(multiline).includes('機密名へ代入された高エントロピー値'));
+  });
+
   it('全checkoutで資格情報永続化を無効化しDB cleanup契約を固定する', async () => {
     const source = await readFile(ciWorkflowUrl, 'utf8');
     const checkoutUses = [...source.matchAll(/^\s*uses:\s+actions\/checkout@[^\n]+$/gmu)];

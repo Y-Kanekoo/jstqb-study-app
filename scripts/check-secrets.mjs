@@ -26,7 +26,7 @@ const providerPatterns = [
   { name: '認証情報付きデータベースURL', pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s/:]+:[^\s/@]+@/u },
 ];
 const jwtPattern = /\b[A-Za-z0-9_-]{8,}\.([A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{16,}\b/gu;
-const sensitiveAssignmentPattern = /\b(?:[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL)|[a-z][a-z0-9_]*(?:_key|_token|_secret|_password|_credential)|[a-z][A-Za-z0-9]*(?:Key|Token|Secret|Password|Credential)|token|secret|password|credential)\b\s*[:=]\s*(?:"([^"\s]{20,})"|'([^'\s]{20,})'|`([^`\s]{20,})`)/gu;
+const sensitiveAssignmentPrefixPattern = /\b(?:[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL)|[a-z][a-z0-9_]*(?:_key|_token|_secret|_password|_credential)|[a-z][A-Za-z0-9]*(?:Key|Token|Secret|Password|Credential)|token|secret|password|credential)\b\s*[:=]\s*(["'`])/gu;
 const highRiskJwtRoles = new Set(['postgres', 'service_role', 'supabase_admin']);
 
 function runGit(args, options = {}) {
@@ -124,6 +124,30 @@ function readTemplateExpression(value, startIndex) {
   return { expression, nextIndex: index };
 }
 
+function readQuotedAssignment(content, startIndex, delimiter) {
+  let index = startIndex;
+  let value = '';
+  while (index < content.length) {
+    const character = content[index] ?? '';
+    if (character === '\\') {
+      value += character;
+      value += content[index + 1] ?? '';
+      index += 2;
+      continue;
+    }
+    if (delimiter === '`' && content.startsWith('${', index)) {
+      const expression = readTemplateExpression(content, index + 2);
+      value += `\${${expression.expression}`;
+      index = expression.nextIndex;
+      continue;
+    }
+    if (character === delimiter) return value;
+    value += character;
+    index += 1;
+  }
+  return null;
+}
+
 function removeTemplateInterpolations(value) {
   let literal = '';
   let index = 0;
@@ -160,9 +184,12 @@ export function detectSecretFindings(content) {
     }
   }
 
-  for (const match of content.matchAll(sensitiveAssignmentPattern)) {
-    const value = match[1] ?? match[2] ?? match[3] ?? '';
-    const literalValue = match[3] === undefined ? value : removeTemplateInterpolations(value);
+  for (const match of content.matchAll(sensitiveAssignmentPrefixPattern)) {
+    const delimiter = match[1] ?? '';
+    const valueStart = (match.index ?? 0) + match[0].length;
+    const value = readQuotedAssignment(content, valueStart, delimiter);
+    if (value === null) continue;
+    const literalValue = delimiter === '`' ? removeTemplateInterpolations(value) : value;
     if (/example|fixture|placeholder|dummy|your[-_]/iu.test(literalValue)) continue;
     if (literalValue.length >= 24 && shannonEntropy(literalValue) >= 3.8) {
       findings.add('機密名へ代入された高エントロピー値');

@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:database:upgrade": "node scripts/run-server-integrity-upgrade-harness.mjs",
     "test:watch": "vitest",
     "check:any": "node scripts/check-no-any.mjs",
     "check": "pnpm check:any && pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"

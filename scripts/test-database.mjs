@@ -1,6 +1,10 @@
-import { spawn as defaultSpawn } from 'node:child_process';
+import { execFile as defaultExecFile, spawn as defaultSpawn } from 'node:child_process';
+import { mkdir, rmdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { promisify } from 'node:util';
 
 export const projectId = 'jstqb-study-app';
 export const projectLabel = `com.supabase.cli.project=${projectId}`;
@@ -8,6 +12,7 @@ export const databaseContainerName = `supabase_db_${projectId}`;
 
 const projectLabelFilter = `label=${projectLabel}`;
 const projectContainerFormat = '{{.ID}}\\t{{.Names}}';
+const execFile = promisify(defaultExecFile);
 const databaseCommands = [
   ['supabase', ['start']],
   ['supabase', ['db', 'reset']],
@@ -70,9 +75,9 @@ async function listProjectContainers(runCommand) {
   return { ...result, containers: result.status === 0 ? parseContainers(result.output) : [] };
 }
 
-function includesOnly(knownContainers, currentContainers) {
-  const knownIds = new Set(knownContainers.map((container) => container.id));
-  return currentContainers.every((container) => knownIds.has(container.id));
+function includesOnly(expectedContainerNames, currentContainers) {
+  const knownNames = new Set(expectedContainerNames);
+  return currentContainers.every((container) => knownNames.has(container.name));
 }
 
 async function showDiagnostics(runCommand, log) {
@@ -80,12 +85,30 @@ async function showDiagnostics(runCommand, log) {
   const containers = await listProjectContainers(runCommand);
   if (containers.status === 0 && containers.containers.length > 0) {
     log.error(containers.containers.map((container) => `${container.id}\t${container.name}`).join('\n'));
+    const databaseContainer = containers.containers.find(({ name }) => name === databaseContainerName);
+    if (databaseContainer !== undefined) {
+      const databaseLogs = await runCommand('docker', ['logs', '--tail', '300', databaseContainer.name]);
+      if (databaseLogs.output.trim() !== '') log.error(redactOutput(databaseLogs.output));
+    }
   }
-  const databaseLogs = await runCommand('docker', ['logs', '--tail', '300', databaseContainerName]);
-  if (databaseLogs.output.trim() !== '') log.error(redactOutput(databaseLogs.output));
 }
 
-export async function runDatabaseChecks({ spawnCommand = defaultSpawn, log = console } = {}) {
+async function acquireRepositoryLock({ execFileCommand = execFile } = {}) {
+  const gitCommonDirectoryResult = await execFileCommand(
+    'git',
+    ['rev-parse', '--git-common-dir'],
+    { cwd: process.cwd(), encoding: 'utf8' },
+  );
+  const gitCommonDirectory = gitCommonDirectoryResult.stdout.trim();
+  if (gitCommonDirectory === '') throw new Error('Git共通ディレクトリを確認できません。');
+
+  const lockKey = createHash('sha256').update(resolve(gitCommonDirectory)).digest('hex');
+  const lockDirectory = resolve(tmpdir(), `.supabase-database-ci-${lockKey}.lock`);
+  await mkdir(lockDirectory, { mode: 0o700 });
+  return async () => rmdir(lockDirectory);
+}
+
+async function runDatabaseChecksUnlocked({ spawnCommand, log }) {
   const runCommand = createCommandRunner(spawnCommand);
   const preflight = await listProjectContainers(runCommand);
   if (preflight.status !== 0) {
@@ -97,7 +120,7 @@ export async function runDatabaseChecks({ spawnCommand = defaultSpawn, log = con
     return 1;
   }
 
-  let ownedContainers = [];
+  let expectedContainerNames = [];
   let startAttempted = false;
   let status = 0;
   const startResult = await runCommand(...databaseCommands[0]);
@@ -108,12 +131,12 @@ export async function runDatabaseChecks({ spawnCommand = defaultSpawn, log = con
     logFailure(log, 'Supabase起動後の所有確認', afterStart);
     status = startResult.status === 0 ? 1 : startResult.status;
   } else {
-    ownedContainers = afterStart.containers;
+    expectedContainerNames = afterStart.containers.map((container) => container.name);
     if (startResult.status !== 0) {
       logFailure(log, 'supabase start', startResult);
       await showDiagnostics(runCommand, log);
       status = startResult.status;
-    } else if (ownedContainers.length === 0) {
+    } else if (expectedContainerNames.length === 0 || expectedContainerNames.some((name) => name === '')) {
       log.error('Supabase起動後に同project labelのcontainerを確認できないため、中止します。');
       status = 1;
     }
@@ -137,12 +160,12 @@ export async function runDatabaseChecks({ spawnCommand = defaultSpawn, log = con
     }
   }
 
-  if (startAttempted && ownedContainers.length > 0) {
+  if (startAttempted && expectedContainerNames.length > 0) {
     const beforeCleanup = await listProjectContainers(runCommand);
     if (beforeCleanup.status !== 0) {
       logFailure(log, 'cleanup前の所有確認', beforeCleanup);
       if (status === 0) status = beforeCleanup.status;
-    } else if (!includesOnly(ownedContainers, beforeCleanup.containers)) {
+    } else if (!includesOnly(expectedContainerNames, beforeCleanup.containers)) {
       log.error('cleanup前に未知の同project containerを検出したため、他agentのDBを停止せず中止します。');
       if (status === 0) status = 1;
     } else if (beforeCleanup.containers.length > 0) {
@@ -163,6 +186,35 @@ export async function runDatabaseChecks({ spawnCommand = defaultSpawn, log = con
     }
   }
 
+  return status;
+}
+
+export async function runDatabaseChecks({
+  spawnCommand = defaultSpawn,
+  log = console,
+  acquireLock = acquireRepositoryLock,
+} = {}) {
+  let releaseLock;
+  try {
+    releaseLock = await acquireLock();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(`Supabase検証の共有排他lockを取得できないため、中止します: ${message}`);
+    return 1;
+  }
+
+  let status = 1;
+  try {
+    status = await runDatabaseChecksUnlocked({ spawnCommand, log });
+  } finally {
+    try {
+      await releaseLock();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(`Supabase検証の共有排他lockを解放できないため、失敗扱いにします: ${message}`);
+      status = status === 0 ? 1 : status;
+    }
+  }
   return status;
 }
 

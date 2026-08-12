@@ -64,6 +64,53 @@ describe('ローカルSupabase database runner', () => {
       .every(({ argumentsList }) => argumentsList.includes(`label=${projectLabel}`)));
   });
 
+  it('db resetでcontainer IDが再生成されても同名ならcleanupする', async () => {
+    const expectedName = `supabase_db_${projectLabel.split('=').at(-1)}`;
+    const fixture = createSpawnFixture([
+      { status: 0, output: '' },
+      { status: 0, output: '' },
+      { status: 0, output: containerList('db-id-1', expectedName) },
+      { status: 0, output: '' },
+      { status: 0, output: '' },
+      { status: 0, output: containerList('db-id-2', expectedName) },
+      { status: 0, output: '' },
+      { status: 0, output: '' },
+    ]);
+
+    assert.equal(await runDatabaseChecks({ spawnCommand: fixture.spawnCommand, log: { error() {} } }), 0);
+    assert.ok(commandNames(fixture.calls).includes('supabase stop --no-backup'));
+  });
+
+  it('未知の同project container名が混入したらstopしない', async () => {
+    const expectedName = `supabase_db_${projectLabel.split('=').at(-1)}`;
+    const fixture = createSpawnFixture([
+      { status: 0, output: '' },
+      { status: 0, output: '' },
+      { status: 0, output: containerList('db-id-1', expectedName) },
+      { status: 0, output: '' },
+      { status: 0, output: '' },
+      { status: 0, output: `${containerList('db-id-2', expectedName)}${containerList('unknown', 'supabase_unknown_jstqb-study-app')}` },
+      { status: 0, output: `${containerList('db-id-2', expectedName)}${containerList('unknown', 'supabase_unknown_jstqb-study-app')}` },
+    ]);
+
+    assert.equal(await runDatabaseChecks({ spawnCommand: fixture.spawnCommand, log: { error() {} } }), 1);
+    assert.ok(!commandNames(fixture.calls).includes('supabase stop --no-backup'));
+  });
+
+  it('共有排他lockを取得できなければDB操作を開始しない', async () => {
+    const fixture = createSpawnFixture([]);
+    const status = await runDatabaseChecks({
+      spawnCommand: fixture.spawnCommand,
+      acquireLock: async () => {
+        throw new Error('lock is busy');
+      },
+      log: { error() {} },
+    });
+
+    assert.equal(status, 1);
+    assert.deepEqual(fixture.calls, []);
+  });
+
   it('start失敗時に自分が開始したcontainerだけをcleanupする', async () => {
     const fixture = createSpawnFixture([
       { status: 0, output: '' },

@@ -18,8 +18,9 @@
     "content:seed": "node --experimental-strip-types scripts/content-pipeline.ts seed",
     "content:rollback": "node --experimental-strip-types scripts/content-pipeline.ts rollback",
     "check:content-boundary": "node scripts/check-content-boundary.mjs",
+    "check:database-contract": "node scripts/check-database-contract.mjs",
     "check:any": "node scripts/check-no-any.mjs",
-    "check": "pnpm check:any && pnpm check:content-boundary && pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"
+    "check": "pnpm check:any && pnpm check:content-boundary && pnpm check:database-contract && pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"
   },
   "dependencies": {
     "@expo-google-fonts/biz-udpgothic": "^0.4.2",

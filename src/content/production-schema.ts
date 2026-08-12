@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 const isoDateTimeSchema = z.string().datetime({ offset: true });
 
+export const questionCompatibilitySchema = z.enum(['cosmetic', 'compatible', 'breaking']);
+
 export const contentReviewSchema = z.object({
   type: z.enum(['technical', 'editorial', 'similarity']),
   reviewer: z.string().min(3).max(120),
@@ -53,6 +55,8 @@ export const productionQuestionSchema = z.object({
   createdBy: z.string().min(3).max(120),
   createdAt: isoDateTimeSchema,
   contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  // 旧fixtureを壊さないため型上は任意だが、公開CLIは明示入力を必須にする。
+  compatibility: questionCompatibilitySchema.optional(),
   reviews: z.array(contentReviewSchema).max(10),
 });
 
@@ -70,8 +74,20 @@ export const productionBundleSchema = z.object({
   questions: z.array(productionQuestionSchema).min(1).max(2_000),
 });
 
+// 本番seed/release入力はcompatibilityを省略できない。公開サンプル・既存fixture用の
+// productionBundleSchemaとは分離し、CLIのrequireCompatibilityでこの契約を選択する。
+export const productionSeedQuestionSchema = productionQuestionSchema.extend({
+  compatibility: questionCompatibilitySchema,
+});
+
+export const productionSeedBundleSchema = productionBundleSchema.extend({
+  questions: z.array(productionSeedQuestionSchema).min(1).max(2_000),
+});
+
 export type ContentReview = z.infer<typeof contentReviewSchema>;
 export type ProductionChoice = z.infer<typeof productionChoiceSchema>;
 export type QuestionPremise = z.infer<typeof questionPremiseSchema>;
 export type ProductionQuestion = z.infer<typeof productionQuestionSchema>;
 export type ProductionBundle = z.infer<typeof productionBundleSchema>;
+export type QuestionCompatibility = z.infer<typeof questionCompatibilitySchema>;
+export type ProductionSeedBundle = z.infer<typeof productionSeedBundleSchema>;

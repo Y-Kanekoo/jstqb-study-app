@@ -12,6 +12,7 @@ import {
 } from './objectives.ts';
 import {
   productionBundleSchema,
+  productionSeedBundleSchema,
   type ProductionBundle,
   type ProductionQuestion,
 } from './production-schema.ts';
@@ -28,6 +29,7 @@ export interface ContentQualityIssue {
 export interface ContentQualityOptions {
   enforceProductionDistribution?: boolean;
   releaseGate?: boolean;
+  requireCompatibility?: boolean;
   similarityThreshold?: number;
 }
 
@@ -158,8 +160,8 @@ function emptyChapterDistribution(): Record<number, number> {
   return { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
 }
 
-function addSchemaIssues(input: unknown, issues: ContentQualityIssue[]): ProductionBundle | undefined {
-  const parsed = productionBundleSchema.safeParse(input);
+function addSchemaIssues(input: unknown, issues: ContentQualityIssue[], requireCompatibility: boolean): ProductionBundle | undefined {
+  const parsed = (requireCompatibility ? productionSeedBundleSchema : productionBundleSchema).safeParse(input);
   if (parsed.success) {
     return parsed.data;
   }
@@ -169,7 +171,15 @@ function addSchemaIssues(input: unknown, issues: ContentQualityIssue[]): Product
   return undefined;
 }
 
-function validateQuestion(question: ProductionQuestion, issues: ContentQualityIssue[], releaseGate: boolean): void {
+function validateQuestion(
+  question: ProductionQuestion,
+  issues: ContentQualityIssue[],
+  releaseGate: boolean,
+  requireCompatibility: boolean,
+): void {
+  if (requireCompatibility && question.compatibility === undefined) {
+    issues.push(issue('COMPATIBILITY_MISSING', 'error', '問題版のcompatibility入力が必要です。', question.id));
+  }
   const objective = objectiveByCode.get(question.objectiveCode);
   if (objective === undefined) {
     issues.push(issue('OBJECTIVE_UNKNOWN', 'error', `未定義の学習目標です: ${question.objectiveCode}`, question.id));
@@ -471,7 +481,7 @@ function validateDistribution(
 
 export function validateContentBundle(input: unknown, options: ContentQualityOptions = {}): ContentQualityReport {
   const issues: ContentQualityIssue[] = [];
-  const bundle = addSchemaIssues(input, issues);
+  const bundle = addSchemaIssues(input, issues, options.requireCompatibility ?? false);
   const chapterDistribution = emptyChapterDistribution();
   const kLevelDistribution: Record<ContentKLevel, number> = { 1: 0, 2: 0, 3: 0 };
   const statusDistribution: Record<'draft' | 'reviewing' | 'published' | 'suspended' | 'retired', number> = {
@@ -529,7 +539,7 @@ export function validateContentBundle(input: unknown, options: ContentQualityOpt
           literalPremiseDistractorQuestionCount += 1;
         }
       }
-      validateQuestion(question, issues, releaseGate);
+      validateQuestion(question, issues, releaseGate, options.requireCompatibility ?? false);
     }
     validateUniqueness(bundle, issues, similarityThreshold);
     if (enforceDistribution || releaseGate) {
@@ -576,7 +586,8 @@ export function validateContentBundle(input: unknown, options: ContentQualityOpt
 
   return {
     valid: errorCount === 0,
-    releaseReady: releaseGate && errorCount === 0,
+    // オフライン検査や自己申告JSONだけではDB監査済みreleaseReadyにならない。
+    releaseReady: false,
     questionCount: bundle?.questions.length ?? 0,
     errorCount,
     warningCount,

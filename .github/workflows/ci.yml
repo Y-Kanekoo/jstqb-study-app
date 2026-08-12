@@ -142,7 +142,7 @@ jobs:
           docker info >/dev/null
           supabase --version
       - name: ローカルSupabaseを起動
-        run: supabase start
+        run: supabase start >/dev/null 2>&1
       - name: 全migrationを空DBへ再適用
         run: supabase db reset
       - name: RLS・関数・pgTAPを実DBで検証
@@ -161,7 +161,7 @@ jobs:
         run: |
           set +e
           if command -v supabase >/dev/null 2>&1; then
-            supabase stop --no-backup
+            supabase stop --no-backup >/dev/null 2>&1
             stop_status=$?
           else
             stop_status=0

@@ -46,6 +46,12 @@ mainへ入る前に次のGitHub Checksを必須にします。
 
 `database`はGitHub管理のUbuntu runnerとDockerだけを使用し、外部DBやRepository Secretへ接続しません。
 
+ローカルで同じ検証を行う場合は、Dockerを起動して次を実行します。
+
+```bash
+pnpm test:database
+```
+
 1. `supabase/setup-cli`の検証済みcommit SHAから固定版CLIを準備する。
 2. `supabase start`で一時環境を起動する。
 3. `supabase db reset`で空DBへ全migrationを順番に再適用する。

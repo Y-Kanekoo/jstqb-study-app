@@ -18,10 +18,7 @@ EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 Dockerを起動し、CIと同じ順序で実行します。
 
 ```bash
-supabase start
-supabase db reset
-supabase test db
-supabase stop --no-backup
+pnpm test:database
 ```
 
-`db reset`は全migrationを空DBから再適用し、`test db`は`supabase/tests/*.sql`のpgTAPを実DBで実行します。接続URL、DBパスワード、service role keyをログ・ファイル・Gitへ保存しません。
+`pnpm test:database`は`db reset`で全migrationを空DBから再適用し、`test db`で`supabase/tests/*.sql`のpgTAPを実DBで実行した後、成否にかかわらずローカルSupabaseを停止します。失敗時はコンテナ一覧とPostgreSQL末尾ログだけを表示します。接続URL、DBパスワード、service role keyをログ・ファイル・Gitへ保存しません。

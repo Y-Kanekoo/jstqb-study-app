@@ -15,7 +15,7 @@ const baseRun = {
   path: '.github/workflows/ci.yml',
   status: 'completed',
 };
-const successfulJobs = ['quality', 'e2e', 'pages', 'security'].map((name) => ({
+const successfulJobs = ['quality', 'database', 'e2e', 'pages', 'security'].map((name) => ({
   conclusion: 'success',
   name,
   status: 'completed',
@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe('本番デプロイ元検証', () => {
-  it('現在のmainで4検査が成功したcommitだけを承認する', async () => {
+  it('現在のmainで5検査が成功したcommitだけを承認する', async () => {
     await executeVerifier();
     const output = await readFile(process.env.GITHUB_OUTPUT, 'utf8');
     assert.match(output, new RegExp(`commit_sha=${sourceSha}`, 'u'));
@@ -78,7 +78,7 @@ describe('本番デプロイ元検証', () => {
   });
 
   it('必須検査が1件でも失敗した実行を拒否する', async () => {
-    installGithubApiFixture(successfulJobs.filter((job) => job.name !== 'security'));
-    await assert.rejects(executeVerifier(), /本番デプロイに必要な検査が成功していません: security/u);
+    installGithubApiFixture(successfulJobs.filter((job) => job.name !== 'database'));
+    await assert.rejects(executeVerifier(), /本番デプロイに必要な検査が成功していません: database/u);
   });
 });

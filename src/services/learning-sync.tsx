@@ -9,6 +9,7 @@ import {
   isCanonicalEventForRequest,
   LearningSyncError,
 } from './learning-sync-api';
+import { validateRemoteEventBatch } from './learning-sync-contract';
 import { supabase } from './supabase';
 
 let syncPromise: Promise<void> | null = null;
@@ -33,12 +34,14 @@ export async function pushOutbox(userId: string): Promise<void> {
         if (!canonicalEvent || !isCanonicalEventForRequest(canonicalEvent, event)) {
           throw new LearningSyncError('INVALID_EVENT', '同期サーバーの回答が要求イベントと一致しません。');
         }
+        const violation = validateRemoteEventBatch(canonicalEvents);
+        if (violation) throw new LearningSyncError(violation.code, violation.message);
         await useLearningStore.getState().applyRemoteEvents(canonicalEvents, 'ack');
         if (!isCurrentOwner(userId)) return;
         await useLearningStore.getState().markOutboxSynced([event.id]);
       } catch (error: unknown) {
         if (error instanceof LearningSyncError
-          && ['INVALID_EVENT', 'IDEMPOTENCY_KEY_REUSED', 'REVISION_CONFLICT', 'SESSION_FROZEN'].includes(error.syncCode)) {
+          && ['INVALID_EVENT', 'LEGACY_EVENT', 'IDEMPOTENCY_KEY_REUSED', 'REVISION_CONFLICT', 'SESSION_FROZEN'].includes(error.syncCode)) {
           await useLearningStore.getState().blockOutboxEvent(event.id, error.message);
           continue;
         }
@@ -57,6 +60,8 @@ export async function pullRemoteEvents(userId: string): Promise<void> {
     const events = await fetchLearningEventsAfter(userId, cursor);
     if (events.length > 0) {
       if (!isCurrentOwner(userId)) return;
+      const violation = validateRemoteEventBatch(events);
+      if (violation) throw new LearningSyncError(violation.code, violation.message);
       await useLearningStore.getState().applyRemoteEvents(events, 'pull');
       cursor = events.at(-1)?.sequence ?? cursor;
     }
@@ -75,7 +80,7 @@ function syncErrorState(error: unknown): { status: 'auth-required' | 'conflict' 
     if (error.syncCode === 'SESSION_FROZEN') {
       return { status: 'conflict', message: '模試の制限時間がサーバー上で終了しました。保存済み回答を提出してください。' };
     }
-    if (error.syncCode === 'INVALID_EVENT' || error.syncCode === 'IDEMPOTENCY_KEY_REUSED') {
+    if (error.syncCode === 'INVALID_EVENT' || error.syncCode === 'LEGACY_EVENT' || error.syncCode === 'IDEMPOTENCY_KEY_REUSED') {
       return { status: 'error', message: `${error.message} 未同期データを保持しています。` };
     }
   }

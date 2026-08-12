@@ -71,3 +71,29 @@ SYNCED
 - 同一問題の未確定回答が衝突した場合だけ利用者へ選択を求めます。
 - 端末名、更新日時、選択内容を表示し、採用されなかった内容も監査用に保持します。
 
+## 7. client/server payload同期契約
+
+server integrity migration 002（PR #7）のRPCは、request payloadを検証・正規化したcanonical payloadを返します。
+clientはrequestに存在するfieldの値がcanonicalで変更されていないことを確認し、server-owned fieldだけを受け入れます。
+旧shapeのeventはDB upgradeでcanonical化されたeventを受信する前提です。旧shapeをclientで補完して適用せず、
+`LEGACY_EVENT`として保持・表示します。
+
+| kind | client-owned request field（identity比較） | server-owned canonical field |
+|---|---|---|
+| `session.created` | `sessionId`, `mode`, `title`, `questionIds` | `questionVersionIds`, `createdAt`, `startedAt`, `durationMinutes`, `expiresAt` |
+| `draft.saved` | `sessionId`, `questionId`, `selectedChoiceIds`, `expectedRevision`, `deviceId` | `questionVersionId`, `revision`, `updatedAt` |
+| `answer.submitted` | `sessionId`, `questionId`, `questionVersionId`, `selectedChoiceIds` | `isCorrect`, `answeredAt`, `invalidated` |
+| `session.advanced` | `sessionId`, `questionId` | `currentIndex` |
+| `session.submitted` | `sessionId` | `submittedAt`, `answeredQuestionIds`, `expired` |
+| `session.review-marked` | `sessionId`, `questionId`, `marked` | `updatedAt` |
+| `bookmark.changed` | `questionId`, `enabled` | `updatedAt` |
+| `note.saved` | `questionId`, `questionVersionId`, `body`, `expectedRevision` | `revision`, `updatedAt` |
+| `issue.reported` | `issueId`, `questionId`, `questionVersionId`, `category`, `description` | `createdAt` |
+
+`draft.saved`の`questionVersionId`、`session.review-marked`/`bookmark.changed`の`updatedAt`などは、
+requestには無くcanonicalでserverが追加します。`questionIds`と`questionVersionIds`は同数・非空・一意、
+選択肢IDは一意、`entityId`は各payloadの対象IDと一致しなければなりません。回答の`entityId`はattempt UUIDです。
+
+1件でもparse、identity、semantic検証に失敗したbatchは、cursorを進めず、local applyとoutbox ack削除を行いません。
+DB-first統合が完了するまでは、clientはserver migration 002のcanonical responseを前提に契約検証だけを保持します。
+bundle answer除去とF-08 feedbackはこの契約同期の範囲外です。

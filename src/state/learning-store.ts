@@ -6,6 +6,7 @@ import { parseLearningSnapshot, preparePortableRestore, sanitizeLearningSnapshot
 import { advanceSession, updateQuestionState } from '@/domain/learning';
 import { createQuestionSnapshots, getSessionQuestion } from '@/domain/session-question';
 import { fetchLearningEventsAfter, ingestLearningEvents } from '@/services/learning-sync-api';
+import { validateRemoteEventBatch } from '@/services/learning-sync-contract';
 import type {
   AnswerAttempt,
   ConflictAction,
@@ -268,7 +269,6 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       mode,
       title,
       questionIds: sessionQuestionIds,
-      createdAt: now,
     });
     set((state) => ({
       sessions: [session, ...state.sessions],
@@ -767,7 +767,6 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       questionVersionId,
       category,
       description: normalizedDescription,
-      createdAt: now,
     });
     set((state) => ({
       issues: [...state.issues, {
@@ -959,6 +958,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
 
   applyRemoteEvents: async (events, source = 'pull') => {
     if (events.length === 0) return;
+    const violation = validateRemoteEventBatch(events);
+    if (violation) throw new Error(violation.message);
     const sortedEvents = [...events].sort((left, right) => left.sequence - right.sequence);
     set((state) => {
       let sessions = [...state.sessions];

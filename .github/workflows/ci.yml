@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: ソースを取得
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: pnpmを準備
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -50,6 +52,8 @@ jobs:
     steps:
       - name: ソースを取得
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: pnpmを準備
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -92,6 +96,8 @@ jobs:
     steps:
       - name: ソースを取得
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: pnpmを準備
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -124,6 +130,293 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  database:
+    name: database
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Supabase CLIを準備
+        uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          version: 2.113.0
+      - name: DockerとCLIを確認
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          supabase --version
+      - name: Supabase同一projectの事前確認
+        id: database-preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_label='com.supabase.cli.project=jstqb-study-app'
+          lock_directory="${RUNNER_TEMP}/supabase-database-ci-${GITHUB_REPOSITORY//\//-}.lock"
+          ownership_file="${RUNNER_TEMP}/supabase-owned-containers"
+          container_query_attempts=3
+          if ! mkdir "${lock_directory}"; then
+            echo "::error::Supabase検証のrepo共通lockを取得できないため、DB操作を中止します（${lock_directory}）。"
+            exit 1
+          fi
+          release_lock() {
+            if ! rmdir "${lock_directory}"; then
+              echo "::error::Supabase検証のrepo共通lockを解放できません（${lock_directory}）。"
+            fi
+          }
+          list_project_containers() {
+            local attempt
+            local containers
+            for ((attempt = 1; attempt <= container_query_attempts; attempt += 1)); do
+              if containers="$(docker ps --all --filter "label=${project_label}" --format '{{.ID}}\t{{.Names}}')"; then
+                printf '%s\n' "${containers}"
+                return 0
+              fi
+              if (( attempt < container_query_attempts )); then sleep 1; fi
+            done
+            echo "::error::${project_label}のDocker照会が${container_query_attempts}回すべて失敗しました。" >&2
+            return 1
+          }
+          existing_status=0
+          existing_containers="$(list_project_containers)" || existing_status=$?
+          if [[ "${existing_status}" -ne 0 ]]; then
+            echo "::error::${project_label}の事前確認に失敗したため、DB操作を中止します。"
+            release_lock
+            exit "${existing_status}"
+          fi
+          if [[ -n "${existing_containers}" ]]; then
+            echo "::error::${project_label}の既存containerを検出したため、他agentのDBを操作せず中止します。"
+            printf '%s\n' "${existing_containers}"
+            release_lock
+            exit 1
+          fi
+          {
+            echo 'known=false'
+          } > "${ownership_file}"
+      - name: ローカルSupabaseを起動
+        id: database-start
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_label='com.supabase.cli.project=jstqb-study-app'
+          lock_directory="${RUNNER_TEMP}/supabase-database-ci-${GITHUB_REPOSITORY//\//-}.lock"
+          ownership_file="${RUNNER_TEMP}/supabase-owned-containers"
+          log_file="${RUNNER_TEMP}/supabase-start.log"
+          container_query_attempts=3
+          redact_log() {
+            sed -E \
+              -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+              -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+              -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+              -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi'
+          }
+          list_project_containers() {
+            local attempt
+            local containers
+            for ((attempt = 1; attempt <= container_query_attempts; attempt += 1)); do
+              if containers="$(docker ps --all --filter "label=${project_label}" --format '{{.ID}}\t{{.Names}}')"; then
+                printf '%s\n' "${containers}"
+                return 0
+              fi
+              if (( attempt < container_query_attempts )); then sleep 1; fi
+            done
+            echo "::error::${project_label}のDocker照会が${container_query_attempts}回すべて失敗しました。" >&2
+            return 1
+          }
+          if [[ ! -d "${lock_directory}" ]]; then
+            echo "::error::Supabase検証のrepo共通lockを確認できないため、cleanup所有権を確定できません。"
+            exit 1
+          fi
+          set +e
+          supabase start > "${log_file}" 2>&1
+          start_status=$?
+          owned_names_status=0
+          owned_containers="$(list_project_containers)" || owned_names_status=$?
+          set -e
+          if [[ "${owned_names_status}" -eq 0 ]]; then
+            owned_names="$(awk -F '\t' 'NF >= 2 && $1 != "" && $2 != "" { print $2 }' <<< "${owned_containers}")"
+            if [[ -n "${owned_names}" ]]; then
+              echo 'known=true' > "${ownership_file}"
+              while IFS= read -r container_name; do
+                [[ -z "${container_name}" ]] || echo "name=${container_name}" >> "${ownership_file}"
+              done <<< "${owned_names}"
+            else
+              owned_names_status=1
+            fi
+          fi
+          if [[ "${start_status}" -ne 0 ]]; then
+            echo "::error::supabase startに失敗しました。"
+            redact_log < "${log_file}"
+            exit "${start_status}"
+          fi
+          if [[ "${owned_names_status}" -ne 0 ]]; then
+            echo "::error::起動後の${project_label}所有確認に失敗したため、中止します。"
+            exit 1
+          fi
+      - name: 全migrationを空DBへ再適用
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/supabase-reset.log"
+          set +e
+          supabase db reset > "${log_file}" 2>&1
+          command_status=$?
+          set -e
+          if [[ "${command_status}" -ne 0 ]]; then
+            echo "::error::supabase db resetに失敗しました。"
+            sed -E \
+              -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+              -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+              -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+              -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi' < "${log_file}"
+            exit "${command_status}"
+          fi
+      - name: RLS・関数・pgTAPを実DBで検証
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/supabase-test.log"
+          set +e
+          supabase test db > "${log_file}" 2>&1
+          command_status=$?
+          set -e
+          if [[ "${command_status}" -ne 0 ]]; then
+            echo "::error::supabase test dbに失敗しました。"
+            sed -E \
+              -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+              -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+              -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+              -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi' < "${log_file}"
+            exit "${command_status}"
+          fi
+      - name: DB失敗時の診断ログを表示
+        if: failure() && steps.database-preflight.outcome == 'success'
+        shell: bash
+        run: |
+          set +e
+          project_label='com.supabase.cli.project=jstqb-study-app'
+          container_query_attempts=3
+          list_project_containers() {
+            local attempt
+            local containers
+            for ((attempt = 1; attempt <= container_query_attempts; attempt += 1)); do
+              if containers="$(docker ps --all --filter "label=${project_label}" --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}')"; then
+                printf '%s\n' "${containers}"
+                return 0
+              fi
+              if (( attempt < container_query_attempts )); then sleep 1; fi
+            done
+            echo "::error::${project_label}のDocker照会が${container_query_attempts}回すべて失敗しました。" >&2
+            return 1
+          }
+          echo "稼働中・停止済みのSupabaseコンテナを確認します。"
+          containers_status=0
+          containers="$(list_project_containers)" || containers_status=$?
+          if [[ "${containers_status}" -ne 0 ]]; then
+            echo "::error::診断時の${project_label}所有確認に失敗しました。"
+          elif [[ -n "${containers}" ]]; then
+            printf '%s\n' "${containers}"
+          fi
+          echo "PostgreSQLの末尾300行を表示します。"
+          if [[ "${containers_status}" -eq 0 ]] && awk -F '\t' '$2 == "supabase_db_jstqb-study-app" { found = 1 } END { exit found ? 0 : 1 }' <<< "${containers}"; then
+            docker logs --tail 300 supabase_db_jstqb-study-app 2>&1 \
+              | sed -E \
+                -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+                -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+                -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+                -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi' \
+              || true
+          fi
+      - name: ローカルSupabaseを確実に停止
+        if: always() && steps.database-preflight.outcome == 'success'
+        shell: bash
+        run: |
+          set +e
+          project_label='com.supabase.cli.project=jstqb-study-app'
+          lock_directory="${RUNNER_TEMP}/supabase-database-ci-${GITHUB_REPOSITORY//\//-}.lock"
+          ownership_file="${RUNNER_TEMP}/supabase-owned-containers"
+          container_query_attempts=3
+          release_lock() {
+            if ! rmdir "${lock_directory}"; then
+              echo "::error::Supabase検証のrepo共通lockを解放できません（${lock_directory}）。"
+              return 1
+            fi
+            return 0
+          }
+          list_project_containers() {
+            local attempt
+            local containers
+            for ((attempt = 1; attempt <= container_query_attempts; attempt += 1)); do
+              if containers="$(docker ps --all --filter "label=${project_label}" --format '{{.ID}}\t{{.Names}}')"; then
+                printf '%s\n' "${containers}"
+                return 0
+              fi
+              if (( attempt < container_query_attempts )); then sleep 1; fi
+            done
+            echo "::error::${project_label}のDocker照会が${container_query_attempts}回すべて失敗しました。" >&2
+            return 1
+          }
+          finish_cleanup() {
+            local cleanup_status="$1"
+            if ! release_lock && [[ "${cleanup_status}" -eq 0 ]]; then cleanup_status=1; fi
+            exit "${cleanup_status}"
+          }
+          if [[ ! -f "${ownership_file}" ]] || ! grep -q '^known=true$' "${ownership_file}"; then
+            echo "::error::Supabaseの所有状態を確認できないため、他agentのDBを停止せずcleanupを中止します。"
+            finish_cleanup 1
+          fi
+          current_status=0
+          current_containers="$(list_project_containers)" || current_status=$?
+          if [[ "${current_status}" -ne 0 ]]; then
+            echo "::error::cleanup前の${project_label}所有確認に失敗したため、停止を中止します。"
+            finish_cleanup "${current_status}"
+          fi
+          current_names="$(awk -F '\t' 'NF >= 2 && $1 != "" && $2 != "" { print $2 }' <<< "${current_containers}")"
+          owned_names="$(sed -n 's/^name=//p' "${ownership_file}")"
+          unknown_names=""
+          while IFS= read -r container_name; do
+            [[ -z "${container_name}" ]] && continue
+            if ! grep -Fxq "${container_name}" <<< "${owned_names}"; then
+              unknown_names+="${container_name}"$'\n'
+            fi
+          done <<< "${current_names}"
+          if [[ -n "${unknown_names}" ]]; then
+            echo "::error::未知の同project containerを検出したため、他agentのDBを停止せずcleanupを中止します。"
+            printf '%s' "${unknown_names}"
+            finish_cleanup 1
+          fi
+          cleanup_status=0
+          if [[ -n "${current_names}" ]]; then
+            stop_log="${RUNNER_TEMP}/supabase-stop.log"
+            supabase stop --no-backup > "${stop_log}" 2>&1
+            stop_status=$?
+            if [[ "${stop_status}" -ne 0 ]]; then
+              echo "::error::supabase stop --no-backupに失敗しました。"
+              sed -E \
+                -e 's#(://)[^[:space:]]+#\1[機密接続情報を伏せました]#g' \
+                -e 's/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/[JWTを伏せました]/g' \
+                -e 's/[A-Za-z0-9_-]{24,}/[長いtoken候補を伏せました]/g' \
+                -e 's/\b(password|token|secret|key|credential)\b[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=[機密値を伏せました]/gi' < "${stop_log}"
+              cleanup_status="${stop_status}"
+            fi
+          fi
+          remaining_status=0
+          remaining_containers="$(list_project_containers)" || remaining_status=$?
+          if [[ "${remaining_status}" -ne 0 ]]; then
+            echo "::error::cleanup後の${project_label}残留確認に失敗しました。"
+            if [[ "${cleanup_status}" -eq 0 ]]; then cleanup_status="${remaining_status}"; fi
+          fi
+          remaining_names="$(awk -F '\t' 'NF >= 2 && $1 != "" && $2 != "" { print $2 }' <<< "${remaining_containers}")"
+          if [[ -n "${remaining_names}" ]]; then
+            echo "::error::cleanup後も${project_label}のcontainerが残っています。"
+            printf '%s\n' "${remaining_containers}"
+            if [[ "${cleanup_status}" -eq 0 ]]; then cleanup_status=1; fi
+          fi
+          finish_cleanup "${cleanup_status}"
+
   security:
     name: security
     runs-on: ubuntu-latest
@@ -133,6 +426,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: pnpmを準備
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:

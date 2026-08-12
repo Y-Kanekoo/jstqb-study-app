@@ -4,6 +4,8 @@ import { describe, it } from 'node:test';
 
 const workflowsUrl = new URL('../.github/workflows/', import.meta.url);
 const rulesetUrl = new URL('../.github/rulesets/main.json', import.meta.url);
+const ciWorkflowUrl = new URL('../.github/workflows/ci.yml', import.meta.url);
+const setupCliSha = '46f7f98c7f948ad727d22c1e67fab04c223a0520';
 
 describe('GitHub Actionsの信頼境界', () => {
   it('外部Actionを検証済みの40桁commit SHAへ固定する', async () => {
@@ -25,7 +27,40 @@ describe('GitHub Actionsの信頼境界', () => {
     const statusRule = parsed.rules.find((rule) => rule.type === 'required_status_checks');
     assert.ok(statusRule, '必須checkのRulesetがありません。');
     const checks = statusRule.parameters.required_status_checks;
-    assert.deepEqual(checks.map((check) => check.context).sort(), ['e2e', 'pages', 'quality', 'security']);
+    assert.deepEqual(checks.map((check) => check.context).sort(), ['database', 'e2e', 'pages', 'quality', 'security']);
     for (const check of checks) assert.equal(check.integration_id, 15368, `${check.context}の発行元が固定されていません。`);
+  });
+
+  it('database jobで固定CLIによるreset・pgTAP・常時cleanupを強制する', async () => {
+    const source = await readFile(ciWorkflowUrl, 'utf8');
+    const databaseStart = source.indexOf('\n  database:');
+    const databaseEnd = source.indexOf('\n  security:', databaseStart);
+    assert.ok(databaseStart >= 0 && databaseEnd > databaseStart, 'database jobがありません。');
+    const databaseJob = source.slice(databaseStart, databaseEnd);
+
+    assert.match(databaseJob, /name: database/u);
+    assert.match(databaseJob, /runs-on: ubuntu-latest/u);
+    assert.match(databaseJob, /timeout-minutes: 20/u);
+    assert.match(databaseJob, new RegExp(`uses: supabase/setup-cli@${setupCliSha}`, 'u'));
+    assert.match(databaseJob, /version: 2\.113\.0/u);
+
+    const preflightIndex = databaseJob.indexOf('Supabase同一projectの事前確認');
+    const startIndex = databaseJob.indexOf('supabase start');
+    const resetIndex = databaseJob.indexOf('supabase db reset');
+    const testIndex = databaseJob.indexOf('supabase test db');
+    assert.ok(startIndex >= 0 && startIndex < resetIndex && resetIndex < testIndex, 'Supabase検証順が不正です。');
+    assert.ok(preflightIndex >= 0 && preflightIndex < startIndex, '同project preflightがstartより前にありません。');
+    assert.match(databaseJob, /com\.supabase\.cli\.project=jstqb-study-app/u);
+    assert.match(databaseJob, /--filter "label=\$\{project_label\}"/u);
+    assert.match(databaseJob, /if: failure\(\) && steps\.database-preflight\.outcome == 'success'[\s\S]*docker logs --tail 300 supabase_db_jstqb-study-app/u);
+    assert.match(databaseJob, /if: always\(\) && steps\.database-preflight\.outcome == 'success'[\s\S]*supabase stop --no-backup/u);
+    assert.match(databaseJob, /supabase start > "\$\{log_file\}" 2>&1/u);
+    assert.match(databaseJob, /supabase db reset > "\$\{log_file\}" 2>&1/u);
+    assert.match(databaseJob, /supabase test db > "\$\{log_file\}" 2>&1/u);
+    assert.match(databaseJob, /supabase stop --no-backup > "\$\{stop_log\}" 2>&1/u);
+    assert.match(databaseJob, /redact_log|機密値を伏せました/u);
+    assert.match(databaseJob, /JWTを伏せました/u);
+    assert.doesNotMatch(databaseJob, /name=supabase_/u);
+    assert.doesNotMatch(databaseJob, /SUPABASE_(?:DB_PASSWORD|SERVICE_ROLE_KEY)|postgres(?:ql)?:\/\//u);
   });
 });

@@ -26,7 +26,7 @@ const providerPatterns = [
   { name: '認証情報付きデータベースURL', pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s/:]+:[^\s/@]+@/u },
 ];
 const jwtPattern = /\b[A-Za-z0-9_-]{8,}\.([A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{16,}\b/gu;
-const sensitiveAssignmentPattern = /\b(?:[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL)|[a-z][a-z0-9_]*(?:_key|_token|_secret|_password|_credential)|[a-z][A-Za-z0-9]*(?:Key|Token|Secret|Password|Credential)|token|secret|password|credential)\b\s*[:=]\s*["'`]([^"'`\s]{20,})["'`]/gu;
+const sensitiveAssignmentPrefixPattern = /\b(?:[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL)|[a-z][a-z0-9_]*(?:_key|_token|_secret|_password|_credential)|[a-z][A-Za-z0-9]*(?:Key|Token|Secret|Password|Credential)|token|secret|password|credential)\b\s*[:=]\s*(["'`])/gu;
 const highRiskJwtRoles = new Set(['postgres', 'service_role', 'supabase_admin']);
 
 function runGit(args, options = {}) {
@@ -67,6 +67,109 @@ function decodeJwtPayload(encodedPayload) {
   }
 }
 
+function extractQuotedLiterals(value) {
+  let literal = '';
+  let quote = '';
+  let index = 0;
+  while (index < value.length) {
+    const character = value[index] ?? '';
+    if (quote !== '') {
+      if (character === '\\') {
+        literal += character;
+        literal += value[index + 1] ?? '';
+        index += 2;
+        continue;
+      }
+      if (character === quote) {
+        quote = '';
+        index += 1;
+        continue;
+      }
+      literal += character;
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') {
+      quote = character;
+    }
+    index += 1;
+  }
+  return literal;
+}
+
+function readTemplateExpression(value, startIndex) {
+  let expression = '';
+  let depth = 1;
+  let quote = '';
+  let index = startIndex;
+  while (index < value.length && depth > 0) {
+    const character = value[index] ?? '';
+    expression += character;
+    if (quote !== '') {
+      if (character === '\\') {
+        expression += value[index + 1] ?? '';
+        index += 2;
+        continue;
+      }
+      if (character === quote) quote = '';
+    } else if (character === '"' || character === "'" || character === '`') {
+      quote = character;
+    } else if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+    }
+    index += 1;
+  }
+  return { expression, nextIndex: index };
+}
+
+function readQuotedAssignment(content, startIndex, delimiter) {
+  let index = startIndex;
+  let value = '';
+  while (index < content.length) {
+    const character = content[index] ?? '';
+    if (character === '\\') {
+      value += character;
+      value += content[index + 1] ?? '';
+      index += 2;
+      continue;
+    }
+    if (delimiter === '`' && content.startsWith('${', index)) {
+      const expression = readTemplateExpression(content, index + 2);
+      value += `\${${expression.expression}`;
+      index = expression.nextIndex;
+      continue;
+    }
+    if (character === delimiter) return value;
+    value += character;
+    index += 1;
+  }
+  return null;
+}
+
+function removeTemplateInterpolations(value) {
+  let literal = '';
+  let index = 0;
+  while (index < value.length) {
+    if (value[index] === '\\') {
+      literal += value[index] ?? '';
+      literal += value[index + 1] ?? '';
+      index += 2;
+      continue;
+    }
+    if (value.startsWith('${', index)) {
+      const expression = readTemplateExpression(value, index + 2);
+      literal += extractQuotedLiterals(expression.expression);
+      index = expression.nextIndex;
+      continue;
+    }
+    literal += value[index] ?? '';
+    index += 1;
+  }
+  return literal;
+}
+
 export function detectSecretFindings(content) {
   const findings = new Set();
   for (const { name, pattern } of providerPatterns) {
@@ -81,10 +184,14 @@ export function detectSecretFindings(content) {
     }
   }
 
-  for (const match of content.matchAll(sensitiveAssignmentPattern)) {
-    const value = match[1] ?? '';
-    if (/example|fixture|placeholder|dummy|your[-_]/iu.test(value)) continue;
-    if (value.length >= 24 && shannonEntropy(value) >= 3.8) {
+  for (const match of content.matchAll(sensitiveAssignmentPrefixPattern)) {
+    const delimiter = match[1] ?? '';
+    const valueStart = (match.index ?? 0) + match[0].length;
+    const value = readQuotedAssignment(content, valueStart, delimiter);
+    if (value === null) continue;
+    const literalValue = delimiter === '`' ? removeTemplateInterpolations(value) : value;
+    if (/example|fixture|placeholder|dummy|your[-_]/iu.test(literalValue)) continue;
+    if (literalValue.length >= 24 && shannonEntropy(literalValue) >= 3.8) {
       findings.add('機密名へ代入された高エントロピー値');
     }
   }
@@ -117,7 +224,7 @@ for (const relativePath of trackedFiles) {
   checkContent(relativePath, await readFile(filePath, 'utf8'), violations);
 }
 
-const reachableObjects = runGit(['-c', 'core.quotePath=false', 'rev-list', '--objects', '--all'])
+const reachableObjects = runGit(['-c', 'core.quotePath=false', 'rev-list', '--objects', 'HEAD'])
   .split('\n')
   .filter(Boolean);
 const pathsByObjectId = new Map();

@@ -88,7 +88,7 @@ async function verifyRequiredJobs(runId) {
   if (!isRecord(response) || !Array.isArray(response.jobs)) {
     throw new Error('品質検査のjob一覧を取得できません。');
   }
-  const requiredJobs = ['e2e', 'pages', 'quality', 'security'];
+  const requiredJobs = ['database', 'e2e', 'pages', 'quality', 'security'];
   const failed = requiredJobs.filter((name) => !response.jobs.some(
     (job) => isRecord(job) && job.name === name && job.status === 'completed' && job.conclusion === 'success',
   ));

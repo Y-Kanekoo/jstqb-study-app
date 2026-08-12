@@ -19,6 +19,8 @@
 
 既存テストを要件変更のために書き換えず、実装側で解決します。
 
+DB試験はPRごとに必須check `database`で実行します。空DBへの`supabase db reset`により全migrationの再現性を確認した後、`supabase test db`で`supabase/tests/*.sql`を実行します。RLSや`SECURITY DEFINER` RPCを追加するPRは、匿名・learner・reviewer/adminの許可/拒否と、非公開データの漏えい防止をpgTAPへ追加します。
+
 ## 2. 保存・再開の受入
 
 1. 選択直後の強制終了で未確定選択を復元できる。
@@ -68,4 +70,3 @@
 - 保存: 容量不足、書込み失敗、migration失敗
 - 時刻: 日付変更、タイムゾーン変更、端末時計ずれ
 - 操作: 複数タブ、複数端末、連打、戻る、強制終了
-

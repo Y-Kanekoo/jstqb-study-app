@@ -20,17 +20,18 @@ mainへ入る前に次のGitHub Checksを必須にします。
 | Check | 内容 |
 |---|---|
 | `quality` | 禁止型、秘密情報、lint、型、単体、契約、コンテンツ、Webビルド |
+| `database` | 空のローカルSupabaseへ全migrationを再適用し、RLS・関数・pgTAPを実DB検証 |
 | `e2e` | Chromiumデスクトップ・モバイル、保存、誤答、オフライン、アクセシビリティ |
 | `pages` | 本番サブパス成果物、ルーティング、Service WorkerのWeb E2E |
 | `security` | 全履歴の秘密検査、実行・ビルド依存のhigh以上の脆弱性、例外期限 |
 
-`scripts/apply-main-ruleset.sh`は、上記4検査、会話解決、squash mergeをGitHub Rulesetへ設定します。実行にはGitHub CLIのAdministration write権限が必要です。
+`scripts/apply-main-ruleset.sh`は、上記5検査、会話解決、squash mergeをGitHub Rulesetへ設定します。実行にはGitHub CLIのAdministration write権限が必要です。
 
 ```bash
 ./scripts/apply-main-ruleset.sh
 ```
 
-初期はGitHubアカウント1つで運用するため、承認数を0、最新push以外の人による承認をOFFにします。自己承認を作るbotや偽装レビューは設定せず、独立AIレビューの結果をPR本文またはコメントへ記録します。自動マージでも`quality`、`e2e`、`pages`、`security`、会話解決、最新mainでの検査は迂回できません。
+初期はGitHubアカウント1つで運用するため、承認数を0、最新push以外の人による承認をOFFにします。自己承認を作るbotや偽装レビューは設定せず、独立AIレビューの結果をPR本文またはコメントへ記録します。自動マージでも`quality`、`database`、`e2e`、`pages`、`security`、会話解決、最新mainでの検査は迂回できません。
 
 別の人間レビュアーを追加した時点で`.github/rulesets/main.json`を次のように変更し、スクリプトを再実行します。
 
@@ -41,9 +42,28 @@ mainへ入る前に次のGitHub Checksを必須にします。
 }
 ```
 
-## 3. GitHub Pages
+## 3. Database CI
 
-`品質検査`がmainで成功すると`Web本番デプロイ`が開始します。手動実行は現在のmainからだけ可能で、同じcommitに対する`quality`、`e2e`、`pages`、`security`の成功をGitHub APIで再検証します。
+`database`はGitHub管理のUbuntu runnerとDockerだけを使用し、外部DBやRepository Secretへ接続しません。
+
+ローカルで同じ検証を行う場合は、Dockerを起動して次を実行します。
+
+```bash
+pnpm test:database
+```
+
+1. `supabase/setup-cli`の検証済みcommit SHAから固定版CLIを準備する。
+2. `supabase start`で一時環境を起動する。
+3. `supabase db reset`で空DBへ全migrationを順番に再適用する。
+4. `supabase test db`で`supabase/tests/*.sql`のpgTAP、RLS、関数契約を実DB検証する。
+5. 失敗時はコンテナ一覧とPostgreSQL末尾ログだけを表示する。
+6. 成否にかかわらず`supabase stop --no-backup`を実行し、コンテナ残留を失敗扱いにする。
+
+DBパスワード、service role key、ローカル環境の状態出力はログやartifactへ保存しません。migration失敗は既存migrationの書換えで直さず、原則として加算的な修正migrationで解決します。
+
+## 4. GitHub Pages
+
+`品質検査`がmainで成功すると`Web本番デプロイ`が開始します。手動実行は現在のmainからだけ可能で、同じcommitに対する`quality`、`database`、`e2e`、`pages`、`security`の成功をGitHub APIで再検証します。
 
 初回だけGitHubのSettings、Pages、Build and deploymentでSourceを`GitHub Actions`にします。Pagesデプロイには外部シークレットは不要です。
 
@@ -56,7 +76,7 @@ mainへ入る前に次のGitHub Checksを必須にします。
 
 Pages用ビルドではリポジトリ名をExpo Routerの`baseUrl`へ設定し、SPA用`404.html`、`.nojekyll`、サブパス対応manifestとService Workerを生成します。
 
-## 4. 問題コンテンツ
+## 5. 問題コンテンツ
 
 公開リポジトリのサンプルは`pnpm test:content`で検査します。本番500題は公開リポジトリへ置かず、公開候補のJSONエクスポートに対して次を実行します。
 
@@ -66,9 +86,9 @@ CONTENT_MINIMUM_COUNT=500 pnpm content:verify /安全な場所/questions.json
 
 エクスポートはコミットせず、検査後もCI artifactへ保存しません。500題未満、未レビュー、非公開状態、重複、根拠不足、正答数不整合が1件でもある場合は公開しません。
 
-## 5. Webリリース確認
+## 6. Webリリース確認
 
-1. `quality`、`e2e`、`pages`、`security`が成功している。
+1. `quality`、`database`、`e2e`、`pages`、`security`が成功している。
 2. `pages-build`と`pages-deploy`が成功している。
 3. 公開URLのホーム、問題、再読み込み、オフライン復帰を確認する。
 4. Supabase変数を設定した場合は別端末同期を確認する。
@@ -76,7 +96,7 @@ CONTENT_MINIMUM_COUNT=500 pnpm content:verify /安全な場所/questions.json
 
 問題がある場合はGitHub Pagesの直前の成功デプロイを再実行するか、修正PRを作成します。DB変更はロールバックSQLに依存せず、後方互換の修正migrationでロールフォワードします。
 
-## 6. iOS・Android
+## 7. iOS・Android
 
 `eas.json`は秘密情報を含まないビルドテンプレートです。EASへ接続するまでは自動ストア配布を行いません。
 
@@ -86,8 +106,8 @@ CONTENT_MINIMUM_COUNT=500 pnpm content:verify /安全な場所/questions.json
 
 GitHub Actionsへモバイル配布を追加する場合は、GitHub Environment `mobile-production`を作り、承認者を設定してから`EAS_TOKEN`をEnvironment Secretに保存します。Secretがない場合に代替値や個人トークンをコードへ入れてはいけません。
 
-## 7. Dependabot
+## 8. Dependabot
 
-npmとGitHub Actionsを毎週月曜に確認します。minor・patchは本番依存と開発依存に分けてグループ化します。自動マージする場合も通常PRと同じ4検査を必須にし、人間レビュアー追加後は承認1件も必須にします。
+npmとGitHub Actionsを毎週月曜に確認します。minor・patchは本番依存と開発依存に分けてグループ化します。自動マージする場合も通常PRと同じ5検査を必須にし、人間レビュアー追加後は承認1件も必須にします。
 
 Workflowで利用するActionは、検証したリリースcommitの40桁SHAへ固定します。行末の`# vN`は追跡対象のリリース系列を示し、DependabotがSHAと注記を同じPRで更新します。可変tagやbranchへ戻しません。必須checkはGitHub Actions App（integration ID `15368`）が発行したものだけをRulesetで受理します。

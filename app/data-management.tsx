@@ -12,6 +12,8 @@ import { colors, fonts, radii } from '@/theme/tokens';
 export default function DataManagementScreen() {
   const router = useRouter();
   const restoreSnapshot = useLearningStore((state) => state.restoreSnapshot);
+  const conflicts = useLearningStore((state) => state.conflicts ?? []);
+  const resolveConflict = useLearningStore((state) => state.resolveConflict);
   const saving = useLearningStore((state) => state.saving);
   const [backupText, setBackupText] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -49,10 +51,20 @@ export default function DataManagementScreen() {
     }
     try {
       await restoreSnapshot(backup.snapshot);
-      setMessage(`${backup.exportedAt} のバックアップを復元しました。`);
+      setMessage(`${backup.exportedAt} のバックアップを端末専用データとして復元しました。別アカウントのサーバー履歴へは自動同期しません。`);
       setConfirmation('');
     } catch {
       setError('バックアップを端末へ保存できませんでした。空き容量をご確認ください。');
+    }
+  };
+
+  const resolve = async (conflictId: string, action: 'keep-local' | 'accept-remote' | 'merge', mergedValue?: string | string[]) => {
+    setError(null);
+    try {
+      await resolveConflict(conflictId, action, mergedValue);
+      setMessage('同期競合を解決しました。');
+    } catch (resolutionError: unknown) {
+      setError(resolutionError instanceof Error ? resolutionError.message : '同期競合を解決できませんでした。');
     }
   };
 
@@ -86,6 +98,45 @@ export default function DataManagementScreen() {
         <Button label="このバックアップで置き換える" variant="danger" disabled={confirmation !== '復元' || backupText.trim().length === 0} loading={saving} onPress={() => void restore()} />
       </Card>
 
+      {conflicts.map((conflict) => (
+        <Card key={conflict.id} style={styles.conflictCard}>
+          <Text style={styles.cardTitle}>同期競合を解決</Text>
+          {conflict.kind === 'draft' ? (
+            <>
+              <Text style={styles.description}>途中回答が別端末でも更新されました。採用する内容を選んでください。</Text>
+              <Text style={styles.conflictValue}>端末: {conflict.local.selectedChoiceIds.join(', ') || '未選択'}</Text>
+              <Text style={styles.conflictValue}>サーバー: {conflict.remote.selectedChoiceIds.join(', ') || '未選択'}</Text>
+              <View style={styles.actions}>
+                <Button label="端末を採用" style={styles.action} onPress={() => void resolve(conflict.id, 'keep-local')} />
+                <Button label="サーバーを採用" variant="secondary" style={styles.action} onPress={() => void resolve(conflict.id, 'accept-remote')} />
+                <Button
+                  label="両方を統合"
+                  variant="quiet"
+                  style={styles.action}
+                  onPress={() => void resolve(conflict.id, 'merge', [...new Set([...conflict.local.selectedChoiceIds, ...conflict.remote.selectedChoiceIds])])}
+                />
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={styles.description}>メモが別端末でも更新されました。採用する内容を選んでください。</Text>
+              <Text style={styles.conflictValue}>端末: {conflict.local.body || '空'}</Text>
+              <Text style={styles.conflictValue}>サーバー: {conflict.remote.body || '空'}</Text>
+              <View style={styles.actions}>
+                <Button label="端末を採用" style={styles.action} onPress={() => void resolve(conflict.id, 'keep-local')} />
+                <Button label="サーバーを採用" variant="secondary" style={styles.action} onPress={() => void resolve(conflict.id, 'accept-remote')} />
+                <Button
+                  label="両方を統合"
+                  variant="quiet"
+                  style={styles.action}
+                  onPress={() => void resolve(conflict.id, 'merge', `${conflict.local.body}\n\n--- 別端末のメモ ---\n${conflict.remote.body}`)}
+                />
+              </View>
+            </>
+          )}
+        </Card>
+      ))}
+
       {message && <Text accessibilityRole="alert" style={styles.success}>{message}</Text>}
       {error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
       <Button label="設定へ戻る" variant="quiet" onPress={() => router.back()} />
@@ -96,8 +147,10 @@ export default function DataManagementScreen() {
 const styles = StyleSheet.create({
   exportCard: { gap: 13 },
   restoreCard: { gap: 12 },
+  conflictCard: { gap: 12, borderColor: colors.warning, backgroundColor: '#FFF8E8' },
   cardTitle: { color: colors.ink, fontFamily: fonts.display, fontSize: 19 },
   description: { color: colors.inkMuted, fontFamily: fonts.body, fontSize: 13, lineHeight: 22 },
+  conflictValue: { color: colors.ink, backgroundColor: colors.paper, borderRadius: radii.small, padding: 10, fontFamily: fonts.body, fontSize: 12, lineHeight: 19 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   action: { flex: 1, minWidth: 190 },
   backupInput: { minHeight: 180, borderWidth: 1, borderColor: colors.border, borderRadius: radii.medium, backgroundColor: colors.paper, color: colors.ink, fontFamily: fonts.body, fontSize: 12, lineHeight: 19, padding: 12 },

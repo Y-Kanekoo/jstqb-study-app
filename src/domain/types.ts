@@ -1,8 +1,10 @@
 export type QuestionDifficulty = 1 | 2 | 3;
 export type SessionMode = 'chapter' | 'random' | 'wrong' | 'review' | 'exam';
-export type SessionStatus = 'active' | 'completed';
+export type SessionStatus = 'active' | 'submitting' | 'completed';
 export type LatestOutcome = 'correct' | 'wrong' | null;
-export type SyncStatus = 'synced' | 'queued' | 'syncing' | 'auth-required' | 'error';
+export type SyncStatus = 'synced' | 'queued' | 'syncing' | 'auth-required' | 'conflict' | 'error';
+export type LearningSyncMode = 'active' | 'portable-local';
+export type ConflictAction = 'keep-local' | 'accept-remote' | 'merge';
 export type WrongFilter = 'unresolved' | 'latest-wrong' | 'last-7-days' | 'last-30-days' | 'last-90-days' | 'ever' | 'recovered';
 export type ContentIssueCategory = 'incorrect_answer' | 'unclear' | 'outdated' | 'typo' | 'other';
 
@@ -20,14 +22,24 @@ export interface Question {
   chapterNumber: number;
   chapterTitle: string;
   objectiveCode: string;
-  kLevel?: 1 | 2 | 3;
+  kLevel?: 1 | 2 | 3 | undefined;
   prompt: string;
   explanation: string;
   difficulty: QuestionDifficulty;
   sourceReference: string;
-  selectionType?: 'single' | 'multiple';
-  requiredChoiceCount?: number;
+  selectionType?: 'single' | 'multiple' | undefined;
+  requiredChoiceCount?: number | undefined;
   choices: Choice[];
+}
+
+export interface SessionChoice {
+  id: string;
+  label: string;
+  body: string;
+}
+
+export interface SessionQuestionSnapshot extends Omit<Question, 'choices'> {
+  choices: SessionChoice[];
 }
 
 export interface LearningSession {
@@ -35,12 +47,15 @@ export interface LearningSession {
   mode: SessionMode;
   title: string;
   questionIds: string[];
+  questionVersionIds?: string[] | undefined;
+  questionSnapshots?: SessionQuestionSnapshot[] | undefined;
   currentIndex: number;
   answeredQuestionIds: string[];
   status: SessionStatus;
   reviewQuestionIds?: string[];
   durationMinutes?: number | null;
   expiresAt?: string | null;
+  startedAt?: string | null;
   submittedAt?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -50,6 +65,9 @@ export interface AnswerDraft {
   sessionId: string;
   questionId: string;
   selectedChoiceIds: string[];
+  questionVersionId: string | null;
+  revision: number;
+  deviceId: string;
   updatedAt: string;
 }
 
@@ -60,6 +78,7 @@ export interface AnswerAttempt {
   questionVersionId: string;
   selectedChoiceIds: string[];
   isCorrect: boolean;
+  invalidated?: boolean | undefined;
   answeredAt: string;
 }
 
@@ -111,8 +130,31 @@ export interface OutboxEvent {
     | 'issue.reported';
   entityId: string;
   occurredAt: string;
-  payload: Record<string, boolean | number | string | string[]>;
+  payload: Record<string, boolean | number | string | string[] | null>;
+  blocked?: boolean | undefined;
+  resolved?: boolean | undefined;
+  blockedReason?: string | undefined;
 }
+
+export interface DraftConflict {
+  id: string;
+  kind: 'draft';
+  entityId: string;
+  local: AnswerDraft;
+  remote: AnswerDraft;
+  createdAt: string;
+}
+
+export interface NoteConflict {
+  id: string;
+  kind: 'note';
+  entityId: string;
+  local: QuestionNote;
+  remote: QuestionNote;
+  createdAt: string;
+}
+
+export type LearningConflict = DraftConflict | NoteConflict;
 
 export interface LearningSnapshot {
   schemaVersion: 2;
@@ -126,6 +168,8 @@ export interface LearningSnapshot {
   outbox: OutboxEvent[];
   syncCursor: number;
   dailyGoal: number;
+  conflicts?: LearningConflict[] | undefined;
+  syncMode?: LearningSyncMode | undefined;
 }
 
 export interface RemoteSyncEvent extends OutboxEvent {
@@ -141,4 +185,5 @@ export interface ExamResult {
   correctCount: number;
   totalCount: number;
   passed: boolean;
+  pending?: boolean;
 }

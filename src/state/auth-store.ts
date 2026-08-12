@@ -1,8 +1,12 @@
 import type { Session } from '@supabase/supabase-js';
-import * as Linking from 'expo-linking';
 import { create } from 'zustand';
 
 import { supabase } from '@/services/supabase';
+
+export interface DeleteAccountResult {
+  serverDeleted: boolean;
+  authCleared: boolean;
+}
 
 interface AuthStore {
   initialized: boolean;
@@ -14,7 +18,7 @@ interface AuthStore {
   signUp: (email: string, password: string) => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
   updatePassword: (password: string) => Promise<void>;
-  deleteAccount: () => Promise<void>;
+  deleteAccount: (password: string) => Promise<DeleteAccountResult>;
   signOut: () => Promise<void>;
 }
 
@@ -59,6 +63,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
       throw new Error('同期サーバーが設定されていません。');
     }
     set({ loading: true, error: null });
+    const Linking = await import('expo-linking');
     const redirectTo = Linking.createURL('/reset-password');
     const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
     set({ loading: false, error: error?.message ?? null });
@@ -75,15 +80,28 @@ export const useAuthStore = create<AuthStore>((set) => ({
     if (error) throw error;
   },
 
-  deleteAccount: async () => {
+  deleteAccount: async (password) => {
     if (!supabase) {
       throw new Error('同期サーバーが設定されていません。');
     }
+    const email = useAuthStore.getState().session?.user.email;
+    if (!email || password.length === 0) {
+      throw new Error('削除前に現在のパスワードを入力してください。');
+    }
     set({ loading: true, error: null });
+    const { error: reauthenticationError } = await supabase.auth.signInWithPassword({ email, password });
+    if (reauthenticationError) {
+      set({ loading: false, error: reauthenticationError.message });
+      throw reauthenticationError;
+    }
     const { error } = await supabase.rpc('delete_current_user');
-    set({ loading: false, error: error?.message ?? null });
-    if (error) throw error;
-    set({ session: null });
+    if (error) {
+      set({ loading: false, error: error.message });
+      throw error;
+    }
+    const { error: signOutError } = await supabase.auth.signOut({ scope: 'local' });
+    set({ loading: false, error: signOutError?.message ?? null, session: null });
+    return { serverDeleted: true, authCleared: !signOutError };
   },
 
   signOut: async () => {

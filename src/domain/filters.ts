@@ -37,7 +37,7 @@ export function filterWrongQuestionIds(
   const thresholdIso = threshold.toISOString();
   return [...new Set(
     attempts
-      .filter((attempt) => !attempt.isCorrect && attempt.answeredAt >= thresholdIso)
+      .filter((attempt) => !attempt.invalidated && !attempt.isCorrect && attempt.answeredAt >= thresholdIso)
       .map((attempt) => attempt.questionId),
   )];
 }

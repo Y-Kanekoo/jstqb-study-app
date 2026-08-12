@@ -3,9 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { examConfig } from '@/config/exam';
-import { getQuestion } from '@/content/questions';
 import { Screen } from '@/components/screen';
 import { Button, Card, ProgressBar } from '@/components/ui';
+import { getSessionQuestion } from '@/domain/session-question';
 import { useLearningStore } from '@/state/learning-store';
 import { colors, fonts, radii } from '@/theme/tokens';
 
@@ -69,8 +69,12 @@ export default function PracticeScreen() {
 
   const sessionAttempts = attempts.filter((attempt) => attempt.sessionId === session.id);
   if (session.status === 'completed' && !(session.mode === 'exam' && reviewExamResults)) {
-    const correctCount = sessionAttempts.filter((attempt) => attempt.isCorrect).length;
-    const denominator = session.mode === 'exam' ? session.questionIds.length : sessionAttempts.length;
+    const invalidatedCount = sessionAttempts.filter((attempt) => attempt.invalidated).length;
+    const validAttempts = sessionAttempts.filter((attempt) => !attempt.invalidated);
+    const correctCount = validAttempts.filter((attempt) => attempt.isCorrect).length;
+    const denominator = session.mode === 'exam'
+      ? Math.max(0, session.questionIds.length - invalidatedCount)
+      : validAttempts.length;
     const accuracy = denominator === 0 ? 0 : Math.round((correctCount / denominator) * 100);
     const passed = session.mode === 'exam' && correctCount >= examConfig.passScore;
     return (
@@ -100,7 +104,7 @@ export default function PracticeScreen() {
   }
 
   const questionId = session.questionIds[session.currentIndex];
-  const question = questionId ? getQuestion(questionId) : undefined;
+  const question = questionId ? getSessionQuestion(session, questionId) : undefined;
   if (!question) {
     return (
       <Screen title="問題を表示できませんでした" description="問題データが更新された可能性があります。">
@@ -120,7 +124,7 @@ export default function PracticeScreen() {
   const isExamReview = isExam && session.status === 'completed';
   const reviewMarked = (session.reviewQuestionIds ?? []).includes(question.id);
   const answeredDraftCount = session.questionIds.filter((id) => {
-    const targetQuestion = getQuestion(id);
+    const targetQuestion = getSessionQuestion(session, id);
     return (drafts[`${session.id}:${id}`]?.selectedChoiceIds.length ?? 0) === (targetQuestion?.requiredChoiceCount ?? 1);
   }).length;
   const isLastQuestion = session.currentIndex === session.questionIds.length - 1;
@@ -190,7 +194,7 @@ export default function PracticeScreen() {
             {isExam && session.status === 'active' ? `残り ${formatRemainingTime(secondsRemaining)}` : saving ? '端末へ保存中…' : 'この問題まで保存済み'}
           </Text>
         </View>
-        <Pressable accessibilityLabel={bookmarked ? 'ブックマークを解除' : 'ブックマークへ追加'} accessibilityRole="button" onPress={() => void toggleBookmark(question.id)} style={styles.bookmark}>
+        <Pressable accessibilityLabel={bookmarked ? 'ブックマークを解除' : 'ブックマークへ追加'} accessibilityRole="button" accessibilityState={{ disabled: saving }} disabled={saving} onPress={() => void toggleBookmark(question.id)} style={styles.bookmark}>
           <Text style={[styles.bookmarkText, bookmarked && styles.bookmarkActive]}>{bookmarked ? '★' : '☆'}</Text>
         </Pressable>
       </View>
@@ -230,8 +234,8 @@ export default function PracticeScreen() {
         <View style={styles.choices}>
           {question.choices.map((choice) => {
             const selected = selectedChoiceIds.includes(choice.id);
-            const resultCorrect = Boolean(attempt && choice.isCorrect);
-            const resultWrong = Boolean(attempt && selected && !choice.isCorrect);
+            const resultCorrect = false;
+            const resultWrong = false;
             return (
               <Pressable
                 aria-checked={selected}
@@ -253,7 +257,6 @@ export default function PracticeScreen() {
                 </View>
                 <View style={styles.choiceCopy}>
                   <Text style={styles.choiceBody}>{choice.body}</Text>
-                  {attempt && <Text style={styles.choiceExplanation}>{choice.explanation}</Text>}
                 </View>
               </Pressable>
             );
@@ -262,7 +265,7 @@ export default function PracticeScreen() {
       </Card>
 
       <View style={styles.questionActions}>
-        <Button label="問題を報告" variant="quiet" style={styles.questionActionButton} onPress={() => router.push({ pathname: '/report/[questionId]', params: { questionId: question.id } })} />
+        <Button label="問題を報告" variant="quiet" style={styles.questionActionButton} onPress={() => router.push({ pathname: '/report/[questionId]', params: { questionId: question.id, sessionId: session.id } })} />
         <Text style={styles.versionLabel}>問題ID {question.id} · 版 {question.versionId}</Text>
       </View>
 
@@ -331,7 +334,7 @@ export default function PracticeScreen() {
             <Text style={styles.overviewDescription}>回答済み {answeredDraftCount}問 · 未回答 {session.questionIds.length - answeredDraftCount}問 · 見直し {(session.reviewQuestionIds ?? []).length}問</Text>
             <View style={styles.questionGrid}>
               {session.questionIds.map((id, index) => {
-                const targetQuestion = getQuestion(id);
+                const targetQuestion = getSessionQuestion(session, id);
                 const answered = (drafts[`${session.id}:${id}`]?.selectedChoiceIds.length ?? 0) === (targetQuestion?.requiredChoiceCount ?? 1);
                 const marked = (session.reviewQuestionIds ?? []).includes(id);
                 return (

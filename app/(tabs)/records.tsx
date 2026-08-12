@@ -13,10 +13,11 @@ export default function RecordsScreen() {
   const attempts = useLearningStore((state) => state.attempts);
   const states = useLearningStore((state) => state.questionStates);
   const sessions = useLearningStore((state) => state.sessions);
-  const correctCount = attempts.filter((attempt) => attempt.isCorrect).length;
-  const accuracy = attempts.length === 0 ? 0 : correctCount / attempts.length;
+  const validAttempts = attempts.filter((attempt) => !attempt.invalidated);
+  const correctCount = validAttempts.filter((attempt) => attempt.isCorrect).length;
+  const accuracy = validAttempts.length === 0 ? 0 : correctCount / validAttempts.length;
   const unresolvedCount = Object.values(states).filter(isUnresolvedWrong).length;
-  const firstAttempts = [...attempts]
+  const firstAttempts = [...validAttempts]
     .sort((left, right) => left.answeredAt.localeCompare(right.answeredAt))
     .filter((attempt, index, sorted) => sorted.findIndex((item) => item.questionId === attempt.questionId) === index);
   const firstAccuracy = firstAttempts.length === 0 ? 0 : firstAttempts.filter((attempt) => attempt.isCorrect).length / firstAttempts.length;
@@ -31,7 +32,7 @@ export default function RecordsScreen() {
   return (
     <Screen title="学習記録" description="点数だけでなく、どこまで理解が定着したかを見ます。">
       <View style={styles.metrics}>
-        <Card style={styles.metricCard}><Text style={styles.metricLabel}>総回答</Text><Text style={styles.metricValue}>{attempts.length}</Text><Text style={styles.metricUnit}>問</Text></Card>
+        <Card style={styles.metricCard}><Text style={styles.metricLabel}>総回答</Text><Text style={styles.metricValue}>{validAttempts.length}</Text><Text style={styles.metricUnit}>問</Text></Card>
         <Card style={styles.metricCard}><Text style={styles.metricLabel}>初見正答率</Text><Text style={styles.metricValue}>{Math.round(firstAccuracy * 100)}</Text><Text style={styles.metricUnit}>%</Text></Card>
         <Card style={styles.metricCard}><Text style={styles.metricLabel}>問題消化率</Text><Text style={styles.metricValue}>{Math.round(consumption * 100)}</Text><Text style={styles.metricUnit}>%</Text></Card>
         <Card style={styles.metricCard}><Text style={styles.metricLabel}>未克服</Text><Text style={[styles.metricValue, styles.danger]}>{unresolvedCount}</Text><Text style={styles.metricUnit}>問</Text></Card>
@@ -63,7 +64,7 @@ export default function RecordsScreen() {
           <Text style={styles.insightCopy}>1問回答すると、セッションと問題版を含む履歴がここに残ります。</Text>
         </Card>
       ) : latestSessions.map((session) => {
-        const sessionAttempts = attempts.filter((attempt) => attempt.sessionId === session.id);
+        const sessionAttempts = validAttempts.filter((attempt) => attempt.sessionId === session.id);
         const correct = sessionAttempts.filter((attempt) => attempt.isCorrect).length;
         const versions = [...new Set(sessionAttempts.map((attempt) => attempt.questionVersionId))];
         return (
@@ -83,7 +84,7 @@ export default function RecordsScreen() {
 
       <Card style={styles.insightCard}>
         <Text style={styles.insightLabel}>LEARNING NOTE</Text>
-        <Text style={styles.insightTitle}>{attempts.length === 0 ? '最初の1問から記録が始まります' : accuracy >= 0.8 ? 'よいペースです。定着の確認へ進みましょう' : '誤答の解説を読み、別の日にもう一度'}</Text>
+        <Text style={styles.insightTitle}>{validAttempts.length === 0 ? '最初の1問から記録が始まります' : accuracy >= 0.8 ? 'よいペースです。定着の確認へ進みましょう' : '誤答の解説を読み、別の日にもう一度'}</Text>
         <Text style={styles.insightCopy}>正答率は目安です。「未克服」が減っているか、章ごとの未学習部分がないかも合わせて確認してください。</Text>
       </Card>
     </Screen>

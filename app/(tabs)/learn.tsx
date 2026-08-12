@@ -25,6 +25,7 @@ export default function LearnScreen() {
   const { width } = useWindowDimensions();
   const startSession = useLearningStore((state) => state.startSession);
   const startExam = useLearningStore((state) => state.startExam);
+  const saving = useLearningStore((state) => state.saving);
   const questionStates = useLearningStore((state) => state.questionStates);
   const bookmarks = useLearningStore((state) => state.bookmarks);
   const [questionCount, setQuestionCount] = useState<(typeof questionCountOptions)[number]>(10);
@@ -64,8 +65,14 @@ export default function LearnScreen() {
       setActionError(`模試には章構成を満たす${examConfig.questionCount}問が必要です。本番問題の同期後に開始できます。`);
       return;
     }
-    const sessionId = await startExam(questionIds);
-    router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+    try {
+      const sessionId = await startExam(questionIds);
+      router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+    } catch (error: unknown) {
+      setActionError(error instanceof Error
+        ? error.message
+        : '模試を開始できませんでした。通信状態を確認して再試行してください。');
+    }
   };
 
   return (
@@ -120,7 +127,8 @@ export default function LearnScreen() {
             <Text style={styles.quickDescription}>回答は1問ごとに保存します。提出するまで正誤と解説は表示せず、{examConfig.passScore}点以上で合格です。</Text>
           </View>
         </View>
-        <Button label="模擬試験を始める" variant="secondary" disabled={selectExamQuestionIds(questions, () => 0.5).length !== examConfig.questionCount} onPress={() => void beginMockExam()} />
+        <Button label="模擬試験を始める" variant="secondary" disabled={selectExamQuestionIds(questions, () => 0.5).length !== examConfig.questionCount} loading={saving} onPress={() => void beginMockExam()} />
+        <Text style={styles.examNotice}>開始時だけ通信が必要です。サーバー時刻で60分の終了時刻と問題版を確定してから開始します。</Text>
         {questions.length < examConfig.questionCount && <Text style={styles.examNotice}>現在は開発用サンプル{questions.length}問です。章構成を満たす本番問題の同期後に利用できます。</Text>}
       </Card>
 

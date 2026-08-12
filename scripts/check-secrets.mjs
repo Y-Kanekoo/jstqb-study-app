@@ -26,7 +26,7 @@ const providerPatterns = [
   { name: '認証情報付きデータベースURL', pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s/:]+:[^\s/@]+@/u },
 ];
 const jwtPattern = /\b[A-Za-z0-9_-]{8,}\.([A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{16,}\b/gu;
-const sensitiveAssignmentPattern = /\b(?:[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL)|[a-z][a-z0-9_]*(?:_key|_token|_secret|_password|_credential)|[a-z][A-Za-z0-9]*(?:Key|Token|Secret|Password|Credential)|token|secret|password|credential)\b\s*[:=]\s*(["'`])([^"'`\s]{20,})\1/gu;
+const sensitiveAssignmentPattern = /\b(?:[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL)|[a-z][a-z0-9_]*(?:_key|_token|_secret|_password|_credential)|[a-z][A-Za-z0-9]*(?:Key|Token|Secret|Password|Credential)|token|secret|password|credential)\b\s*[:=]\s*(?:"([^"\s]{20,})"|'([^'\s]{20,})'|`([^`\s]{20,})`)/gu;
 const highRiskJwtRoles = new Set(['postgres', 'service_role', 'supabase_admin']);
 
 function runGit(args, options = {}) {
@@ -67,6 +67,63 @@ function decodeJwtPayload(encodedPayload) {
   }
 }
 
+function extractQuotedLiterals(value) {
+  let literal = '';
+  let quote = '';
+  let index = 0;
+  while (index < value.length) {
+    const character = value[index] ?? '';
+    if (quote !== '') {
+      if (character === '\\') {
+        literal += character;
+        literal += value[index + 1] ?? '';
+        index += 2;
+        continue;
+      }
+      if (character === quote) {
+        quote = '';
+        index += 1;
+        continue;
+      }
+      literal += character;
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') {
+      quote = character;
+    }
+    index += 1;
+  }
+  return literal;
+}
+
+function readTemplateExpression(value, startIndex) {
+  let expression = '';
+  let depth = 1;
+  let quote = '';
+  let index = startIndex;
+  while (index < value.length && depth > 0) {
+    const character = value[index] ?? '';
+    expression += character;
+    if (quote !== '') {
+      if (character === '\\') {
+        expression += value[index + 1] ?? '';
+        index += 2;
+        continue;
+      }
+      if (character === quote) quote = '';
+    } else if (character === '"' || character === "'" || character === '`') {
+      quote = character;
+    } else if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+    }
+    index += 1;
+  }
+  return { expression, nextIndex: index };
+}
+
 function removeTemplateInterpolations(value) {
   let literal = '';
   let index = 0;
@@ -78,17 +135,9 @@ function removeTemplateInterpolations(value) {
       continue;
     }
     if (value.startsWith('${', index)) {
-      let depth = 1;
-      index += 2;
-      while (index < value.length && depth > 0) {
-        if (value[index] === '\\') {
-          index += 2;
-          continue;
-        }
-        if (value[index] === '{') depth += 1;
-        if (value[index] === '}') depth -= 1;
-        index += 1;
-      }
+      const expression = readTemplateExpression(value, index + 2);
+      literal += extractQuotedLiterals(expression.expression);
+      index = expression.nextIndex;
       continue;
     }
     literal += value[index] ?? '';
@@ -112,9 +161,8 @@ export function detectSecretFindings(content) {
   }
 
   for (const match of content.matchAll(sensitiveAssignmentPattern)) {
-    const quote = match[1] ?? '';
-    const value = match[2] ?? '';
-    const literalValue = quote === '`' ? removeTemplateInterpolations(value) : value;
+    const value = match[1] ?? match[2] ?? match[3] ?? '';
+    const literalValue = match[3] === undefined ? value : removeTemplateInterpolations(value);
     if (/example|fixture|placeholder|dummy|your[-_]/iu.test(literalValue)) continue;
     if (literalValue.length >= 24 && shannonEntropy(literalValue) >= 3.8) {
       findings.add('機密名へ代入された高エントロピー値');

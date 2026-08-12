@@ -12,6 +12,8 @@ export const databaseContainerName = `supabase_db_${projectId}`;
 
 const projectLabelFilter = `label=${projectLabel}`;
 const projectContainerFormat = '{{.ID}}\\t{{.Names}}';
+const containerQueryAttempts = 3;
+const containerQueryRetryDelayMs = 100;
 const execFile = promisify(defaultExecFile);
 const databaseCommands = [
   ['supabase', ['start']],
@@ -64,15 +66,22 @@ function logFailure(log, label, result) {
 }
 
 async function listProjectContainers(runCommand) {
-  const result = await runCommand('docker', [
-    'ps',
-    '--all',
-    '--filter',
-    projectLabelFilter,
-    '--format',
-    projectContainerFormat,
-  ]);
-  return { ...result, containers: result.status === 0 ? parseContainers(result.output) : [] };
+  let result = { status: 1, output: '' };
+  for (let attempt = 1; attempt <= containerQueryAttempts; attempt += 1) {
+    result = await runCommand('docker', [
+      'ps',
+      '--all',
+      '--filter',
+      projectLabelFilter,
+      '--format',
+      projectContainerFormat,
+    ]);
+    if (result.status === 0) return { ...result, containers: parseContainers(result.output) };
+    if (attempt < containerQueryAttempts) {
+      await new Promise((resolveResult) => setTimeout(resolveResult, containerQueryRetryDelayMs));
+    }
+  }
+  return { ...result, containers: [] };
 }
 
 function includesOnly(expectedContainerNames, currentContainers) {
@@ -93,6 +102,11 @@ async function showDiagnostics(runCommand, log) {
   }
 }
 
+function logContainerQueryFailure(log, label, result) {
+  logFailure(log, label, result);
+  log.error(`${label}のDocker照会が${containerQueryAttempts}回すべて失敗したため、所有権を確定せず停止を中止します。`);
+}
+
 async function acquireRepositoryLock({ execFileCommand = execFile } = {}) {
   const gitCommonDirectoryResult = await execFileCommand(
     'git',
@@ -104,7 +118,12 @@ async function acquireRepositoryLock({ execFileCommand = execFile } = {}) {
 
   const lockKey = createHash('sha256').update(resolve(gitCommonDirectory)).digest('hex');
   const lockDirectory = resolve(tmpdir(), `.supabase-database-ci-${lockKey}.lock`);
-  await mkdir(lockDirectory, { mode: 0o700 });
+  try {
+    await mkdir(lockDirectory, { mode: 0o700 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`共有排他lockを取得できません（${lockDirectory}）: ${message}`);
+  }
   return async () => rmdir(lockDirectory);
 }
 
@@ -112,7 +131,7 @@ async function runDatabaseChecksUnlocked({ spawnCommand, log }) {
   const runCommand = createCommandRunner(spawnCommand);
   const preflight = await listProjectContainers(runCommand);
   if (preflight.status !== 0) {
-    log.error(`Supabase ${projectLabel} の事前確認に失敗したため、処理を中止します。`);
+    logContainerQueryFailure(log, `Supabase ${projectLabel} の事前確認`, preflight);
     return preflight.status;
   }
   if (preflight.containers.length > 0) {
@@ -128,7 +147,7 @@ async function runDatabaseChecksUnlocked({ spawnCommand, log }) {
   const afterStart = await listProjectContainers(runCommand);
   if (afterStart.status !== 0) {
     if (startResult.status !== 0) logFailure(log, 'supabase start', startResult);
-    logFailure(log, 'Supabase起動後の所有確認', afterStart);
+    logContainerQueryFailure(log, 'Supabase起動後の所有確認', afterStart);
     status = startResult.status === 0 ? 1 : startResult.status;
   } else {
     expectedContainerNames = afterStart.containers.map((container) => container.name);
@@ -163,7 +182,7 @@ async function runDatabaseChecksUnlocked({ spawnCommand, log }) {
   if (startAttempted && expectedContainerNames.length > 0) {
     const beforeCleanup = await listProjectContainers(runCommand);
     if (beforeCleanup.status !== 0) {
-      logFailure(log, 'cleanup前の所有確認', beforeCleanup);
+      logContainerQueryFailure(log, 'cleanup前の所有確認', beforeCleanup);
       if (status === 0) status = beforeCleanup.status;
     } else if (!includesOnly(expectedContainerNames, beforeCleanup.containers)) {
       log.error('cleanup前に未知の同project containerを検出したため、他agentのDBを停止せず中止します。');
@@ -178,7 +197,7 @@ async function runDatabaseChecksUnlocked({ spawnCommand, log }) {
 
     const afterCleanup = await listProjectContainers(runCommand);
     if (afterCleanup.status !== 0) {
-      logFailure(log, 'cleanup後の残留確認', afterCleanup);
+      logContainerQueryFailure(log, 'cleanup後の残留確認', afterCleanup);
       if (status === 0) status = afterCleanup.status;
     } else if (afterCleanup.containers.length > 0) {
       log.error(`cleanup後も${projectLabel}のcontainerが残っています。`);

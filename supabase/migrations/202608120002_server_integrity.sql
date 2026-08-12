@@ -1,3 +1,89 @@
+-- 001_learning_p0以前の既存データを、制約追加・バックフィルより先に検証する。
+-- このDOは002 migration内に置き、特殊なtimestampの並び順に依存しない。
+do $$
+declare
+  duplicate_attempt record;
+  duplicate_question record;
+  missing_item record;
+begin
+  select user_id, session_id, question_id, count(*) as attempt_count
+  into duplicate_attempt
+  from public.answer_attempts
+  where invalidated_at is null
+  group by user_id, session_id, question_id
+  having count(*) > 1
+  limit 1;
+
+  if found then
+    raise exception using
+      errcode = '23505',
+      message = format(
+        'SERVER_INTEGRITY_PREFLIGHT_FAILED: 有効なanswer_attemptsが重複しています（user_id=%s, session_id=%s, question_id=%s, count=%s）。',
+        duplicate_attempt.user_id,
+        duplicate_attempt.session_id,
+        duplicate_attempt.question_id,
+        duplicate_attempt.attempt_count
+      );
+  end if;
+
+  select learning_session.id as session_id,
+         requested.question_id,
+         count(*) as question_count
+  into duplicate_question
+  from public.learning_sessions as learning_session
+  cross join lateral unnest(learning_session.question_ids) as requested(question_id)
+  group by learning_session.id, requested.question_id
+  having count(*) > 1
+  limit 1;
+
+  if found then
+    raise exception using
+      errcode = '23514',
+      message = format(
+        'SERVER_INTEGRITY_PREFLIGHT_FAILED: learning_sessions.question_idsが重複しています（session_id=%s, question_id=%s, count=%s）。',
+        duplicate_question.session_id,
+        duplicate_question.question_id,
+        duplicate_question.question_count
+      );
+  end if;
+
+  select learning_session.id as session_id, requested.question_id
+  into missing_item
+  from public.learning_sessions as learning_session
+  cross join lateral unnest(learning_session.question_ids) as requested(question_id)
+  where not exists (
+    select 1
+    from public.questions as question
+    join public.question_versions as version
+      on version.id = coalesce(
+        (
+          select attempt.question_version_id
+          from public.answer_attempts as attempt
+          where attempt.user_id = learning_session.user_id
+            and attempt.session_id = learning_session.id
+            and attempt.question_id = requested.question_id
+          order by attempt.answered_at desc, attempt.received_at desc
+          limit 1
+        ),
+        question.current_version_id
+      )
+     and version.question_id = question.id
+    where question.id = requested.question_id
+  )
+  limit 1;
+
+  if found then
+    raise exception using
+      errcode = '23514',
+      message = format(
+        'SERVER_INTEGRITY_PREFLIGHT_FAILED: learning_session_itemsのバックフィル対象を解決できません（session_id=%s, question_id=%s）。',
+        missing_item.session_id,
+        missing_item.question_id
+      );
+  end if;
+end;
+$$;
+
 create schema if not exists private;
 
 revoke all on schema private from public;

@@ -6,7 +6,7 @@ begin;
 -- neutral owner、search_path、PUBLIC/anon/authenticated/service_role/workerのallow/denyを実roleで追加検証する。
 -- request.jwt.claimsはPostgRESTが署名検証済みJWTからDB sessionへ注入する本番互換claim形状を再現する。
 
-select plan(88);
+select plan(94);
 
 insert into auth.users (
   id,
@@ -545,13 +545,26 @@ select is(
 
 select is(
   (
+    with function_context as (
+      select distinct procedure.proowner as owner_oid, procedure.pronamespace as namespace_oid
+        from pg_catalog.pg_proc procedure
+        join pg_catalog.pg_namespace namespace on namespace.oid = procedure.pronamespace
+       where namespace.nspname in ('public', 'private')
+         and not exists (
+           select 1
+             from pg_catalog.pg_depend dependency
+            where dependency.classid = 'pg_catalog.pg_proc'::regclass
+              and dependency.objid = procedure.oid
+              and dependency.deptype = 'e'
+         )
+    )
     select count(*)::integer
       from pg_catalog.pg_default_acl default_acl
+      join function_context context
+        on context.owner_oid = default_acl.defaclrole
+       and context.namespace_oid = default_acl.defaclnamespace
       cross join lateral pg_catalog.aclexplode(default_acl.defaclacl) privilege
      where default_acl.defaclobjtype = 'f'
-       and default_acl.defaclnamespace in (
-         select oid from pg_catalog.pg_namespace where nspname in ('public', 'private')
-       )
        and privilege.grantee = 'anon'::regrole
        and privilege.privilege_type = 'EXECUTE'
   ),
@@ -561,13 +574,26 @@ select is(
 
 select is(
   (
+    with function_context as (
+      select distinct procedure.proowner as owner_oid, procedure.pronamespace as namespace_oid
+        from pg_catalog.pg_proc procedure
+        join pg_catalog.pg_namespace namespace on namespace.oid = procedure.pronamespace
+       where namespace.nspname in ('public', 'private')
+         and not exists (
+           select 1
+             from pg_catalog.pg_depend dependency
+            where dependency.classid = 'pg_catalog.pg_proc'::regclass
+              and dependency.objid = procedure.oid
+              and dependency.deptype = 'e'
+         )
+    )
     select count(*)::integer
       from pg_catalog.pg_default_acl default_acl
+      join function_context context
+        on context.owner_oid = default_acl.defaclrole
+       and context.namespace_oid = default_acl.defaclnamespace
       cross join lateral pg_catalog.aclexplode(default_acl.defaclacl) privilege
      where default_acl.defaclobjtype = 'f'
-       and default_acl.defaclnamespace in (
-         select oid from pg_catalog.pg_namespace where nspname in ('public', 'private')
-       )
        and privilege.grantee = 'authenticated'::regrole
        and privilege.privilege_type = 'EXECUTE'
   ),
@@ -577,13 +603,26 @@ select is(
 
 select is(
   (
+    with function_context as (
+      select distinct procedure.proowner as owner_oid, procedure.pronamespace as namespace_oid
+        from pg_catalog.pg_proc procedure
+        join pg_catalog.pg_namespace namespace on namespace.oid = procedure.pronamespace
+       where namespace.nspname in ('public', 'private')
+         and not exists (
+           select 1
+             from pg_catalog.pg_depend dependency
+            where dependency.classid = 'pg_catalog.pg_proc'::regclass
+              and dependency.objid = procedure.oid
+              and dependency.deptype = 'e'
+         )
+    )
     select count(*)::integer
       from pg_catalog.pg_default_acl default_acl
+      join function_context context
+        on context.owner_oid = default_acl.defaclrole
+       and context.namespace_oid = default_acl.defaclnamespace
       cross join lateral pg_catalog.aclexplode(default_acl.defaclacl) privilege
      where default_acl.defaclobjtype = 'f'
-       and default_acl.defaclnamespace in (
-         select oid from pg_catalog.pg_namespace where nspname in ('public', 'private')
-       )
        and privilege.grantee = 'service_role'::regrole
        and privilege.privilege_type = 'EXECUTE'
   ),
@@ -622,6 +661,195 @@ select is(
   0,
   '正答key tableへlearner向けpolicyを作成しない'
 );
+
+-- M0の恒久ACLはbase tableへのruntime role直接アクセスを許可しない。
+-- 以下の6件でその境界を先に検査し、その後のGRANTはRLS policy自体を実roleで検査するための
+-- transaction内fixtureに限定する。末尾ROLLBACKにより恒久ACLへは反映されない。
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[
+        'public.certifications', 'public.syllabus_versions', 'public.chapters',
+        'public.learning_objectives', 'public.questions', 'public.question_versions',
+        'public.choices', 'public.content_reviews', 'public.profiles',
+        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+        'public.sync_events', 'public.question_answer_keys'
+      ]) table_name
+     where pg_catalog.has_table_privilege('anon', table_name, 'SELECT')
+  ),
+  0,
+  'anonへbase table SELECTを恒久grantしない'
+);
+
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[
+        'public.certifications', 'public.syllabus_versions', 'public.chapters',
+        'public.learning_objectives', 'public.questions', 'public.question_versions',
+        'public.choices', 'public.content_reviews', 'public.profiles',
+        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+        'public.sync_events', 'public.question_answer_keys'
+      ]) table_name
+     where pg_catalog.has_table_privilege('anon', table_name, 'INSERT')
+        or pg_catalog.has_table_privilege('anon', table_name, 'UPDATE')
+        or pg_catalog.has_table_privilege('anon', table_name, 'DELETE')
+        or pg_catalog.has_table_privilege('anon', table_name, 'TRUNCATE')
+        or pg_catalog.has_table_privilege('anon', table_name, 'REFERENCES')
+        or pg_catalog.has_table_privilege('anon', table_name, 'TRIGGER')
+        or exists (
+          select 1
+            from pg_catalog.pg_class sequence
+            join pg_catalog.pg_namespace namespace on namespace.oid = sequence.relnamespace
+           where namespace.nspname = 'public'
+             and sequence.relkind = 'S'
+             and (
+               pg_catalog.has_sequence_privilege('anon', sequence.oid, 'USAGE')
+               or pg_catalog.has_sequence_privilege('anon', sequence.oid, 'SELECT')
+               or pg_catalog.has_sequence_privilege('anon', sequence.oid, 'UPDATE')
+             )
+        )
+  ),
+  0,
+  'anonへbase table writeを恒久grantしない'
+);
+
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[
+        'public.certifications', 'public.syllabus_versions', 'public.chapters',
+        'public.learning_objectives', 'public.questions', 'public.question_versions',
+        'public.choices', 'public.content_reviews', 'public.profiles',
+        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+        'public.sync_events', 'public.question_answer_keys'
+      ]) table_name
+     where pg_catalog.has_table_privilege('authenticated', table_name, 'SELECT')
+  ),
+  0,
+  'authenticatedへbase table SELECTを恒久grantしない'
+);
+
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[
+        'public.certifications', 'public.syllabus_versions', 'public.chapters',
+        'public.learning_objectives', 'public.questions', 'public.question_versions',
+        'public.choices', 'public.content_reviews', 'public.profiles',
+        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+        'public.sync_events', 'public.question_answer_keys'
+      ]) table_name
+     where pg_catalog.has_table_privilege('authenticated', table_name, 'INSERT')
+        or pg_catalog.has_table_privilege('authenticated', table_name, 'UPDATE')
+        or pg_catalog.has_table_privilege('authenticated', table_name, 'DELETE')
+        or pg_catalog.has_table_privilege('authenticated', table_name, 'TRUNCATE')
+        or pg_catalog.has_table_privilege('authenticated', table_name, 'REFERENCES')
+        or pg_catalog.has_table_privilege('authenticated', table_name, 'TRIGGER')
+        or exists (
+          select 1
+            from pg_catalog.pg_class sequence
+            join pg_catalog.pg_namespace namespace on namespace.oid = sequence.relnamespace
+           where namespace.nspname = 'public'
+             and sequence.relkind = 'S'
+             and (
+               pg_catalog.has_sequence_privilege('authenticated', sequence.oid, 'USAGE')
+               or pg_catalog.has_sequence_privilege('authenticated', sequence.oid, 'SELECT')
+               or pg_catalog.has_sequence_privilege('authenticated', sequence.oid, 'UPDATE')
+             )
+        )
+  ),
+  0,
+  'authenticatedへbase table writeを恒久grantしない'
+);
+
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[
+        'public.certifications', 'public.syllabus_versions', 'public.chapters',
+        'public.learning_objectives', 'public.questions', 'public.question_versions',
+        'public.choices', 'public.content_reviews', 'public.profiles',
+        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+        'public.sync_events', 'public.question_answer_keys'
+      ]) table_name
+     where pg_catalog.has_table_privilege('service_role', table_name, 'SELECT')
+  ),
+  0,
+  'service_roleへbase table SELECTを恒久grantしない'
+);
+
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[
+        'public.certifications', 'public.syllabus_versions', 'public.chapters',
+        'public.learning_objectives', 'public.questions', 'public.question_versions',
+        'public.choices', 'public.content_reviews', 'public.profiles',
+        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+        'public.sync_events', 'public.question_answer_keys'
+      ]) table_name
+     where pg_catalog.has_table_privilege('service_role', table_name, 'INSERT')
+        or pg_catalog.has_table_privilege('service_role', table_name, 'UPDATE')
+        or pg_catalog.has_table_privilege('service_role', table_name, 'DELETE')
+        or pg_catalog.has_table_privilege('service_role', table_name, 'TRUNCATE')
+        or pg_catalog.has_table_privilege('service_role', table_name, 'REFERENCES')
+        or pg_catalog.has_table_privilege('service_role', table_name, 'TRIGGER')
+        or exists (
+          select 1
+            from pg_catalog.pg_class sequence
+            join pg_catalog.pg_namespace namespace on namespace.oid = sequence.relnamespace
+           where namespace.nspname = 'public'
+             and sequence.relkind = 'S'
+             and (
+               pg_catalog.has_sequence_privilege('service_role', sequence.oid, 'USAGE')
+               or pg_catalog.has_sequence_privilege('service_role', sequence.oid, 'SELECT')
+               or pg_catalog.has_sequence_privilege('service_role', sequence.oid, 'UPDATE')
+             )
+        )
+  ),
+  0,
+  'service_roleへbase table writeを恒久grantしない'
+);
+
+grant select on
+  public.certifications,
+  public.syllabus_versions,
+  public.chapters,
+  public.learning_objectives,
+  public.questions,
+  public.question_versions,
+  public.choices,
+  public.content_reviews,
+  public.profiles,
+  public.learning_sessions,
+  public.answer_drafts,
+  public.answer_attempts,
+  public.user_question_states,
+  public.bookmarks,
+  public.content_issues,
+  public.sync_events,
+  public.question_answer_keys
+to anon, authenticated, service_role;
+grant insert on public.learning_sessions to anon;
+grant insert, update on
+  public.profiles,
+  public.learning_sessions,
+  public.answer_drafts,
+  public.answer_attempts,
+  public.user_question_states,
+  public.bookmarks,
+  public.content_issues,
+  public.sync_events
+to authenticated;
+grant insert on public.learning_sessions to service_role;
+grant usage, select on all sequences in schema public to authenticated, service_role;
 
 select set_config('request.jwt.claim.sub', '', true);
 select set_config('request.jwt.claims', '{"role":"anon","aud":"authenticated"}', true);

@@ -684,21 +684,34 @@ select is(
 
 select is(
   (
-    select count(*)::integer
-      from unnest(array[
-        'public.certifications', 'public.syllabus_versions', 'public.chapters',
-        'public.learning_objectives', 'public.questions', 'public.question_versions',
-        'public.choices', 'public.content_reviews', 'public.profiles',
-        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
-        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
-        'public.sync_events', 'public.question_answer_keys'
-      ]) table_name
-     where pg_catalog.has_table_privilege('anon', table_name, 'INSERT')
-        or pg_catalog.has_table_privilege('anon', table_name, 'UPDATE')
-        or pg_catalog.has_table_privilege('anon', table_name, 'DELETE')
-        or pg_catalog.has_table_privilege('anon', table_name, 'TRUNCATE')
-        or pg_catalog.has_table_privilege('anon', table_name, 'REFERENCES')
-        or pg_catalog.has_table_privilege('anon', table_name, 'TRIGGER')
+    (
+      select count(*)::integer
+        from unnest(array[
+          'public.certifications', 'public.syllabus_versions', 'public.chapters',
+          'public.learning_objectives', 'public.questions', 'public.question_versions',
+          'public.choices', 'public.content_reviews', 'public.profiles',
+          'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+          'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+          'public.sync_events', 'public.question_answer_keys'
+        ]) table_name
+       where pg_catalog.has_table_privilege('anon', table_name, 'INSERT')
+          or pg_catalog.has_table_privilege('anon', table_name, 'UPDATE')
+          or pg_catalog.has_table_privilege('anon', table_name, 'DELETE')
+          or pg_catalog.has_table_privilege('anon', table_name, 'TRUNCATE')
+          or pg_catalog.has_table_privilege('anon', table_name, 'REFERENCES')
+          or pg_catalog.has_table_privilege('anon', table_name, 'TRIGGER')
+    ) + (
+      select count(*)::integer
+        from pg_catalog.pg_class sequence
+        join pg_catalog.pg_namespace namespace on namespace.oid = sequence.relnamespace
+       where namespace.nspname = 'public'
+         and sequence.relkind = 'S'
+         and (
+           pg_catalog.has_sequence_privilege('anon', sequence.oid, 'USAGE')
+           or pg_catalog.has_sequence_privilege('anon', sequence.oid, 'SELECT')
+           or pg_catalog.has_sequence_privilege('anon', sequence.oid, 'UPDATE')
+         )
+    )
   ),
   0,
   'anonへbase table writeを恒久grantしない'
@@ -723,21 +736,34 @@ select is(
 
 select is(
   (
-    select count(*)::integer
-      from unnest(array[
-        'public.certifications', 'public.syllabus_versions', 'public.chapters',
-        'public.learning_objectives', 'public.questions', 'public.question_versions',
-        'public.choices', 'public.content_reviews', 'public.profiles',
-        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
-        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
-        'public.sync_events', 'public.question_answer_keys'
-      ]) table_name
-     where pg_catalog.has_table_privilege('authenticated', table_name, 'INSERT')
-        or pg_catalog.has_table_privilege('authenticated', table_name, 'UPDATE')
-        or pg_catalog.has_table_privilege('authenticated', table_name, 'DELETE')
-        or pg_catalog.has_table_privilege('authenticated', table_name, 'TRUNCATE')
-        or pg_catalog.has_table_privilege('authenticated', table_name, 'REFERENCES')
-        or pg_catalog.has_table_privilege('authenticated', table_name, 'TRIGGER')
+    (
+      select count(*)::integer
+        from unnest(array[
+          'public.certifications', 'public.syllabus_versions', 'public.chapters',
+          'public.learning_objectives', 'public.questions', 'public.question_versions',
+          'public.choices', 'public.content_reviews', 'public.profiles',
+          'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+          'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+          'public.sync_events', 'public.question_answer_keys'
+        ]) table_name
+       where pg_catalog.has_table_privilege('authenticated', table_name, 'INSERT')
+          or pg_catalog.has_table_privilege('authenticated', table_name, 'UPDATE')
+          or pg_catalog.has_table_privilege('authenticated', table_name, 'DELETE')
+          or pg_catalog.has_table_privilege('authenticated', table_name, 'TRUNCATE')
+          or pg_catalog.has_table_privilege('authenticated', table_name, 'REFERENCES')
+          or pg_catalog.has_table_privilege('authenticated', table_name, 'TRIGGER')
+    ) + (
+      select count(*)::integer
+        from pg_catalog.pg_class sequence
+        join pg_catalog.pg_namespace namespace on namespace.oid = sequence.relnamespace
+       where namespace.nspname = 'public'
+         and sequence.relkind = 'S'
+         and (
+           pg_catalog.has_sequence_privilege('authenticated', sequence.oid, 'USAGE')
+           or pg_catalog.has_sequence_privilege('authenticated', sequence.oid, 'SELECT')
+           or pg_catalog.has_sequence_privilege('authenticated', sequence.oid, 'UPDATE')
+         )
+    )
   ),
   0,
   'authenticatedへbase table writeを恒久grantしない'
@@ -762,21 +788,34 @@ select is(
 
 select is(
   (
-    select count(*)::integer
-      from unnest(array[
-        'public.certifications', 'public.syllabus_versions', 'public.chapters',
-        'public.learning_objectives', 'public.questions', 'public.question_versions',
-        'public.choices', 'public.content_reviews', 'public.profiles',
-        'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
-        'public.user_question_states', 'public.bookmarks', 'public.content_issues',
-        'public.sync_events', 'public.question_answer_keys'
-      ]) table_name
-     where pg_catalog.has_table_privilege('service_role', table_name, 'INSERT')
-        or pg_catalog.has_table_privilege('service_role', table_name, 'UPDATE')
-        or pg_catalog.has_table_privilege('service_role', table_name, 'DELETE')
-        or pg_catalog.has_table_privilege('service_role', table_name, 'TRUNCATE')
-        or pg_catalog.has_table_privilege('service_role', table_name, 'REFERENCES')
-        or pg_catalog.has_table_privilege('service_role', table_name, 'TRIGGER')
+    (
+      select count(*)::integer
+        from unnest(array[
+          'public.certifications', 'public.syllabus_versions', 'public.chapters',
+          'public.learning_objectives', 'public.questions', 'public.question_versions',
+          'public.choices', 'public.content_reviews', 'public.profiles',
+          'public.learning_sessions', 'public.answer_drafts', 'public.answer_attempts',
+          'public.user_question_states', 'public.bookmarks', 'public.content_issues',
+          'public.sync_events', 'public.question_answer_keys'
+        ]) table_name
+       where pg_catalog.has_table_privilege('service_role', table_name, 'INSERT')
+          or pg_catalog.has_table_privilege('service_role', table_name, 'UPDATE')
+          or pg_catalog.has_table_privilege('service_role', table_name, 'DELETE')
+          or pg_catalog.has_table_privilege('service_role', table_name, 'TRUNCATE')
+          or pg_catalog.has_table_privilege('service_role', table_name, 'REFERENCES')
+          or pg_catalog.has_table_privilege('service_role', table_name, 'TRIGGER')
+    ) + (
+      select count(*)::integer
+        from pg_catalog.pg_class sequence
+        join pg_catalog.pg_namespace namespace on namespace.oid = sequence.relnamespace
+       where namespace.nspname = 'public'
+         and sequence.relkind = 'S'
+         and (
+           pg_catalog.has_sequence_privilege('service_role', sequence.oid, 'USAGE')
+           or pg_catalog.has_sequence_privilege('service_role', sequence.oid, 'SELECT')
+           or pg_catalog.has_sequence_privilege('service_role', sequence.oid, 'UPDATE')
+         )
+    )
   ),
   0,
   'service_roleへbase table writeを恒久grantしない'

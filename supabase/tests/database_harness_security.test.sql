@@ -371,10 +371,16 @@ select is(
   'application tableはすべてRLSを有効にする'
 );
 
-select results_eq(
-  $$
-    select namespace.nspname || '.' || procedure.proname || '(' ||
-           pg_catalog.pg_get_function_identity_arguments(procedure.oid) || ')'
+select is(
+  (
+    select array_agg(
+             namespace.nspname || '.' || procedure.proname || '(' ||
+             pg_catalog.pg_get_function_identity_arguments(procedure.oid) || ')'
+             order by (
+               namespace.nspname || '.' || procedure.proname || '(' ||
+               pg_catalog.pg_get_function_identity_arguments(procedure.oid) || ')'
+             ) collate "C"
+           )
       from pg_catalog.pg_proc procedure
       join pg_catalog.pg_namespace namespace on namespace.oid = procedure.pronamespace
      where namespace.nspname in ('public', 'private')
@@ -385,14 +391,12 @@ select results_eq(
             and dependency.objid = procedure.oid
             and dependency.deptype = 'e'
        )
-     order by 1
-  $$,
-  $$
-    values
-      ('public.create_profile_for_new_user()'),
-      ('public.reject_published_question_version_mutation()'),
-      ('public.validate_sync_answer()')
-  $$,
+  ),
+  array[
+    'public.create_profile_for_new_user()',
+    'public.reject_published_question_version_mutation()',
+    'public.validate_sync_answer()'
+  ]::text[],
   '現行application functionをexact registryで被覆する'
 );
 

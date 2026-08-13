@@ -141,6 +141,9 @@ values
   ('db-security-published-choice', 'db-security-published-v1', 'A', '公開選択肢', true, '公開選択肢解説', 0),
   ('db-security-draft-choice', 'db-security-draft-v1', 'A', '非公開選択肢', true, '非公開選択肢解説', 0);
 
+insert into public.question_answer_keys (question_version_id, correct_choice_ids)
+values ('db-security-published-v1', array['db-security-published-choice']);
+
 insert into public.content_reviews (
   id,
   question_version_id,
@@ -1240,7 +1243,7 @@ set local role service_role;
 
 select is((select count(*)::integer from public.profiles where id in ('10000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000002')), 2, 'service_roleは両userのprofileを読める');
 select is((select count(*)::integer from public.learning_sessions where id in ('70000000-0000-4000-8000-000000000001', '70000000-0000-4000-8000-000000000002')), 2, 'service_roleは両userのsessionを読める');
-select is((select count(*)::integer from public.question_answer_keys where question_version_id = 'fl-001-v1'), 1, 'service_roleはserver用正答keyを読める');
+select is((select count(*)::integer from public.question_answer_keys where question_version_id = 'db-security-published-v1'), 1, 'service_roleはfixture専用のserver正答keyを読める');
 select is((select count(*)::integer from public.content_reviews where id = '60000000-0000-4000-8000-000000000001'), 1, 'service_roleはreview内部情報を読める');
 select is((select count(*)::integer from public.certifications where id = '20000000-0000-4000-8000-000000000002'), 1, 'service_roleはinactive certificationを読める');
 select is((select count(*)::integer from public.question_versions where id = 'db-security-draft-v1'), 1, 'service_roleはdraft question versionを読める');

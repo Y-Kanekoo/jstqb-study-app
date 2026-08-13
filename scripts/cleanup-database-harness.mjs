@@ -5,7 +5,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { redactDatabaseOutput } from './database-harness.mjs';
-import { projectLabel } from './test-database.mjs';
+import { projectId, projectLabel } from './test-database.mjs';
 
 const projectLabelFilter = `label=${projectLabel}`;
 const containerFormat = '{{.ID}}\t{{.Names}}';
@@ -83,7 +83,13 @@ function parseOwnership(content) {
   const known = lines.filter((line) => line === 'known=true').length === 1;
   const names = lines.filter((line) => line.startsWith('name=')).map((line) => line.slice(5));
   const lockLines = lines.filter((line) => line.startsWith('lock=')).map((line) => line.slice(5));
-  const validNames = names.length > 0 && names.every((name) => /^supabase_[a-z0-9_-]+_jstqb-study-app$/u.test(name));
+  const projectSuffix = `_${projectId}`;
+  const validNames = names.length > 0 && names.every((name) => {
+    const containerPrefix = name.endsWith(projectSuffix) ? name.slice(0, -projectSuffix.length) : '';
+    return containerPrefix.startsWith('supabase_')
+      && containerPrefix.length > 'supabase_'.length
+      && /^[a-z0-9_-]+$/u.test(containerPrefix);
+  });
   const lockDirectory = lockLines.length === 1 ? resolve(lockLines[0]) : undefined;
   const validLock = lockDirectory !== undefined
     && dirname(lockDirectory) === resolve(tmpdir())

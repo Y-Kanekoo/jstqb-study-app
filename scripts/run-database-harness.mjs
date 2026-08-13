@@ -834,8 +834,8 @@ export async function runProductionDatabaseHarness({
     return 1;
   }
 
-  signalTarget.once('SIGINT', handleSigint);
-  signalTarget.once('SIGTERM', handleSigterm);
+  signalTarget.on('SIGINT', handleSigint);
+  signalTarget.on('SIGTERM', handleSigterm);
 
   let status;
   try {

@@ -30,3 +30,5 @@ pnpm test:database
 5. `production-boundary`: `supabase/test-fixtures/database-harness/manifest.json`で完全列挙したtest fixtureのstable ID/canaryが、production migration・seed・content bundle・release artifact・public/private DBへ混入していないことを確認します。
 
 各phaseは共通security suiteを実行し、RLS、default privilege、`SECURITY DEFINER` owner/search path、関数ACLを照合します。runnerは同projectの既存containerがあればfail-closedで中止し、stop直前にlabel/nameが所有証跡と完全一致したcontainerだけを停止します。SIGINT/SIGTERMでは実行中commandを停止して所有確認付きcleanupへ移り、CIは独立した`always()` cleanupでも残留container/lock 0を検査します。接続URL、DBパスワード、service role keyをログ・ファイル・Gitへ保存しません。
+
+`pnpm test:database:legacy`は旧経路の局所診断に限って使用します。5 phase、production boundary、upgrade、atomicityを検証しないため、CI・release gate・`pnpm test:database`の代替にはできません。

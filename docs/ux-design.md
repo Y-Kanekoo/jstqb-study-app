@@ -14,7 +14,7 @@
 4. 記録
 5. 設定
 
-Webでは同じ順序の左サイドナビゲーションを使います。
+Webでは同じ順序・routeの左サイドナビゲーションを使います。viewportごとに別の情報設計や学習状態を作りません。
 
 ## 3. 主要画面
 
@@ -55,6 +55,8 @@ Webでは同じ順序の左サイドナビゲーションを使います。
 8. `回答を確定`
 9. 解説表示後の`次の問題`
 
+進捗、端末保存、同期、採点は「学習証拠rail」で一つのtraceabilityとして並べます。mobileは見出し下のcompact横strip、Webは本文横の静かなside railとし、状態の意味と順序は同一です。`端末に保存済み`、`同期済み`、`採点待ち`、`採点済み`を別stepとして文字とiconで表示し、前段完了を後段完了と誤表示しません。
+
 規則:
 
 - 選択肢全体をタップ可能にします。
@@ -83,23 +85,25 @@ Webでは同じ順序の左サイドナビゲーションを使います。
 
 | トークン | 値 | 用途 |
 |---|---:|---|
-| `color.ink` | `#17324D` | 本文・見出し |
-| `color.paper` | `#F6F8FB` | 背景 |
+| `color.ink` | `#17324D` | deep ink、本文・見出し |
+| `color.paper` | `#F6F8FB` | cool gray paper、背景 |
 | `color.surface` | `#FFFFFF` | 問題面 |
-| `color.brand` | `#215EA8` | 主操作・選択 |
+| `color.brand` | `#215EA8` | blueprint blue、主操作・選択 |
 | `color.brandStrong` | `#17497F` | 押下 |
-| `color.success` | `#167A5A` | 正答・同期済み |
-| `color.warning` | `#7A4E00` | 復習・注意 |
-| `color.danger` | `#B42318` | 誤答・失敗 |
+| `color.success` | `#167A5A` | verification green、正答・検証済み |
+| `color.warning` | `#7A4E00` | risk amber、復習・注意 |
+| `color.danger` | `#B42318` | error red、誤答・失敗 |
 | `color.border` | `#CBD5E1` | 境界 |
 | `color.focus` | `#0B63CE` | フォーカス |
 
 - 見出し・進捗: BIZ UDPGothic
 - 本文・問題文: Noto Sans JP
+- 問題ID、短縮hash、計測値だけ: OS標準等幅font。長文本文や見出しには使わない
 - 本文16px、問題文18px、行高1.7
 - 余白: 4 / 8 / 12 / 16 / 24 / 32 / 48
 - 角丸: 8 / 12
 - 通常モーション: 120〜180ms
+- 学習証拠rail以外の装飾的timeline、gradient、過剰なcard、常時animationは使わない
 
 ## 8. アクセシビリティ
 
@@ -109,14 +113,29 @@ Webでは同じ順序の左サイドナビゲーションを使います。
 - 文字200%でも機能損失なし
 - 正誤・保存・同期を色だけで表現しない
 - キーボードだけで主要操作を完了可能
-- 回答後は解説見出しへフォーカス移動
+- 利用者が確定した同一問題を表示中の初回解説到着時だけ解説見出しへフォーカス移動。次問移動後・再取得・背景同期は現在のフォーカスを保持
 - VoiceOver、TalkBack、Webスクリーンリーダーで確認
 - 動きを減らす設定を尊重
+- 学習証拠railは`aria-current="step"`、状態名、補助文を持ち、色だけで完了・待機・失敗を表さない
+- Webのhover情報はkeyboard focusでも同じ内容を提供する。mobileのhapticは任意で、成功の唯一の通知にしない
 
 ## 9. レスポンシブ
 
-- 320px: 横スクロールなしの単一カラム
+- 320px〜767px: 横スクロールなしの単一カラム、下部nav、safe area上のthumb reachへ主CTA
 - スマートフォン: 下部ナビ、主操作を親指領域へ配置
-- タブレット: 回答後のみ問題・解説の2ペイン可
-- Web: 本文幅約720px、1200px以上で補助ペイン可
+- 768px以上のタブレット: 回答後のみ問題・解説の2ペイン可
+- 1024px以上のWeb: 左nav、本文幅max 720px、補助pane max 320px
+- 文字200%、長い日本語、software keyboard、touch主体ではbreakpointより内容・入力方式を優先して単一カラムへ戻す
+- Web補助paneにしか存在する操作・errorを作らず、DOM順とkeyboard順をmobileの主要情報順へ合わせる
 
+## 10. データ保護の平易な表示
+
+設定では「この端末への保存」「アカウント同期」「手動エクスポート」「災害復旧用バックアップ」の4分類で、現在状態、対象範囲、できること、できないことを説明します。D-03 Aだけを4番目の実装policyとし、通常領域削除24時間とbackup実効消去30日を別行・別期限で示します。B/Cは将来の非規範案であり、選択肢、CTA、manifest状態を表示しません。「端末保存済み」を「同期済み」、「同期済み」を「バックアップ済み」と言い換えません。
+
+## 11. 個人利用とreview UI
+
+初期運用は本人だけのpersonal previewです。owner reviewはlearner appとorigin/cache/audienceを隔離し、全500問を一問ずつ確認します。各問は正答・全解説・takeaway/common trap 0の`blind`から始まり、回答と根拠のimmutable提出で`blind_submitted`、同じ一問だけ`revealed`、hide後`hidden`、監査完了後`audit_completed`へ進み、`pass | changes_required`を決めます。通信断後も正答非開示resumeからstate/revision/直前fact hashを復元します。`changes_required`ではcategoryと理由から同じtransactionでserver issueを作り、任意issue IDを選ばせません。coverage、章/LO/K/selection filter、G0〜G12、AI finding、版diff、類似候補、320px/200%・Web/iOS/Android previewを提供し、bulk passは設けません。一般公開のtechnical/editorial/mobile reviewと4人attestationは将来gateとして残します。
+
+## 12. 章分析の鮮度表示
+
+章進捗と試験readinessはserver RPC二本の同一snapshotだけを表示し、「集計時刻」「有効期限」、公式配分sourceの短縮hash、formula/TTL policy versionを詳細で確認できるようにします。sample不足は「データ不足・あとn問」とし、安全側失点や優先度を0として見せません。二RPCのsource upper/hash/calculatedAt/expiresAtが一致しない時、またはDB時計がexpiresAt以後の時は古い値を混在表示せず、「最新の分析を取得しています」としてprojectionを再取得します。500問配分の小数剰余が同率の場合は章番号昇順という規則を説明画面へ明記します。

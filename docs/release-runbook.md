@@ -13,6 +13,8 @@
 
 機能、DB migration、大量の問題追加を同じPRへ混在させません。migrationが必要な機能は、後方互換migration、アプリ実装、不要列の削除を別リリースへ分けます。
 
+追加機能の依存順はPR-A（D03-A schema/ACL/runtime capability/DR policy）→PR-B（offline practice pack/local outbox/offline_unverified）→PR-C（owner-only review origin/RPC/AI・owner coverage）→PR-D（章/readiness projection/API）→PR-E（スマホ/Web adaptive UI・保存4境界の平易な説明）→PR-F（監視、restore drill、受入証跡、personal-only deploy）です。各PRはmigration/RPCをclientより先に配備し、対応capabilityを証跡完了までOFFにします。
+
 ## 2. 必須検査
 
 mainへ入る前に次のGitHub Checksを必須にします。
@@ -31,7 +33,9 @@ mainへ入る前に次のGitHub Checksを必須にします。
 ./scripts/apply-main-ruleset.sh
 ```
 
-初期はGitHubアカウント1つで運用するため、承認数を0、最新push以外の人による承認をOFFにします。自己承認を作るbotや偽装レビューは設定せず、独立AIレビューの結果をPR本文またはコメントへ記録します。自動マージでも`quality`、`database`、`e2e`、`pages`、`security`、会話解決、最新mainでの検査は迂回できません。
+初期はGitHubアカウント1つで運用するため、承認数を0、最新push以外の人による承認をOFFにします。自己承認を作るbotや偽装レビューは設定しません。独立reviewerが固定head SHAへ出したBlocking/High 0の結果だけをPR commentへ記録し、root orchestratorがhead一致・未解決thread 0・正規5 checks成功を再確認するまでauto-mergeをenableしません。PR本文の自己申告は独立review gateとして認めません。
+
+後続DB/tooling PRで専用required check `independent-review`を実装しRulesetへ必須化します。trusted GitHub Appだけが、許可済み独立reviewer identity、対象PR/head SHA、review artifact hash、Blocking=0/High=0、未解決対象0を検証してcheckを成功にでき、head更新でstaleにします。root orchestrator/PR作者の自己申告や任意status contextは受理せず、正規5 checksとこのcheckの全成功前にauto-mergeを許可しません。現Rulesetをこの文書設計PRで即変更することはscope外であり、後続PRはApp issuer偽装、別head、B/H残存、stale reviewのnegative試験とRuleset実適用証跡を受入条件にします。
 
 別の人間レビュアーを追加した時点で`.github/rulesets/main.json`を次のように変更し、スクリプトを再実行します。
 
@@ -52,47 +56,84 @@ mainへ入る前に次のGitHub Checksを必須にします。
 pnpm test:database
 ```
 
-1. `supabase/setup-cli`の検証済みcommit SHAから固定版CLIを準備する。
-2. `supabase start`で一時環境を起動する。
-3. `supabase db reset`で空DBへ全migrationを順番に再適用する。
-4. `supabase test db`で`supabase/tests/*.sql`のpgTAP、RLS、関数契約を実DB検証する。
-5. 失敗時はコンテナ一覧とPostgreSQL末尾ログだけを表示する。
-6. 成否にかかわらず`supabase stop --no-backup`を実行し、コンテナ残留を失敗扱いにする。
+1. `supabase/setup-cli`の検証済みcommit SHAから固定版CLIを準備し、test専用fixture allowlistとproduction artifact canaryを検証する。
+2. `fresh` phase: 空DBへ全migrationを番号順に適用し、全pgTAP/RLS/RPC/正答非開示を実行する。
+3. `origin-main-upgrade` phase: origin/main-shaped schemaとfixtureを独立DBへ構築してから追加migrationを適用し、legacy upgrade/ACL/data preservationを実行する。
+4. `combined-order` phase: fresh経路とupgrade経路の適用migration ID/hash/順序、最終schema契約、生成RPC signatureを照合し、欠落・重複・順序差を拒否する。
+5. `atomic-failure` phase: preflight、constraint、trigger、worker契約の各異常fixtureを注入し、失敗後のschema/data/migration履歴/audit/operation receiptが適用前と完全一致することを確認する。
+6. `production-boundary` phase: synthetic fixture stable ID/canary/本文/hashがproduction migration、seed、bundle、artifactへ0件であることを検証する。
+7. 各phaseで実DBのRLS/default privileges/SECURITY DEFINER owner・search_path/EXECUTEを共通検査し、anon/authenticated owner/一般learner/service_role/worker各roleのallow/denyを照合する。全phase成功後だけ`database` checkと対応capabilityを成功にする。
 
-DBパスワード、service role key、ローカル環境の状態出力はログやartifactへ保存しません。migration失敗は既存migrationの書換えで直さず、原則として加算的な修正migrationで解決します。
+DBパスワード、privileged credential、ローカル環境の状態出力はログやartifactへ保存しません。fixture phaseはproduction deployコマンドから参照不能なtest専用path/roleだけを使います。上記5検証phaseの一つでもskipされたrunはrequired evidenceとして認めません。migration失敗は既存migrationの書換えで直さず、原則として加算的な修正migrationで解決します。
+
+### 3.1 本番DB適用
+
+1. exact main SHAからstaging migration artifactを作成し、hashを記録する。
+2. D-03 A policyの`restorePointMaxAgeDays=30`,`rpoHours=24`,`rtoHours=8`,`deletionSloHours=24`,`backupEffectivePurgeDays=30`を確認する。live deadline=`acceptedAt+24h`とbackup retention=`acceptedAt+30d`を別列/JCSでexact照合し、`<=720`や30日live SLOを拒否する。
+3. 本番migration advisory lockと対象table write-conflicting lockをtransaction開始直後に固定順序で取得し、新規write trafficをfeature controlでも停止する。
+4. lock下でpreflight/hashを再計算し、stagingで検査済みの同一artifactをexpansion-onlyで適用する。staging値を本番expectedへ流用しない。
+5. schema migration履歴、ACL、RLS、trigger、RPC signature/hashを照合する。
+6. old/new client smoke、cross-user拒否、正答非開示、冪等replayを確認する。
+7. 段階公開後にwrite trafficを再開する。
+8. 失敗時は破壊的down migrationをせず、feature disableまたは後方互換forward-fixを適用する。
+
+D-03 Aのbackup適用前に、manifestの両policy ID/body/hash、consistency barrier、DB/Auth/Storage上限、deletion tombstone/ledger/external archive upper bound、KMS、署名preimage、restore point age<=30日を検証します。事故後は待機せず別の隔離projectで復旧を開始し、最大contiguous ledger sequenceまでgap 0、実RPO<=24h、実RTO<=8h、削除受付30日超の復元可能data 0を証明します。
 
 ## 4. GitHub Pages
 
-`品質検査`がmainで成功すると`Web本番デプロイ`が開始します。手動実行は現在のmainからだけ可能で、同じcommitに対する`quality`、`database`、`e2e`、`pages`、`security`の成功をGitHub APIで再検証します。
+`品質検査`がmainで成功すると`Web本番デプロイ`が開始します。手動実行は現在のmainからだけ可能で、同じcommitに対する`quality`、`database`、`e2e`、`pages`、`security`の成功をGitHub APIで再検証します。client featureごとのappend-only署名済みproduction capability snapshotをsafe RPCで読み、environment、revision、main SHA、期限、必要migration/worker version、RPC signature、ACL、old/new smokeが揃わない、または署名不正の機能はbuild時・runtimeともOFFにします。cryptographic release runtime controlは明示falseならD-01/P0 recent-auth、明示trueならcryptographic attestation完備を要求し、欠落・未知値をfalseへdefaultしません。`legacy_sync_bridge_enabled && restore_enabled`はDB CHECKで拒否します。DB-first expansionの本番適用・照合前に対応UIを公開しません。
 
 初回だけGitHubのSettings、Pages、Build and deploymentでSourceを`GitHub Actions`にします。Pagesデプロイには外部シークレットは不要です。
 
-任意のRepository Variables:
+本番releaseで必須のRepository Variables:
 
 - `EXPO_PUBLIC_SUPABASE_URL`
 - `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
 
-両方がある場合だけアカウント同期を有効化します。未設定時もデプロイは成功し、端末内保存のみの個人学習モードになります。Service role keyは登録しません。
+本番buildでは両方を必須とし、未設定時はreleaseを失敗させます。未設定buildはCI用synthetic previewまたは「設定されていません」画面だけを生成でき、本番デプロイしません。P0要件である同一アカウント同期を欠くlocal-only版を本番と呼びません。Service role keyは登録しません。
 
 Pages用ビルドではリポジトリ名をExpo Routerの`baseUrl`へ設定し、SPA用`404.html`、`.nojekyll`、サブパス対応manifestとService Workerを生成します。
 
 ## 5. 問題コンテンツ
 
-公開リポジトリのサンプルは`pnpm test:content`で検査します。本番500題は公開リポジトリへ置かず、公開候補のJSONエクスポートに対して次を実行します。
+公開リポジトリのサンプルは`pnpm test:content`で検査します。本番500題は公開リポジトリへ置かず、controlled offline release runnerで公開候補のJSONエクスポートに対して次を実行します。
+
+managed runnerは`CONTENT_PRIVATE_EXPORT_PATH`を必須にし、non-empty、絶対path、allowlist済みcontrolled directory配下のregular file、placeholderでないことを`realpath`後に検証します。symlink escape、`..`、相対path、未設定、`/安全な場所/...`等の例示文字列、任意URL、位置引数fallbackを拒否します。
 
 ```bash
-CONTENT_MINIMUM_COUNT=500 pnpm content:verify /安全な場所/questions.json
+export CONTENT_PRIVATE_EXPORT_PATH="/srv/jstqb-controlled-private/release/questions.json"
+CONTENT_EXACT_COUNT=500 pnpm content:verify -- "${CONTENT_PRIVATE_EXPORT_PATH}"
 ```
 
-エクスポートはコミットせず、検査後もCI artifactへ保存しません。500題未満、未レビュー、非公開状態、重複、根拠不足、正答数不整合が1件でもある場合は公開しません。
+エクスポートはコミットせず、検査後もCI artifactへ保存しません。publish前検証時の問題版statusは`reviewing`だけを許可し、runner成功だけでpublishedとは扱いません。countが500以外、owner承認済みallocationVersionの章/K/64LO/single/multiple/multiple章/multiple K exact配分不一致、未レビュー、重複、根拠不足、正答数不整合、`questionExplanation/takeaway/commonTrap`欠落・空文字・canonical/DB不一致、quality/review artifact hash不一致が1件でもある場合は公開しません。499件、501件、single/multiple一件不一致、LO一件ずれ、正答だけswapの旧hash流用拒否fixtureを必須にします。M1の`compatibility_only`18問は入力・count・catalog・exam blueprintへ0件でなければ失敗します。公開repoへ返す証跡は本文・正答を含まないhash、count、gate version、attestation IDだけです。
+
+作問入力は`content-blueprint-v1.md`のstrict schemaへ一致させます。D-04未決定中はpersonal/public manifest、stage、preview activation、content-control job、対応runtime capabilityをすべて0件にします。owner本人がpurpose-bound recent-authで`ContentAllocationApprovalArtifactV1`をappend-only確定し、allocation definition/version/hashへexact結合した後だけ初期personal manifest生成・stage・accept・activation用job/capabilityを順に許可します。public manifest/job/capabilityはowner approval後も0件で、将来のpublic review、4者attestation、parent personal hash等のpublic gate完了後にだけ別operationで生成します。artifact未確定・hash不一致・personal gateだけでいずれの経路も先行させません。
+
+公式根拠取得はcontrolled runnerが`OfficialSourceVerificationEvidenceV1`をappend-only生成し、`artifactHash`を自身だけ除外したRFC 8785 JCSから独立再計算します。`OfficialSourceRequirementRegistryV1`のexact 3 source/6 claimと`OfficialSourceVerificationCoverageV1`のsource順3 evidence tupleをDB/private/独立runnerで照合し、manifestの`officialSourceVerificationCoverageHash`、official exam basisのevidence ID/hash、source version/document bytes hash/retrievedAtへ固定します。HTTP取得失敗、required source/evidence欠落、unverified、bytes 1-bit不一致、URL/version/hash差替え、推測digest、source不足ならallocation生成、stage、40問/60分/26点policy activationを失敗させます。
+
+DB transaction失敗はDB row/migration履歴をrollbackしますが、Auth Admin、Storage、外部archive/KMS side effectは自動rollbackされたとは扱いません。各外部stepへoperation ID、expected hash、immutable receiptを付け、failure injection後はidempotent retryまたは規定compensationを行います。全scopeのmatching external receiptがDB job/manifest/upper boundと一致するまでcompleted、capability発行、traffic cutoverを禁止します。
+
+controlled artifactのbucket=`controlled-private-release`、content type=`application/json`、positive safe size、固定key/version/etag/raw hashとcreate-only制約を検証します。stage/publish jobのenqueue receiptがNULL、suspend/retire jobのenqueue receiptがnon-nullで、human operation IDとserver internal operation IDが別値であることを確認します。receiptのrequested-by principal/human request/response hashとjob/claimのinternal operation principal/internal request hashは別preimageで、job/internal operation ID/kind/target/server mappingだけがdeferred exact一対一です。human response hashはstrict responseから`operationResponseHash`だけを除いたJCSのSHA-256で、JSON内同fieldとのdeferred equality、自己包含0をgolden照合します。principal/hashのコピー・等値化をnegative fixtureで拒否します。human recent-authはpersonal操作とUI suspend/retire enqueueでだけ消費し、stage/publish/suspend/retire internal receiptはreauth NULLです。authenticated direct internal call、任意URL/client key、未claimを拒否します。保存internal receipt replayはACL/ID/kind/internal principal/internal request hash一致をlease freshness/claim再消費より先に検証します。
+
+緊急停止smokeでは実効targetだけがfreezeされること、session item invalidation fact ID/hash/session/itemとchange/bootstrap/local/portable/restore/materialization linkのexact結合、retireのcurrent membership `reason='retired'` tombstone exact一件・pin維持・fanout/member/link 0、全bootstrap sectionのowner/acceptance/version lockとsuspended/fanout pending/acceptance-revoked content-null tombstone、同版本文/feedback purgeを確認します。同期smokeでは同一generationでserver terminal/content/tombstone/factが優先され、literal local intent allowlist外とbasis row hash/lifecycle mismatchがquarantineされること、回答後の`draft.saved`がdraft非更新かつattempt ID/hash付き`superseded-by-answer` ACKとなり、kill/restart/bootstrap後も確定回答へ収束することを確認します。restore smokeではsourceExportId/sourcePayloadHash、actor digest/pseudonym別集合、全registry kindの0件summaryを含むidentity子row、全集合/count/hash/setsHash/artifactHashのpayload→artifact→dry-run→finalize再計算一致、link ID/time/hash、session invalidation exact FK、remote-source metadata/generation lossless、legacy source generation NULL・legacy schema/event/sequence/fact hash・canonical hash 0件、selection-basis discardのportable/archive/link拒否を確認します。
+
+account deletion/DR smokeはchallenge/job/receipt/schemaVersion=`account-deletion-ledger-entry.v2`のledger/external tombstone/combined receipt/DR manifestのactivation fact ID/revision、environment=`production`、policy ID/body/hash、期限、strict JSON、署名preimageをdeferred exact照合します。Storage subject digest値/algorithm/key IDを別domain goldenから再計算し、combined receiptが直持ちする値と`externalTombstoneHash`、external tombstoneの署名済み値、object key exact segment、immutable metadataをbyte exact照合します。algorithm/key ID/rule versionはreceiptへ存在せず、tombstone hash経由で拘束されることも確認します。negative evidenceはfixture ID、environment/main SHA/migration/capability、実行role/RPC、期待SQLSTATE/error、拒否前後の行数/hash/cursor/job state、runner versionを署名artifactへ保存します。human response hash自己包含/JSON不一致、combined receiptのStorage digest欠落・1-bit差替え・署名対象外、algorithm/key tuple直持ち、external tombstone hash差替え、policy tuple差替え、controlled artifact literal違反、human/internal principal/preimage混同、identity子row/0件summary欠落、legacy canonical hash補造、revoked本文再配布、terminal復活、basis mismatch overlay、remote source欠落、retire fanout、invalidation session/fact ID/hash差替え、draft attempt hash欠落のどれかが想定外成功、期待error不一致、拒否後state変更、証跡欠落ならrequired `database` checkとreleaseを失敗させます。public error本文にSQLSTATE/constraint/internal identifier/private tupleが含まれず、A11y通知も固定安全文だけであることを検査します。
+
+owner-only review smokeは7 RPCそれぞれをauthenticated owner/PUBLIC/anon/service_role/一般learner/adminで実行してACL matrixを照合します。transition成功responseの`transitionReceiptId`/`operationResponseHash`、DB strict response bytes、local receiptをexact一致させ、same-op replayと応答消失/reloadを検証します。
+
+offline/analysis smokeはreservedSessionId exact gateを維持します。projection/readiness双方のexpiresAt/ttlPolicyVersion、hash、projection exact FKを照合し、期限直前成功・exact境界/直後expiredを確認します。DataGenerationのnumber/bigint/integer golden 1と最大safe integerを通し、文字列/小数/0/負数/2^53をnegative fixtureで拒否します。
+
+synthetic DB fixtureはtest専用allowlistだけから投入し、production migration/seed/artifactへ含めません。fixture canary/stable IDが本番artifactと本番DBに0件であることをpreflightで検証します。
 
 ## 6. Webリリース確認
 
 1. `quality`、`database`、`e2e`、`pages`、`security`が成功している。
 2. `pages-build`と`pages-deploy`が成功している。
 3. 公開URLのホーム、問題、再読み込み、オフライン復帰を確認する。
-4. Supabase変数を設定した場合は別端末同期を確認する。
+4. 本番必須Supabase設定を使い、別端末同期を必ず確認する。
 5. 問題500題検査の結果をリリース記録へ添付する。
+6. 有効化するclient featureごとにproduction capability manifest、migration/worker version、RPC/ACL smoke、feature-disable rollbackを照合する。
+7. `personal_learning_enabled=true`、owner allowlist exact 1、self-sign-up/public registration/public content release=falseをAuth、DB runtime control、client safe capabilityの三箇所で照合する。
 
 問題がある場合はGitHub Pagesの直前の成功デプロイを再実行するか、修正PRを作成します。DB変更はロールバックSQLに依存せず、後方互換の修正migrationでロールフォワードします。
 

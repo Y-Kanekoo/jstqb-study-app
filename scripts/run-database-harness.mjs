@@ -250,6 +250,27 @@ export function calculateCanonicalSchemaSignature(catalogHexRows, migrationFiles
 
 export async function queryCanonicalSchemaSignature(runCommand, migrationFiles) {
   const sql = `
+    do $jstqb_database_harness$
+    begin
+      if exists (
+        select 1
+          from pg_catalog.pg_proc p
+          join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+         where n.nspname in ('public', 'private')
+           and p.prokind = 'a'
+           and not exists (
+             select 1
+               from pg_catalog.pg_depend dependency
+              where dependency.classid = 'pg_catalog.pg_proc'::regclass
+                and dependency.objid = p.oid
+                and dependency.deptype = 'e'
+           )
+      ) then
+        raise exception 'application aggregateはcanonical schema署名未対応です。';
+      end if;
+    end
+    $jstqb_database_harness$;
+
     select encode(convert_to(signature, 'UTF8'), 'hex')
       from (
         select 'schema:' || n.nspname || ':owner=' || pg_get_userbyid(n.nspowner) || ':acl=' || coalesce(n.nspacl::text, '') as signature
@@ -324,7 +345,7 @@ export async function queryCanonicalSchemaSignature(runCommand, migrationFiles) 
                pg_get_functiondef(p.oid)
           from pg_catalog.pg_proc p
           join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-         where n.nspname in ('public', 'private')
+         where n.nspname in ('public', 'private') and p.prokind <> 'a'
         union all
         select 'policy:' || schemaname || '.' || tablename || ':' || policyname || ':' || permissive || ':' ||
                roles::text || ':' || cmd || ':' || coalesce(qual, '') || ':' || coalesce(with_check, '')
@@ -520,6 +541,35 @@ async function cleanupOwnedStack(runCommand, expectedNames, log) {
   return 0;
 }
 
+export async function loadDatabaseHarnessContracts(execFileCommand = execFile) {
+  const headMigrationFiles = await readFileEntries(migrationDirectory, (name) => migrationFilePattern.test(name));
+  const fixtureFiles = (await readFileEntries(fixtureDirectory, () => true))
+    .map((entry) => ({ path: basename(entry.path), content: entry.content }));
+  const pgTapRoot = join(workspacePath, 'supabase', 'tests');
+  const pgTapPaths = await enumeratePgTapTestFiles(pgTapRoot);
+  const pgTapFiles = await readRelativeEntries(pgTapRoot, pgTapPaths);
+  const fixtureManifestContent = await readFile(fixtureManifestPath, 'utf8');
+  const fixtureResult = verifyFixtureManifestFile({
+    manifestContent: fixtureManifestContent,
+    fixtureFiles,
+    pgTapFiles,
+  });
+  if (!fixtureResult.ok) return fixtureResult;
+  return {
+    ok: true,
+    value: {
+      headMigrationFiles,
+      fixtureFiles,
+      pgTapFiles,
+      fixtureManifestContent,
+      fixtureManifest: JSON.parse(fixtureManifestContent),
+      manifest: await readJson(manifestPath),
+      canaryRegistry: await readJson(canaryRegistryPath),
+      productionFiles: await readTrackedProductionEntries(execFileCommand),
+    },
+  };
+}
+
 export async function runProductionDatabaseHarness({
   spawnCommand = defaultSpawn,
   execFileCommand = execFile,
@@ -529,6 +579,7 @@ export async function runProductionDatabaseHarness({
   cleanupCommandTimeoutMs = defaultCleanupCommandTimeoutMs,
   terminationGraceMs = defaultTerminationGraceMs,
   signalTarget = process,
+  loadContracts = loadDatabaseHarnessContracts,
   log = console,
 } = {}) {
   const activeChildren = new Set();
@@ -559,16 +610,28 @@ export async function runProductionDatabaseHarness({
   };
   const handleSigint = () => handleTermination('SIGINT');
   const handleSigterm = () => handleTermination('SIGTERM');
-  const headMigrationFiles = await readFileEntries(migrationDirectory, (name) => migrationFilePattern.test(name));
-  const fixtureFiles = (await readFileEntries(fixtureDirectory, () => true))
-    .map((entry) => ({ path: basename(entry.path), content: entry.content }));
-  const pgTapPaths = await enumeratePgTapTestFiles(join(workspacePath, 'supabase', 'tests'));
-  const pgTapFiles = await readRelativeEntries(join(workspacePath, 'supabase', 'tests'), pgTapPaths);
-  const fixtureManifestContent = await readFile(fixtureManifestPath, 'utf8');
-  const fixtureManifest = JSON.parse(fixtureManifestContent);
-  const manifest = await readJson(manifestPath);
-  const canaryRegistry = await readJson(canaryRegistryPath);
-  const productionFiles = await readTrackedProductionEntries(execFileCommand);
+  let contracts;
+  try {
+    contracts = await loadContracts(execFileCommand);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(`DB harnessの契約fileを読み込めません: ${redactDatabaseOutput(message)}`);
+    return 1;
+  }
+  if (!contracts.ok) {
+    log.error(contracts.errors.map((error) => redactDatabaseOutput(error)).join('\n'));
+    return 1;
+  }
+  const {
+    headMigrationFiles,
+    fixtureFiles,
+    pgTapFiles,
+    fixtureManifestContent,
+    fixtureManifest,
+    manifest,
+    canaryRegistry,
+    productionFiles,
+  } = contracts.value;
   const fixtureByPath = new Map(fixtureFiles.map(({ path, content }) => [path, content]));
 
   const persistOwnership = async () => {

@@ -972,26 +972,35 @@ select is((select count(*)::integer from public.question_versions where id = 'db
 select is((select count(*)::integer from public.question_versions where id = 'db-security-draft-v1'), 0, 'authenticatedはdraft question versionを読めない');
 
 select lives_ok(
-  $$update public.profiles set timezone = 'Asia/Tokyo' where id = '10000000-0000-4000-8000-000000000001'$$,
+  $$update public.profiles set timezone = 'UTC' where id = '10000000-0000-4000-8000-000000000001'$$,
   'owner JWTは自分のprofileを更新できる'
 );
 
 select is(
   (select timezone from public.profiles where id = '10000000-0000-4000-8000-000000000001'),
-  'Asia/Tokyo',
+  'UTC',
   'owner JWTによる自分のprofile更新を実値で確認する'
 );
 
-select lives_ok(
-  $$update public.profiles set timezone = 'Asia/Tokyo' where id = '10000000-0000-4000-8000-000000000002'$$,
-  'owner JWTは別userのprofileを更新できない'
+select is_empty(
+  $$
+    update public.profiles
+       set timezone = 'UTC'
+     where id = '10000000-0000-4000-8000-000000000002'
+    returning 1
+  $$,
+  'owner JWTによる別userのprofile更新は0件になる'
 );
+
+reset role;
 
 select is(
   (select timezone from public.profiles where id = '10000000-0000-4000-8000-000000000002'),
-  null,
+  'Asia/Tokyo',
   '別userのprofileは更新されていない'
 );
+
+set local role authenticated;
 
 select throws_ok(
   $$update public.profiles set role = 'admin' where id = '10000000-0000-4000-8000-000000000001'$$,

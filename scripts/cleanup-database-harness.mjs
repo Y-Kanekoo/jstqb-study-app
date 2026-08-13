@@ -26,7 +26,14 @@ export function createCleanupCommandRunner(
     throw new Error('cleanup command終了猶予は正のsafe integerで指定してください。');
   }
   return (command, argumentsList) => new Promise((resolveResult) => {
-    const child = spawnCommand(command, argumentsList, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let child;
+    try {
+      child = spawnCommand(command, argumentsList, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      resolveResult({ status: 1, output: message });
+      return;
+    }
     let output = '';
     let settled = false;
     let timedOut = false;
@@ -163,13 +170,33 @@ export async function cleanupDatabaseHarness({
       return 1;
     }
   }
-  await removeOwnershipFile(ownershipFile);
+  try {
+    await removeOwnershipFile(ownershipFile);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(`DB harnessの所有証跡fileを削除できません: ${redactDatabaseOutput(message)}`);
+    return 1;
+  }
   return 0;
+}
+
+export async function runCleanupCli({
+  cleanup = cleanupDatabaseHarness,
+  ownershipFile = process.env.DB_HARNESS_OWNERSHIP_FILE,
+  log = console,
+} = {}) {
+  try {
+    return await cleanup({ ownershipFile, log });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(`DB harness外側cleanupが例外で停止しました: ${redactDatabaseOutput(message)}`);
+    return 1;
+  }
 }
 
 const isMainModule = process.argv[1] !== undefined
   && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
 if (isMainModule) {
-  process.exitCode = await cleanupDatabaseHarness({ ownershipFile: process.env.DB_HARNESS_OWNERSHIP_FILE });
+  process.exitCode = await runCleanupCli();
 }

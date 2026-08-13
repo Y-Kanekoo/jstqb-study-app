@@ -133,6 +133,7 @@ jobs:
   database:
     name: database
     runs-on: ubuntu-latest
+    # Run 31745880718の実測6分06秒に対し3倍超の余裕を確保する。旧検証はM1まで互換証跡として維持する。
     timeout-minutes: 20
     steps:
       - name: ソースを取得

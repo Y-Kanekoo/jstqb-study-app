@@ -72,7 +72,7 @@ export function verifyMigrationManifest({ manifest, migrationFiles }) {
       errors.push('migration manifest entryが不正です。');
       return null;
     }
-    return entry;
+    return { file: entry.file, sha256: entry.sha256 };
   });
 
   if (errors.length === 0 && JSON.stringify(normalizedFiles) !== JSON.stringify(manifestEntries)) {

@@ -65,6 +65,7 @@ export function verifyDatabaseFixtureManifest({ manifest, fixtureFiles, pgTapFil
   }
 
   const expectedFiles = manifest.files.filter((entry) => validateFileEntry(entry, errors, 'fixture'))
+    .map((entry) => ({ path: entry.path, sha256: entry.sha256 }))
     .sort((left, right) => left.path.localeCompare(right.path));
   const actualFiles = normalizeActualFiles(fixtureFiles, errors, 'fixture');
   if (JSON.stringify(expectedFiles) !== JSON.stringify(actualFiles)) {
@@ -72,6 +73,7 @@ export function verifyDatabaseFixtureManifest({ manifest, fixtureFiles, pgTapFil
   }
 
   const expectedPgTap = manifest.pgTapFiles.filter((entry) => validateFileEntry(entry, errors, 'pgTAP'))
+    .map((entry) => ({ path: entry.path, sha256: entry.sha256 }))
     .sort((left, right) => left.path.localeCompare(right.path));
   const actualPgTap = normalizeActualFiles(pgTapFiles, errors, 'pgTAP');
   if (JSON.stringify(expectedPgTap) !== JSON.stringify(actualPgTap)) {
@@ -106,7 +108,8 @@ export function verifyDatabaseFixtureManifest({ manifest, fixtureFiles, pgTapFil
   const fileMap = new Map(expectedFiles.map((entry) => [entry.path, entry.sha256]));
   const semanticEntries = [manifest.originMainFixture, ...manifest.atomicFailures];
   for (const entry of semanticEntries) {
-    if (typeof entry.path === 'string'
+    if (isPlainObject(entry)
+      && typeof entry.path === 'string'
       && typeof entry.sha256 === 'string'
       && fileMap.get(entry.path) !== entry.sha256) {
       errors.push(`fixture意味契約がfile一覧と一致しません: ${entry.path}`);

@@ -41,8 +41,24 @@ const projectLabelFilter = `label=${projectLabel}`;
 const containerFormat = '{{.ID}}\t{{.Names}}';
 const migrationFilePattern = /^\d{12,14}_[a-z0-9_]+\.sql$/u;
 const pgTapFilePattern = /\.sql$/u;
+const defaultCommandTimeoutMs = 5 * 60 * 1000;
+const defaultCleanupCommandTimeoutMs = 2 * 60 * 1000;
+const defaultTerminationGraceMs = 5 * 1000;
 
-export function createCommandRunner(spawnCommand, activeChildren = new Set()) {
+export function createCommandRunner(
+  spawnCommand,
+  activeChildren = new Set(),
+  {
+    commandTimeoutMs = defaultCommandTimeoutMs,
+    terminationGraceMs = defaultTerminationGraceMs,
+  } = {},
+) {
+  if (!Number.isSafeInteger(commandTimeoutMs) || commandTimeoutMs <= 0) {
+    throw new Error('command timeoutは正のsafe integerで指定してください。');
+  }
+  if (!Number.isSafeInteger(terminationGraceMs) || terminationGraceMs <= 0) {
+    throw new Error('command終了猶予は正のsafe integerで指定してください。');
+  }
   return (command, argumentsList, options = {}) => new Promise((resolveResult) => {
     const child = spawnCommand(command, argumentsList, {
       cwd: options.cwd ?? workspacePath,
@@ -50,15 +66,39 @@ export function createCommandRunner(spawnCommand, activeChildren = new Set()) {
     });
     activeChildren.add(child);
     let output = '';
+    let settled = false;
+    let timedOut = false;
+    let timeoutTimer;
+    let graceTimer;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (graceTimer !== undefined) clearTimeout(graceTimer);
+      activeChildren.delete(child);
+      resolveResult(result);
+    };
+    const timeoutResult = () => ({
+      status: 124,
+      output: `commandが制限時間${commandTimeoutMs}msを超えたため停止しました。`,
+    });
+    timeoutTimer = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      try { child.kill?.('SIGTERM'); } catch { /* grace後のSIGKILLへ進む。 */ }
+      graceTimer = setTimeout(() => {
+        if (settled) return;
+        try { child.kill?.('SIGKILL'); } catch { /* timeout結果へ必ず収束する。 */ }
+        finish(timeoutResult());
+      }, terminationGraceMs);
+    }, commandTimeoutMs);
     child.stdout?.on('data', (chunk) => { output += chunk.toString(); });
     child.stderr?.on('data', (chunk) => { output += chunk.toString(); });
     child.once('error', (error) => {
-      activeChildren.delete(child);
-      resolveResult({ status: 1, output: `${output}${error.message}` });
+      finish(timedOut ? timeoutResult() : { status: 1, output: `${output}${error.message}` });
     });
     child.once('exit', (code, signal) => {
-      activeChildren.delete(child);
-      resolveResult({ status: signal ? 1 : code ?? 1, output });
+      finish(timedOut ? timeoutResult() : { status: signal ? 1 : code ?? 1, output });
     });
     if (options.input !== undefined) {
       child.stdin?.write(options.input);
@@ -469,10 +509,20 @@ export async function runProductionDatabaseHarness({
   execFileCommand = execFile,
   acquireLock = acquireRepositoryLock,
   ownershipFilePath = process.env.DB_HARNESS_OWNERSHIP_FILE,
+  commandTimeoutMs = defaultCommandTimeoutMs,
+  cleanupCommandTimeoutMs = defaultCleanupCommandTimeoutMs,
+  terminationGraceMs = defaultTerminationGraceMs,
   log = console,
 } = {}) {
   const activeChildren = new Set();
-  const runCommand = createCommandRunner(spawnCommand, activeChildren);
+  const runCommand = createCommandRunner(spawnCommand, activeChildren, {
+    commandTimeoutMs,
+    terminationGraceMs,
+  });
+  const runCleanupCommand = createCommandRunner(spawnCommand, activeChildren, {
+    commandTimeoutMs: cleanupCommandTimeoutMs,
+    terminationGraceMs,
+  });
   let expectedNames = [];
   let temporaryUpgradeRoot;
   let freshSignature = '';
@@ -726,7 +776,7 @@ export async function runProductionDatabaseHarness({
     log.error(`DB harness準備に失敗しました: ${redactDatabaseOutput(message)}`);
     status = 1;
   } finally {
-    const cleanupStatus = await cleanupOwnedStack(runCommand, expectedNames, log);
+    const cleanupStatus = await cleanupOwnedStack(runCleanupCommand, expectedNames, log);
     if (temporaryUpgradeRoot !== undefined) {
       await rm(temporaryUpgradeRoot, { recursive: true, force: true });
     }

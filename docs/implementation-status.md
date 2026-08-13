@@ -1,6 +1,8 @@
 # 実装状況
 
-## 利用可能
+本書の「利用可能」はPR #6時点のprototype機能を示し、詳細設計v2の本番受入証拠ではありません。static sample content、回答後feedback境界、同期/DB v2、500問、実機・復旧証拠が未完了のため、PR A以降の全受入が完了するまでproduction unavailableです。
+
+## Prototypeで利用可能
 
 - iOS / Android / Web共通画面
 - 1問未満でも残る選択下書き
@@ -18,8 +20,13 @@
 
 - 本番Supabaseプロジェクト、メール送信元、許可URLの設定
 - 独立レビュー済み500問の非公開DB投入と本人承認
+- 全500 current versionの生成来歴、独立AI blind solve、構造化品質評価、最終adjudication、本人passのcoverage exact 500
+- 本人限定review originと、正答を初期response・bundle・cacheへ含めないowner review plane
 - Apple / Google開発者アカウントでの実機ビルド、署名、配布
-- 本番バックアップ、監視、アカウント削除workerの設定
+- D-03 Aの暗号化DR backup・復旧worker、最大30日rotation、RPO 24時間、RTO 8時間、削除再適用、監視、アカウント削除workerの設定
 - iOS / Android実機、複数端末、低速回線での受入試験
+- 通常演習offline pack、模試offline参考結果の分離、スマホ/Web adaptive layoutの受入試験
 
 公開リポジトリのサンプル問題は機能検証用で、本番500問の公開数には算入しません。
+
+初期本番は本人限定personal previewです。一般公開用technical/editorial/mobile reviewと4人attestationは将来の公開gateとして維持しますが、個人利用開始条件にはしません。

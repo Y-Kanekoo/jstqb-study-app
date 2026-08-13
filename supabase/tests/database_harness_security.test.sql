@@ -6,7 +6,7 @@ begin;
 -- neutral owner、search_path、PUBLIC/anon/authenticated/service_role/workerのallow/denyを実roleで追加検証する。
 -- request.jwt.claimsはPostgRESTが署名検証済みJWTからDB sessionへ注入する本番互換claim形状を再現する。
 
-select plan(96);
+select plan(98);
 
 insert into auth.users (
   id,
@@ -628,6 +628,46 @@ select is(
   ),
   0,
   '将来functionをservice_roleへdefault grantしない'
+);
+
+select is(
+  (
+    select count(*)::integer
+      from pg_catalog.pg_default_acl default_acl
+      join pg_catalog.pg_namespace namespace
+        on namespace.oid = default_acl.defaclnamespace
+      cross join lateral pg_catalog.aclexplode(default_acl.defaclacl) privilege
+     where default_acl.defaclrole = 'postgres'::regrole
+       and namespace.nspname = 'public'
+       and default_acl.defaclobjtype = 'r'
+       and privilege.grantee in (
+         'anon'::regrole,
+         'authenticated'::regrole,
+         'service_role'::regrole
+       )
+  ),
+  0,
+  'postgres ownerがpublicへ作る将来tableをruntime roleへdefault grantしない'
+);
+
+select is(
+  (
+    select count(*)::integer
+      from pg_catalog.pg_default_acl default_acl
+      join pg_catalog.pg_namespace namespace
+        on namespace.oid = default_acl.defaclnamespace
+      cross join lateral pg_catalog.aclexplode(default_acl.defaclacl) privilege
+     where default_acl.defaclrole = 'postgres'::regrole
+       and namespace.nspname = 'public'
+       and default_acl.defaclobjtype = 'S'
+       and privilege.grantee in (
+         'anon'::regrole,
+         'authenticated'::regrole,
+         'service_role'::regrole
+       )
+  ),
+  0,
+  'postgres ownerがpublicへ作る将来sequenceをruntime roleへdefault grantしない'
 );
 
 select ok(

@@ -555,6 +555,7 @@ export async function runProductionDatabaseHarness({
     terminationSignal = signal;
     log.error(`DB harnessが${signal}を受信したため、実行中commandを停止して所有確認付きcleanupへ移行します。`);
     runCommand.cancelAll(signal);
+    runCleanupCommand.cancelAll(signal);
   };
   const handleSigint = () => handleTermination('SIGINT');
   const handleSigterm = () => handleTermination('SIGTERM');

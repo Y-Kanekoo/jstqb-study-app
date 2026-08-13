@@ -21,6 +21,8 @@ JSTQB Foundation Levelを日常的に学習し、Web、iOS、Androidのどこか
 - JSTQB Foundation Level試験案内（40問・60分）: <https://www.jstqb.jp/guidance/>
 - ISTQB Exam Structure Tables（CTFL v4.0、40点中26点、60分）: <https://istqb.org/wp-content/uploads/2026/05/ISTQB_Exam-Structure-Tables_v1.18.pdf>
 
+release runnerは上記一次情報をcontrolled downloadし、`content-blueprint-v1.md`だけを正本とするstrict `OfficialSourceVerificationEvidenceV1`へ、各sourceのevidence ID、source ID/URL、exact version、`retrievedAt`、取得bytesのSHA-256、`verificationResult='verified'`、runner ID/version、artifact hashを固定します。具体的なdigestは取得前に推測せず、runnerが取得bytesから記録・再計算します。`OfficialSourceRequirementRegistryV1`は上記3 sourceと、syllabus版、40問、60分、26/40点、章配分、K配分の必須claimを固定し、`OfficialSourceVerificationCoverageV1`がregistryとevidenceを欠落・余剰・重複0で結合します。配分basisのsource version/hash/time/evidence ID/hashはExam Structure Tables evidenceへexact一致させ、同coverage hashをpersonal/public manifest branchとacceptance evidenceへ含めます。証跡の欠落、`verificationResult!='verified'`、取得bytesとのdigest不一致、source ID/URL swap、registry/claim不足、basis参照不一致が一つでもあれば、500題配分の生成・適用、stage、acceptance/public release、および模試の40問・60分・26点基準のactivationをfail closedで拒否します。personal/public manifest branchはself hash fieldを持たず、strict branch全fieldのSHA-256だけを別objectの`ReleaseHashSetV2.manifestHash`へ保存します。
+
 ## 3. P0機能
 
 | ID | 機能 | 受入要点 |
@@ -34,7 +36,7 @@ JSTQB Foundation Levelを日常的に学習し、Web、iOS、Androidのどこか
 | F-07 | 誤答演習 | 未克服、直近、期間内、全誤答、克服済みから選べる |
 | F-08 | 採点・解説 | 単一・複数選択を採点し、選択肢別解説を表示する |
 | F-09 | 間隔反復 | 今日の復習と次回復習日を算出する |
-| F-10 | 模試 | 40問60分、提出後採点。有効分母exact 40だけ26点以上を判定し、停止問題で分母未満なら合否null |
+| F-10 | 模試 | 40問60分、提出後採点。personal-previewはownerのactive acceptance manifestに含まれるeligible reviewing版、publishedはpublished catalogのeligible版だけを母集団とし、scope内で章・Kをexact充足、重複0、eligibilityとacceptance pinを検証する。有効分母exact 40だけ26点以上を判定し、停止問題で分母未満なら合否null |
 | F-11 | 履歴 | 問題版を含む回答・セッション履歴を保持する |
 | F-12 | 分析 | 初見正答率、消化率、未克服、克服率、定着率を表示する |
 | F-13 | ブックマーク | 問題を保存し、保存問題だけで演習できる |
@@ -66,7 +68,7 @@ JSTQB Foundation Levelを日常的に学習し、Web、iOS、Androidのどこか
 - 全ユーザーデータへRLSを適用する。
 - `service_role`、DBパスワード、秘密鍵をクライアントとGitHubへ置かない。
 - 確定回答はサーバーで再採点する。
-- 監査ログへトークン、メモ、回答内容を記録しない。
+- 監査ログへトークン、メモ、回答内容を記録しない。競合解決に必要なメモ・未確定回答の全文版はRLS、retention、本人削除の対象となるuser-scoped conflict dataだけへ保存し、監査にはhashと操作metadataだけを残す。
 
 ### 品質
 

@@ -36,4 +36,10 @@
 
 ## 規範文書
 
-実装、migration、問題公開、リリースの具体的な状態遷移・DTO・RPC・PR依存順・受入基準は、[詳細設計 v2](detailed-design-v2.md)を優先します。追加要件を含む詳細設計 v2が独立レビューでBlocking/High 0になるまでは、本番機能の実装と問題作成を開始しません。
+| 文書 | 狭い正本範囲 |
+|---|---|
+| [詳細設計 v2](detailed-design-v2.md) | workflow、状態機械、受入条件、migration/PR依存順 |
+| [API・DTO契約 v2](api-contract-v2.md) | wire DTO、RPC signature、error、canonical/hash preimage |
+| [コンテンツblueprint v1](content-blueprint-v1.md) | 問題・review・manifestのcontent schema、配分、content hash |
+
+文書間で矛盾した場合は、対象field/境界に対して最も狭いauthorityを持つ文書を優先します。API契約はworkflowやPR順を上書きせず、詳細設計はwire field/hashを再定義せず、blueprint生成schema/hashは手書きAPI説明より優先します。どの範囲か判定不能ならfail closedで設計レビューへ戻します。独立レビューでBlocking/High 0になるまでは本番実装・問題公開を開始しません。

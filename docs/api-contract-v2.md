@@ -19,6 +19,16 @@ type Sha256HexV1 = string;
 type PositiveSafeIntegerV1 = number;
 type NonNegativeSafeIntegerV1 = number;
 type NonEmptyTrimmedStringV1 = string;
+type UuidV1 = UUID;
+type IsoUtcTimestampV1 = IsoUtcTimestamp;
+type OfficialSourceIdV1 =
+  | 'jstqb-foundation-syllabus-2023v4.0.j02'
+  | 'jstqb-foundation-guidance'
+  | 'istqb-exam-structure-tables-v1.18';
+type OfficialSourceUrlV1 =
+  | 'https://www.jstqb.jp/syllabus/'
+  | 'https://www.jstqb.jp/guidance/'
+  | 'https://istqb.org/wp-content/uploads/2026/05/ISTQB_Exam-Structure-Tables_v1.18.pdf';
 type Base64Url32BytesV1 = string;
 type Base64Url64BytesV1 = string;
 type ContentIssueCategory =
@@ -123,7 +133,7 @@ type ClientSyncKind = Exclude<LearningSyncKind, 'session.submitted'>;
 - canonical bytesはRFC 8785 JCSのUTF-8とし、Unicode正規化を行わず入力code pointを保持する。
 - `undefined`、`NaN`、`Infinity`、浮動小数をDTOに含めない。
 - numberはJavaScript safe integer範囲に限定する。
-- objectの未知key、配列重複、文字長超過を拒否する。
+- objectの未知keyと文字長超過は全strict schemaで拒否する。配列の重複拒否は、schemaで`set-like`または`uniqueBy(registry key/tuple)`と明示した配列だけへ適用し、各annotationが指定する正規keyで判定する。ordered tuple、順序に意味があるlist、multiset、count tupleには包括的な重複除去を適用せず、同値要素を保持する。たとえば公式K配分`[8,24,8]`は有効なordered count tupleであり、二つの`8`を重複エラーにしない。validatorは各生成schemaのunique annotation/registryを正本とし、annotationのない配列へ推測でunique制約を足さない。共通fixtureは、unique指定配列の同一key二件を拒否するnegative、`[8,24,8]`と重複を含む許可済みordered/multisetをその順序・件数のまま受理するpositive、ならびに各schema固有のtuple長・位置・count制約違反を拒否するnegativeを分離する。
 - `contentChannel='personal_preview'`は`contentAssurance='owner_preview'`だけ、通常の`public`は`published`だけを許可する。`legacy_compatibility`はM1で既存18問sessionへ付与したowned hydration専用で、新規catalog/basis/session/exam/preview、正式SRS・分析へ使用しない。
 
 ## 2. 同期Envelope
@@ -1671,17 +1681,102 @@ interface LocalStreamCursorV2 {
   }[];
 }
 
-interface LocalConflictRecordV2 {
+interface DraftConflictBodyV2 {
+  readonly sessionId: UUID;
+  readonly sessionItemId: UUID;
+  readonly questionId: QuestionId;
+  readonly questionVersionId: QuestionVersionId;
+  readonly selectedChoiceIds: readonly ChoiceId[];
+  readonly scrollOffset: NonNegativeSafeIntegerV1;
+  readonly revision: NonNegativeSafeIntegerV1;
+  readonly deviceId: string;
+  readonly receivedAt: IsoUtcTimestamp;
+}
+
+interface NoteConflictBodyV2 {
+  readonly questionId: QuestionId;
+  readonly questionVersionId: QuestionVersionId;
+  readonly body: string;
+  readonly revision: NonNegativeSafeIntegerV1;
+  readonly receivedAt: IsoUtcTimestamp;
+}
+
+interface AnswerConflictBodyV2 {
+  readonly sessionId: UUID;
+  readonly sessionItemId: UUID;
+  readonly questionId: QuestionId;
+  readonly questionVersionId: QuestionVersionId;
+  readonly selectedChoiceIds: readonly ChoiceId[];
+  readonly eventId: UUID;
+  readonly receivedAt: IsoUtcTimestamp;
+}
+
+type LearningConflictBodyV2 =
+  | ({ readonly kind: 'draft' } & DraftConflictBodyV2)
+  | ({ readonly kind: 'note' } & NoteConflictBodyV2)
+  | ({ readonly kind: 'answer' } & AnswerConflictBodyV2);
+
+interface LocalConflictRecordBaseV2 {
   readonly conflictId: UUID;
   readonly ownerUserId: UUID;
   readonly dataGeneration: DataGeneration;
-  readonly aggregateKey: string;
-  readonly kind: 'revision' | 'answer' | 'stale-generation';
-  readonly localRequestHash: Sha256HexV1;
-  readonly remoteCanonicalHash: Sha256HexV1 | null;
-  readonly resolution: 'pending' | 'keep-local' | 'accept-remote' | 'merge' | 'discard-stale-generation';
+  readonly aggregateKey: NonEmptyTrimmedStringV1;
+  readonly localVersionHash: Sha256HexV1;
+  readonly remoteVersionHash: Sha256HexV1;
+  readonly adoptedVersionHash: Sha256HexV1 | null;
+  readonly status: 'pending' | 'resolved';
+  readonly createdAt: IsoUtcTimestamp;
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly expiresAt: IsoUtcTimestamp;
 }
 
+type LocalConflictRecordV2 = LocalConflictRecordBaseV2 & (
+  | {
+      readonly kind: 'draft';
+      readonly localBody: { readonly kind: 'draft' } & DraftConflictBodyV2;
+      readonly remoteBody: { readonly kind: 'draft' } & DraftConflictBodyV2;
+    }
+  | {
+      readonly kind: 'note';
+      readonly localBody: { readonly kind: 'note' } & NoteConflictBodyV2;
+      readonly remoteBody: { readonly kind: 'note' } & NoteConflictBodyV2;
+    }
+  | {
+      readonly kind: 'answer';
+      readonly localBody: { readonly kind: 'answer' } & AnswerConflictBodyV2;
+      readonly remoteBody: { readonly kind: 'answer' } & AnswerConflictBodyV2;
+    }
+);
+
+type ResolveLearningConflictRequestV2 = {
+  readonly contractVersion: 2;
+  readonly operationId: UUID;
+  readonly dataGeneration: DataGeneration;
+  readonly conflictId: UUID;
+  readonly expectedLocalVersionHash: Sha256HexV1;
+  readonly expectedRemoteVersionHash: Sha256HexV1;
+} & (
+  | { readonly resolution: 'keep-local'; readonly adoptedBody: null; readonly adoptedVersionHash: Sha256HexV1 }
+  | { readonly resolution: 'accept-remote'; readonly adoptedBody: null; readonly adoptedVersionHash: Sha256HexV1 }
+  | { readonly resolution: 'merge'; readonly adoptedBody: LearningConflictBodyV2; readonly adoptedVersionHash: Sha256HexV1 }
+);
+
+interface ResolveLearningConflictResponseV2 {
+  readonly contractVersion: 2;
+  readonly operationId: UUID;
+  readonly operationRequestHash: Sha256HexV1;
+  readonly operationResponseHash: Sha256HexV1;
+  readonly conflictId: UUID;
+  readonly status: 'resolved';
+  readonly adoptedVersionHash: Sha256HexV1;
+  readonly conflictAuditId: UUID;
+  readonly resolvedAt: IsoUtcTimestamp;
+}
+```
+
+`get_learning_conflict_v2(conflictId,dataGeneration)`と`resolve_learning_conflict_v2(request)`は`authenticated` owner本人だけへgrantし、ownerはJWTから導出して入力させません。resolveはuser/generation、`status='pending'`、DB時計で`now < expiresAt`、aggregate kind、local/remote bodyのstrict schema、両expected version hashを再検証します。各version hashは対応bodyのRFC 8785 JCS SHA-256です。keep-local/accept-remoteのadopted hashは該当version hashとexact一致、mergeは同じkindのstrict `adoptedBody`からserver再計算したhashとexact一致させ、domain aggregate更新・conflict解決・本文なしaudit・operation receiptを一transactionで確定します。`operationRequestHash=SHA-256(RFC 8785 JCS(strict request))`、`operationResponseHash`は同field自身だけを除外したstrict responseのRFC 8785 JCS SHA-256です。同operation ID・同request hashは保存responseをbyte-for-byte replayし、異内容、期限切れ、別owner、別generation、body kind/hash不一致を拒否します。response/audit/generic logへlocal/remote/adopted body、選択値、メモ本文、端末表示名を含めません。
+
+```ts
 interface LocalFeedbackCacheRecordBaseV2 {
   readonly ownerUserId: UUID;
   readonly dataGeneration: DataGeneration;
@@ -4077,7 +4172,7 @@ interface RuntimeCapabilityTrustBundleV2 {
 public.get_public_runtime_capabilities_v2() returns jsonb
 ```
 
-初期production snapshotは`contentOperatingMode='personal-only'`かつ`publicContentReleaseEnabled=false`に固定します。この間、personal preview用feature以外のpublic manifest stage、attestation、publish、一般利用者catalogをDB/worker/deploy/clientの全層で拒否します。将来`public`へ切り替えるには別rollout ADR、4自然人attestation、public review、privacy/security/device evidence、必要migration/worker/clientをproduction capabilityへ列挙し、新revisionの署名済みsnapshotで明示enableします。field欠落やmode/boolean不一致は全content releaseをOFFへ収束させます。
+初期production snapshotは`contentOperatingMode='personal-only'`かつ`publicContentReleaseEnabled=false`に固定します。ただしD-04未決定中は`ContentAllocationApprovalArtifactV1`が存在しないため、personal/public manifest、stage、preview activation、content-control job、対応runtime capabilityを全て0件にします。owner本人がpurpose-bound recent-authでD-04のappend-only approval artifactを確定し、definition/hashへexact結合した後だけ初期personal経路を開始できます。public manifest/job/capabilityはその時点でも0件で、将来の別rollout ADR、4自然人attestation、public review、privacy/security/device evidence、必要migration/worker/clientをproduction capabilityへ列挙し、新revisionの署名済みsnapshotで明示enableするまで作成できません。field欠落やmode/boolean、artifact/hash不一致は全content releaseをOFFへ収束させます。
 
 この署名済みsafe RPCだけはclient RPCのauthenticated限定規則の明示例外として`anon`と`authenticated`へEXECUTEをgrantし、PUBLICと`service_role`、全internal dedicated roleからREVOKEします。IP/application単位rate limit、短時間public cache、ETagを適用し、秘密、内部URL、token、learner ID、未sanitized ACL/運用証跡を返しません。deploy verifierとpre-login clientは同じresponse bytes/signatureをbuild-pinned trust anchorで検証し、rate-limit時や検証不能時は全featureをOFFへ収束させます。
 
@@ -4190,6 +4285,89 @@ interface ReleaseHashSetV2 {
   readonly manifestHash: Sha256HexV1;
 }
 
+type OfficialSourceClaimCodeV1 =
+  | 'syllabus-version-jstqb-fl-2023v4.0.j02'
+  | 'exam-question-count-40'
+  | 'exam-duration-minutes-60'
+  | 'passing-score-26-of-40'
+  | 'chapter-question-counts-8-6-4-11-9-2'
+  | 'k-level-question-counts-8-24-8';
+
+interface OfficialSourceVerificationEvidenceV1 {
+  readonly schemaVersion: 'official-source-verification-evidence.v1';
+  readonly evidenceId: UuidV1;
+  readonly sourceId: OfficialSourceIdV1;
+  readonly sourceUrl: OfficialSourceUrlV1;
+  readonly exactVersion: NonEmptyTrimmedStringV1;
+  readonly retrievedAt: IsoUtcTimestampV1;
+  readonly downloadedBytesSha256: Sha256HexV1;
+  readonly verificationResult: 'verified';
+  readonly runnerId: NonEmptyTrimmedStringV1;
+  readonly runnerVersion: NonEmptyTrimmedStringV1;
+  readonly artifactHash: Sha256HexV1;
+}
+
+interface OfficialSourceRequirementRegistryV1 {
+  readonly schemaVersion: 'official-source-requirement-registry.v1';
+  readonly sources: readonly [
+    {
+      readonly sourceId: 'jstqb-foundation-syllabus-2023v4.0.j02';
+      readonly sourceUrl: 'https://www.jstqb.jp/syllabus/';
+      readonly requiredClaimCodes: readonly ['syllabus-version-jstqb-fl-2023v4.0.j02'];
+    },
+    {
+      readonly sourceId: 'jstqb-foundation-guidance';
+      readonly sourceUrl: 'https://www.jstqb.jp/guidance/';
+      readonly requiredClaimCodes: readonly ['exam-question-count-40', 'exam-duration-minutes-60'];
+    },
+    {
+      readonly sourceId: 'istqb-exam-structure-tables-v1.18';
+      readonly sourceUrl: 'https://istqb.org/wp-content/uploads/2026/05/ISTQB_Exam-Structure-Tables_v1.18.pdf';
+      readonly requiredClaimCodes: readonly [
+        'exam-question-count-40',
+        'exam-duration-minutes-60',
+        'passing-score-26-of-40',
+        'chapter-question-counts-8-6-4-11-9-2',
+        'k-level-question-counts-8-24-8'
+      ];
+    }
+  ];
+  readonly officialSourceRequirementRegistryHash: Sha256HexV1;
+}
+
+interface OfficialSourceVerificationReferenceV1<TSourceId extends OfficialSourceIdV1> {
+  readonly sourceId: TSourceId;
+  readonly evidenceId: UuidV1;
+  readonly artifactHash: Sha256HexV1;
+  readonly exactVersion: NonEmptyTrimmedStringV1;
+  readonly retrievedAt: IsoUtcTimestampV1;
+  readonly downloadedBytesSha256: Sha256HexV1;
+}
+
+interface OfficialSourceVerificationCoverageV1 {
+  readonly schemaVersion: 'official-source-verification-coverage.v1';
+  readonly officialSourceRequirementRegistryHash: Sha256HexV1;
+  readonly requiredSourceIds: readonly [
+    'jstqb-foundation-syllabus-2023v4.0.j02',
+    'jstqb-foundation-guidance',
+    'istqb-exam-structure-tables-v1.18'
+  ];
+  readonly requiredClaimCodes: readonly [
+    'syllabus-version-jstqb-fl-2023v4.0.j02',
+    'exam-question-count-40',
+    'exam-duration-minutes-60',
+    'passing-score-26-of-40',
+    'chapter-question-counts-8-6-4-11-9-2',
+    'k-level-question-counts-8-24-8'
+  ];
+  readonly evidenceRefs: readonly [
+    OfficialSourceVerificationReferenceV1<'jstqb-foundation-syllabus-2023v4.0.j02'>,
+    OfficialSourceVerificationReferenceV1<'jstqb-foundation-guidance'>,
+    OfficialSourceVerificationReferenceV1<'istqb-exam-structure-tables-v1.18'>
+  ];
+  readonly officialSourceVerificationCoverageHash: Sha256HexV1;
+}
+
 interface ContentOfficialExamStructureBasisV1 {
   readonly schemaVersion: 'content-official-exam-structure-basis.v1';
   readonly certificationCode: 'CTFL';
@@ -4198,6 +4376,8 @@ interface ContentOfficialExamStructureBasisV1 {
   readonly sourceDocumentVersion: 'v1.18';
   readonly sourceDocumentHash: Sha256HexV1;
   readonly sourceReviewedAt: IsoUtcTimestamp;
+  readonly sourceVerificationEvidenceId: UuidV1;
+  readonly sourceVerificationEvidenceHash: Sha256HexV1;
   readonly examQuestionCount: 40;
   readonly chapterQuestionCounts: readonly [8, 6, 4, 11, 9, 2];
   readonly kLevelQuestionCounts: readonly [8, 24, 8];
@@ -4807,6 +4987,7 @@ interface PersonalPreviewReleaseManifestV2 extends ContentReleaseCoverageHashesV
   readonly allocationHash: Sha256HexV1;
   readonly allocationApproval: ContentAllocationApprovalArtifactV1;
   readonly allocationApprovalArtifactHash: Sha256HexV1;
+  readonly officialSourceVerificationCoverageHash: Sha256HexV1;
   readonly loBlueprintHash: Sha256HexV1;
   readonly qualityGateConfig: ContentQualityGateConfigV1;
   readonly qualityGateConfigHash: Sha256HexV1;
@@ -4848,6 +5029,7 @@ interface PublicReleaseManifestV2 extends ContentReleaseCoverageHashesV1 {
   readonly parentPersonalManifestHash: Sha256HexV1;
   readonly allocationHash: Sha256HexV1;
   readonly allocationApprovalArtifactHash: Sha256HexV1;
+  readonly officialSourceVerificationCoverageHash: Sha256HexV1;
   readonly loBlueprintHash: Sha256HexV1;
   readonly qualityGateConfigHash: Sha256HexV1;
   readonly copyrightCorpusRegistryHash: Sha256HexV1;
@@ -5357,7 +5539,7 @@ manifestとacceptanceで使用するowner artifact/coverageの唯一の正本は
 
 `record_owner_question_review_v2`の`changes_required` branchはclient指定issue IDを一切受けません。requestはcategoryとtrim後1～2,000文字のreasonだけを受け、serverがcontent ref、JWT owner principal、review operation、current audit-complete factへ結合したissue IDを初回transactionで生成します。同transactionでopen issue、初回issue fact、blueprint owner review artifact（outcomeの同issue ID）、decision audit fact、operation receipt、strict responseを全てappendし、issueのreview artifact hash/audit fact ID/hashと各content ref/owner/operationをdeferred FK/CHECKでexact一致させます。`response.issue.issueId = response.artifact.outcome.changesRequiredIssueId = response.auditFact.changesRequiredIssueId`、`response.transitionReceiptId = response.decisionReceiptId = response.issue.decisionReceiptId`、`response.issue.reviewDecisionAuditFactId/hash = response.auditFact.auditFactId/factHash`を必須同値とし、request・issue・artifact・audit・receiptのoperation ID、content ref、owner snapshotも同一でなければcommitしません。pass branchも`transitionReceiptId=decisionReceiptId`ですがissue=nullでissue row 0件です。同operation ID・同request hashは同じissue/artifact/audit/receipt response、別hashは`IDEMPOTENCY_KEY_REUSED`です。任意UUID、既存issue ID、別問題・別version・別owner issueの流用、category/reason欠落、issueだけまたはartifactだけのcommitを`OWNER_REVIEW_ISSUE_INVALID`で拒否します。CAS/state/hash不一致は`OWNER_REVIEW_STATE_CONFLICT`です。
 
-初期productionは`personal-only`です。owner review RPCは学習アプリと異なるallowlist済みreview originだけから、owner本人のactive JWT、短期review session、fresh recent-auth、CSRF tokenを検証して一問ずつ返します。responseへ`Cache-Control: no-store`、`Pragma: no-cache`、`Referrer-Policy: no-referrer`を付与し、CORSはexact review origin一つ、service worker/analytics/第三者script/query token/bearer linkを禁止します。review artifactはoperation IDと全artifact hashへ結合したappend-only rowで、同ID同hashだけ同response、current canonical/version不一致は拒否します。personal manifestはcurrent 500 ref、generation 500、G0～G12 review 6,500、owner pass 500、未解決issue 0の場合だけ作成できます。初期runtimeではpublic manifest stage、public catalog、attestation、publishをOFFにし、将来の別rollout ADRで4自然人attestationを満たした時だけenableできます。
+初期productionは`personal-only`です。ただしD-04未決定中はpersonal/public manifest、stage、preview activation、content-control job、対応runtime capabilityを0件に固定します。D-04の`ContentAllocationApprovalArtifactV1`をowner本人が確定した後だけ初期personal経路を開始できます。owner review RPCは学習アプリと異なるallowlist済みreview originだけから、owner本人のactive JWT、短期review session、fresh recent-auth、CSRF tokenを検証して一問ずつ返します。responseへ`Cache-Control: no-store`、`Pragma: no-cache`、`Referrer-Policy: no-referrer`を付与し、CORSはexact review origin一つ、service worker/analytics/第三者script/query token/bearer linkを禁止します。review artifactはoperation IDと全artifact hashへ結合したappend-only rowで、同ID同hashだけ同response、current canonical/version不一致は拒否します。personal manifestはapproval artifactに加えcurrent 500 ref、generation 500、G0～G12 review 6,500、owner pass 500、未解決issue 0の場合だけ作成できます。public manifest/job/capability、public catalog、attestation、publishは将来の別rollout ADRとpublic gateで4自然人attestation等を全て満たすまで0件です。
 
 AI review型とhashの唯一の正本はblueprint生成型`ContentGenerationArtifactV1`、`ContentAiEvaluationArtifactV1`、`ContentAiBlindSolveArtifactV1`、`ContentAiAdjudicationArtifactV1`、`ContentAiReviewCoverageV1`です。current 500 refへgeneration artifact exact 500、G0～G12のpass tuple/review artifact exact 6,500を要求します。G4のsingleとG8の数値claimなしだけがblueprint指定`not-applicable`を許され、それ以外とG12はpassです。G12は同じcontent/hash setのG0～G11 artifact hashをregistry順exact 12件参照し、generator、G2 blind reviewer、G12 adjudicatorのprovider/model/run tupleを相互に異ならせます。subject/content/canonical/blueprint/allocation/quality config/review policyの一つでも変われば同問題のgenerationとG0～G12を全失効し、一部carry-forwardを禁止します。DB deferred gateはexpected question 500、generation 500、required/review 6,500、content-ref×pass exact一件、stale/missing/extra/duplicate/unresolved issue 0、全FK/hash/independenceを再計算します。personal manifestはcoverage canonical bytesと`aiReviewCoverageHash`をlosslessに含め、outer manifest hashのpreimageへ含めます。countだけ、旧手書きAI型、manifest外artifactでgateを満たしません。
 
@@ -5368,6 +5550,7 @@ AI review型とhashの唯一の正本はblueprint生成型`ContentGenerationArti
 - personal manifestはblueprint正本どおりgeneration 500件、G0～G12 review 6,500件、owner本人の一問単位pass 500件を要求します。これに加え、K3全件、multiple全件、blind solve不一致全件のpersonal human reviewと、K1/K2をstratum key `(chapterNumber,kLevel,selectionType)`ごとに`ceil(stratumSize / 5)`件の追加human sample reviewを要求します。sampleはowner全500 passを代替しません。候補500件とstratum所属をfreezeした後、release runnerから権限分離したsampling serviceだけが32-byte CSPRNG seedを一度発行し、署名済みartifact保存後の再発行・取消・再抽選を禁止します。freeze/rank/populationのexact preimage、quota、sort、carry-forward、署名対象、UNIQUE keyは[コンテンツblueprint v1 §3.2.1/§3.2.2](./content-blueprint-v1.md)だけを正本とし、本書の型と説明は生成表示です。全domain-separated preimageは例外なく`UTF8(blueprint記載のliteral) || 0x00 || JCS(payload)`であり、literalへNUL文字・`\0` escapeを埋め込む代替やdelimiter文字列連結を認めません。artifactの`blueprintHash`はpersonal manifestの`loBlueprintHash`とexact一致し、source-only変更でseed/sampleを変えず、canonical変更時も過去sample questionの新版と変更refをmandatory carry-forwardします。
 - 全K3・全multiple・全blind disagreement・carry-forward・層化sampleの集合和をcontent refで重複除去し、runnerの任意選択を許さない。accountability review artifact、identity assertion、provenanceを各500 content refへexact一対一で拘束し、issue 0を要求する。public manifestはpersonal manifest hashをparentにし、Mobile/Web previewとtechnical/editorial各500を追加する。review artifactの追加ではpersonal manifestを更新せず新しいpublic manifestをappendする。content変更時は新canonical/new bundle/new personal manifest/new acceptanceからやり直す。
 - normalized signature重複は0、embedding類似度は8200 basis points以上の候補をpersonal/publicの両stageで必ず拒否し、修正・再canonical化します。reviewer override、human例外承認、別phaseへの移送によって同一canonicalをreleaseへ通す経路は設けません。修正後の値だけを新bundle/new manifests/new acceptance/reviewsへ進めます。
+- `OfficialSourceRequirementRegistryV1`、`OfficialSourceVerificationEvidenceV1`、`OfficialSourceVerificationCoverageV1`はblueprint生成型とexact一致するstrict DTOです。evidenceの`artifactHash`は自身だけを除外したstrict artifactのRFC 8785 JCS SHA-256です。coverageはregistry hash、固定3 source、固定6 claim、source順のevidence ID/artifact hash/exact version/retrievedAt/downloaded bytes hashを全て拘束し、personal/public manifestの`officialSourceVerificationCoverageHash`へ固定します。`ContentOfficialExamStructureBasisV1`のsource version/document hash/reviewedAt/evidence ID/hashはexam-structure evidenceのexact version/downloaded bytes hash/retrievedAt/evidence ID/artifact hashへ一致させます。required source/evidenceの欠落・余剰・重複、`verificationResult!='verified'`、URL/version/bytes/hash差替え、取得不能値からの推測digestではallocation生成、stage、40問/60分/26点policy activationを一切許可しません。
 - 本節の`ContentProvenanceV2`、primitive、`ContentAccountabilityReviewArtifactV1`は`content-blueprint-v1.md`から生成された表示用抜粋で、API側で手動再定義しません。生成schema/type digestをprivate runner、DB、API、独立runnerで一致させます。`ContentProvenanceV2`はprivate sourceからpersonal manifestへ全fieldをlossless射影し、`authoredAt`、accountability artifact、全model run、normative source、terminology、copyright spanを省略・集約しない。normative source、model run、detected spanは規定keyのbyte昇順・重複なしで、V2→manifest全field mappingを生成schemaで固定する。public manifestはparent personal manifest hashを拘束し、provenanceを弱い別schemaへ再入力しない。literal provenance bytes/hashをprivate runner、DB、独立runnerで照合する。
 - manifestの配列はcontent ref `(questionStableId,versionStableKey)`、review type、subject type、human principalまたはmodel provider/model/digest/run ID、artifact hashのbyte昇順へ固定し、content ref/review type/subjectの重複を拒否する。personal machine/blind/provenance、public technical/editorialは500 ref exact、preview artifactは500問をWeb/mobileで表示検査したcoverage artifactへ結合する。K3/multipleと層化母集団はallocationから独立再計算する。数値artifactはblueprintの`NumericOracleVerificationArtifactV1`をlosslessに使い、各entryを`(questionStableId,versionStableKey,claimKey)`のUTF-8 byte昇順・tuple unique、input recordをJCS key順、中間値keyとchoice binding choiceStableIdをUTF-8 byte昇順・uniqueにします。scalar/rational/rational-list input、formula、全中間値、rounding mode/scale、scalar/ordered-set expected/oracle、unit、全choice bindingを省略せず、expected/oracleのkind・exact/displayed値とbindingを独立再計算して100%一致させます。ordered-set/rational-listだけは意味順序を保持し、独断でsortしません。artifact hashはblueprint §3.2.1のpreimageだけから計算し、private source、DB、独立runnerが同じRFC 8785 bytes/hashへ一致し、tuple重複、input kind暗黙変換、配列swap、oracle値・binding差替えをfixture化します。
 - subject組合せはmachine-gate=`system-run`、blind-solve=`model-run`、personal-human/technical/editorial/mobile-web-preview=`human`だけを許可し、別組合せをstrict schemaで拒否する。
@@ -5383,9 +5566,9 @@ AI review型とhashの唯一の正本はblueprint生成型`ContentGenerationArti
 
 allocation/corpus/review/quality/blueprint/oracle/provenance-accountability coverageを含む全補助hashの唯一の正本は[コンテンツblueprint v1 §3.2.1](./content-blueprint-v1.md)です。本節の同名型・field・説明はその生成表示であり、preimage、除外field、配列順、domain literalを独立に定義・上書きしません。生成schema digestをprivate runner、DB、API、独立runnerで照合し、差があればreleaseをfail-closedにします。domain separatorがある補助hashは必ず`UTF8(literal) || 0x00 || JCS(payload)`のbyte列を使い、文字列中のNUL、`\0`、delimiter連結を同値扱いしません。
 
-本書だけを正本にできるhashはAPI境界固有のouter envelope、すなわちstrict private artifact bytesの`rawHash`、`ContentCanonicalQuestionVersionV2`の`contentHash`、`ContentCanonicalReleaseV2`の`canonicalHash`、strict personal/public release branchから自身の`manifestHash`だけを除いた`personalManifestHash/publicManifestHash`です。補助hashをouter envelope内部で再計算した値へ置換せず、blueprint §3.2.1に従って再計算したembedded値との一致を別に検証します。全hash/digest fieldは`Sha256HexV1`、literal goldenはexact preimage UTF-8 hex、digest、1-bit変更、自己field混入、配列swap、Unicode非正規化を含み、実装関数自身からexpectedを生成しません。
+本書だけを正本にできるhashはAPI境界固有のouter envelope、すなわちstrict private artifact bytesの`rawHash`、`ContentCanonicalQuestionVersionV2`の`contentHash`、`ContentCanonicalReleaseV2`の`canonicalHash`、および`ReleaseHashSetV2.manifestHash`です。`PersonalPreviewReleaseManifestV2`と`PublicReleaseManifestV2`のbranch自体はself hash fieldを持たず、`ReleaseHashSetV2.manifestHash = SHA-256(JCS(strict ContentReleaseManifestV2の該当branch全field))`だけを唯一のmanifest hashとします。stage別aliasまたはbranch内self hash fieldを生成・保存・受理しません。補助hashをouter envelope内部で再計算した値へ置換せず、blueprint §3.2.1に従って再計算したembedded値との一致を別に検証します。全hash/digest fieldは`Sha256HexV1`、literal goldenはexact preimage UTF-8 hex、digest、1-bit変更、branchへのself hash/alias混入、配列swap、Unicode非正規化を含み、実装関数自身からexpectedを生成しません。
 
-`rawHash`はstrict `ContentPrivateQuestionV3[]` artifactの保存bytesそのもののSHA-256です。各`contentHash=SHA-256(JCS(ContentCanonicalQuestionVersionV2))`、bundle `canonicalHash=SHA-256(JCS(ContentCanonicalReleaseV2))`、personal/public `manifestHash=SHA-256(JCS(ContentReleaseManifestV2の該当branch))`とし、hash field自身はそのpreimageへ含めません。release questionsはquestion stable ID、version no、version stable key、fact/artifact/premise/claim/choiceを各stable keyのbyte昇順へ正規化し、reasoning stepは`stepNumber`の数値昇順へ固定します。reasoning stepは1始まり、重複なし、欠番なし、1～12のsafe integerです。全参照key、`relevantPremiseKeys`、`relevantClaimKeys`、`addressedPremiseKeys`、`addressedClaimKeys`、`correctChoiceStableIds`はUTF-8 byte昇順・重複なしで、`relevantClaimKeys`はnon-emptyかつ同じ問題の`askedClaims.claimKey`だけを参照します。数値claimではそのclaimを`relevantClaimKeys`に持つchoice stable ID集合と`choiceValueBindings`のchoice stable ID集合をexact一致させます。`takeaway`と`commonTrap`はtrim後non-emptyの学習表示用canonical metadataとして`ContentCanonicalQuestionVersionV2`、DB canonical基礎行、`contentHash`の全てへ含め、pre-answer catalog/session DTOへは射影しません。回答確定後のrevealed feedbackだけが同値を返し、suspend/revoke tombstoneは両方nullです。正答集合は同versionのchoice stable IDだけで件数がrequired countとexact一致します。DB UUIDはbytes/sortから除外します。raw/canonical/personal/publicと1～12 reasoning stepのliteral outer envelope bytes/digest、正答だけswap、source-only変更、別DB UUID、順序入替をDB/private/独立runnerで照合し、実装関数自身でexpectedを作りません。sanitized reportへ正答集合を出しません。`LearningObjectiveCountsV1`は64 key exactで、extra/missing keyとblueprint quota不一致をruntime schema・DB gateの両方で拒否します。`patternFamilyId`と全enumは対象LOの承認済みblueprint registry所属を再検証します。
+`rawHash`はstrict `ContentPrivateQuestionV3[]` artifactの保存bytesそのもののSHA-256です。各`contentHash=SHA-256(JCS(ContentCanonicalQuestionVersionV2))`、bundle `canonicalHash=SHA-256(JCS(ContentCanonicalReleaseV2))`です。manifestはbranch全fieldをそのままJCS化し、そのdigestを別objectの`ReleaseHashSetV2.manifestHash`へ保存します。branchにhash fieldはないためmanifest preimageから除外するfieldもありません。stage request、DB release hash-set row、private runner、独立runnerはbranch bytesと`manifestStage`を照合して同じdigestを再計算し、`hashSet.manifestHash`へexact一致させます。branchへの`manifestHash`追加、alias column、stage違いbranch、保存branch差替えを拒否します。`contentHash`/`canonicalHash`の各self hash除外はそれぞれのstrict型定義に従い、manifest規則へ流用しません。release questionsはquestion stable ID、version no、version stable key、fact/artifact/premise/claim/choiceを各stable keyのbyte昇順へ正規化し、reasoning stepは`stepNumber`の数値昇順へ固定します。reasoning stepは1始まり、重複なし、欠番なし、1～12のsafe integerです。全参照key、`relevantPremiseKeys`、`relevantClaimKeys`、`addressedPremiseKeys`、`addressedClaimKeys`、`correctChoiceStableIds`はUTF-8 byte昇順・重複なしで、`relevantClaimKeys`はnon-emptyかつ同じ問題の`askedClaims.claimKey`だけを参照します。数値claimではそのclaimを`relevantClaimKeys`に持つchoice stable ID集合と`choiceValueBindings`のchoice stable ID集合をexact一致させます。`takeaway`と`commonTrap`はtrim後non-emptyの学習表示用canonical metadataとして`ContentCanonicalQuestionVersionV2`、DB canonical基礎行、`contentHash`の全てへ含め、pre-answer catalog/session DTOへは射影しません。回答確定後のrevealed feedbackだけが同値を返し、suspend/revoke tombstoneは両方nullです。正答集合は同versionのchoice stable IDだけで件数がrequired countとexact一致します。DB UUIDはbytes/sortから除外します。raw/canonical/manifest branchと1～12 reasoning stepのliteral outer envelope bytes/digest、正答だけswap、source-only変更、別DB UUID、順序入替をDB/private/独立runnerで照合し、実装関数自身でexpectedを作りません。sanitized reportへ正答集合を出しません。`LearningObjectiveCountsV1`は64 key exactで、extra/missing keyとblueprint quota不一致をruntime schema・DB gateの両方で拒否します。`patternFamilyId`と全enumは対象LOの承認済みblueprint registry所属を再検証します。
 
 private bundleの正本は`content-blueprint-v1.md`の`ContentPrivateQuestionV3`で、全fieldを含む入力bytesを`rawHash`へ結合します。chapter/section/LO titleとKは承認済みblueprint registryから導出し、fact/artifact/premise/asked claim/reasoning step/choice意味対応を含む公開DBの意味fieldを上記canonical projectionへ写像します。numeric oracle、provenance/auditなどrelease検証専用fieldはcanonical projectionへ含めませんが、raw hash、oracle verification artifact、provenance coverage hashへ結合されるため、変更時はpersonal/public両manifestとacceptance/attestationを作り直します。
 

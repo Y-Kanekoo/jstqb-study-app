@@ -641,6 +641,99 @@ type LearningObjectiveCountsV1 = {
   readonly [K in LearningObjectiveCodeV1]: PositiveSafeIntegerV1;
 };
 
+type OfficialSourceIdV1 =
+  | 'jstqb-foundation-syllabus-2023v4.0.j02'
+  | 'jstqb-foundation-guidance'
+  | 'istqb-exam-structure-tables-v1.18';
+
+type OfficialSourceUrlV1 =
+  | 'https://www.jstqb.jp/syllabus/'
+  | 'https://www.jstqb.jp/guidance/'
+  | 'https://istqb.org/wp-content/uploads/2026/05/ISTQB_Exam-Structure-Tables_v1.18.pdf';
+
+type OfficialSourceClaimCodeV1 =
+  | 'syllabus-version-jstqb-fl-2023v4.0.j02'
+  | 'exam-question-count-40'
+  | 'exam-duration-minutes-60'
+  | 'passing-score-26-of-40'
+  | 'chapter-question-counts-8-6-4-11-9-2'
+  | 'k-level-question-counts-8-24-8';
+
+interface OfficialSourceVerificationEvidenceV1 {
+  readonly schemaVersion: 'official-source-verification-evidence.v1';
+  readonly evidenceId: UuidV1;
+  readonly sourceId: OfficialSourceIdV1;
+  readonly sourceUrl: OfficialSourceUrlV1;
+  readonly exactVersion: NonEmptyTrimmedStringV1;
+  readonly retrievedAt: IsoUtcTimestampV1;
+  readonly downloadedBytesSha256: Sha256HexV1;
+  readonly verificationResult: 'verified';
+  readonly runnerId: NonEmptyTrimmedStringV1;
+  readonly runnerVersion: NonEmptyTrimmedStringV1;
+  readonly artifactHash: Sha256HexV1;
+}
+
+interface OfficialSourceRequirementRegistryV1 {
+  readonly schemaVersion: 'official-source-requirement-registry.v1';
+  readonly sources: readonly [
+    {
+      readonly sourceId: 'jstqb-foundation-syllabus-2023v4.0.j02';
+      readonly sourceUrl: 'https://www.jstqb.jp/syllabus/';
+      readonly requiredClaimCodes: readonly ['syllabus-version-jstqb-fl-2023v4.0.j02'];
+    },
+    {
+      readonly sourceId: 'jstqb-foundation-guidance';
+      readonly sourceUrl: 'https://www.jstqb.jp/guidance/';
+      readonly requiredClaimCodes: readonly ['exam-question-count-40', 'exam-duration-minutes-60'];
+    },
+    {
+      readonly sourceId: 'istqb-exam-structure-tables-v1.18';
+      readonly sourceUrl: 'https://istqb.org/wp-content/uploads/2026/05/ISTQB_Exam-Structure-Tables_v1.18.pdf';
+      readonly requiredClaimCodes: readonly [
+        'exam-question-count-40',
+        'exam-duration-minutes-60',
+        'passing-score-26-of-40',
+        'chapter-question-counts-8-6-4-11-9-2',
+        'k-level-question-counts-8-24-8'
+      ];
+    }
+  ];
+  readonly officialSourceRequirementRegistryHash: Sha256HexV1;
+}
+
+interface OfficialSourceVerificationReferenceV1<TSourceId extends OfficialSourceIdV1> {
+  readonly sourceId: TSourceId;
+  readonly evidenceId: UuidV1;
+  readonly artifactHash: Sha256HexV1;
+  readonly exactVersion: NonEmptyTrimmedStringV1;
+  readonly retrievedAt: IsoUtcTimestampV1;
+  readonly downloadedBytesSha256: Sha256HexV1;
+}
+
+interface OfficialSourceVerificationCoverageV1 {
+  readonly schemaVersion: 'official-source-verification-coverage.v1';
+  readonly officialSourceRequirementRegistryHash: Sha256HexV1;
+  readonly requiredSourceIds: readonly [
+    'jstqb-foundation-syllabus-2023v4.0.j02',
+    'jstqb-foundation-guidance',
+    'istqb-exam-structure-tables-v1.18'
+  ];
+  readonly requiredClaimCodes: readonly [
+    'syllabus-version-jstqb-fl-2023v4.0.j02',
+    'exam-question-count-40',
+    'exam-duration-minutes-60',
+    'passing-score-26-of-40',
+    'chapter-question-counts-8-6-4-11-9-2',
+    'k-level-question-counts-8-24-8'
+  ];
+  readonly evidenceRefs: readonly [
+    OfficialSourceVerificationReferenceV1<'jstqb-foundation-syllabus-2023v4.0.j02'>,
+    OfficialSourceVerificationReferenceV1<'jstqb-foundation-guidance'>,
+    OfficialSourceVerificationReferenceV1<'istqb-exam-structure-tables-v1.18'>
+  ];
+  readonly officialSourceVerificationCoverageHash: Sha256HexV1;
+}
+
 interface ContentOfficialExamStructureBasisV1 {
   readonly schemaVersion: 'content-official-exam-structure-basis.v1';
   readonly certificationCode: 'CTFL';
@@ -649,6 +742,8 @@ interface ContentOfficialExamStructureBasisV1 {
   readonly sourceDocumentVersion: 'v1.18';
   readonly sourceDocumentHash: Sha256HexV1;
   readonly sourceReviewedAt: IsoUtcTimestampV1;
+  readonly sourceVerificationEvidenceId: UuidV1;
+  readonly sourceVerificationEvidenceHash: Sha256HexV1;
   readonly examQuestionCount: 40;
   readonly chapterQuestionCounts: readonly [8, 6, 4, 11, 9, 2];
   readonly kLevelQuestionCounts: readonly [8, 24, 8];
@@ -1061,7 +1156,11 @@ interface ContentCanonicalChoiceLearningMetadataV3 {
 
 `ContentReviewArtifactV2.result`はrelease対象では`pass`だけで、未解決の`open/investigating` issueはartifactへ偽装せず`ContentReviewCoverageV2.issueRefs`へ記録します。coverageは`requiredRefs`の各tupleに必要なV2 artifactがexact一件あり、余剰artifact、重複tuple、未登録review type、`open/investigating` issueが0でなければ成立しません。V1 artifactだけではmanifestを生成できず、stage、accept、publishのいずれにも進めません。review artifactの識別子は`artifactHash`だけです。review/coverage契約に存在しない`reviewArtifactHash`または`artifactId`をDTO、manifest、hash preimage、sort keyへ追加してはなりません。なお、別契約であるcopyright detected spanの根拠を指す`ContentProvenanceV2.copyright.detectedSpans[].reviewArtifactHash`は実在fieldであり、本禁止の対象外です。
 
-personal manifestとpublic manifestは、対象phaseで必要な`reviewCoverageHash`、`identityAssertionCoverageHash`、`accountabilityCoverageHash`、`provenanceCoverageHash`を必須fieldとして持ち、対応するcoverage artifactのcanonical bytesをlosslessに参照します。各coverageの`requiredRefs`はmanifestの対象content ref集合とreview policyから生成し、publicはpersonalを弱めず追加reviewを含む別coverageを生成します。API/DB側は本書のstrict生成型を参照し、手書き`string`や省略可能fieldへwideningしません。
+personal manifestとpublic manifestは、対象phaseで必要な`reviewCoverageHash`、`identityAssertionCoverageHash`、`accountabilityCoverageHash`、`provenanceCoverageHash`、`officialSourceVerificationCoverageHash`を必須fieldとして持ち、対応するcoverage artifactのcanonical bytesをlosslessに参照します。各coverageの`requiredRefs`はmanifestの対象content ref集合とreview policyから生成し、publicはpersonalを弱めず追加reviewを含む別coverageを生成します。API/DB側は本書のstrict生成型を参照し、手書き`string`や省略可能fieldへwideningしません。
+
+`OfficialSourceVerificationEvidenceV1`、`OfficialSourceRequirementRegistryV1`、`OfficialSourceVerificationCoverageV1`は公式一次情報検証の唯一の正本です。registryは上記3 sourceと6 claimをexactに要求し、source IDとURLの別組合せ、順序変更、欠落、余剰を拒否します。controlled release runnerは各URLから取得したbytesを保存直後にSHA-256再計算し、表示された版を`exactVersion`、DB時計を`retrievedAt`へ記録します。digestを取得前に推測したり、HTTP metadata、ファイル名、過去取得物から代入したりしません。evidenceはsourceごとexact一件、coverageの各referenceはevidenceのID、artifact hash、version、取得時刻、bytes hashへbyte-for-byte一致し、required claimはregistryのsource別claim集合の和とexact一致します。artifact、registry、coverageはいずれもstrictで、未知field、空/空白ID、未登録source/URL、`verified`以外、duplicate evidenceを拒否します。
+
+`ContentOfficialExamStructureBasisV1`の`sourceDocumentVersion`、`sourceDocumentHash`、`sourceReviewedAt`、`sourceVerificationEvidenceId`、`sourceVerificationEvidenceHash`は、coverage内の`istqb-exam-structure-tables-v1.18` evidence referenceへexact一致します。40問・60分・26点はJSTQB guidanceとISTQB Exam Structure Tablesに必要なclaim coverage、章/K配分は同Exam Structure Tablesのclaim coverageが成立した場合だけ有効です。personal/public manifest branchは`officialSourceVerificationCoverageHash`を持ち、acceptance evidenceも同じcoverage artifact canonical bytes/hashを参照します。一件でも未取得、未verified、取得bytes再計算不一致、registry不足、claim不足、basis参照不一致なら、allocation生成、stage、personal acceptance、public release、および40問・60分・26点policy activationをfail closedで拒否します。
 
 全500問のAI reviewは、各問題版に対する`ContentGenerationArtifactV1` exact一件と、G0〜G12のreview artifact exact 13件を要求します。G0/G1/G3〜G11は`ContentAiEvaluationArtifactV1`、G2は`ContentAiBlindSolveArtifactV1`、G12は`ContentAiAdjudicationArtifactV1`を正本とします。G4はsingleだけ、G8は数値claimなしだけが`not-applicable`を取れ、それ以外のpassおよびrelease対象のG12は`pass`だけです。G12は同一content hashに対するG0〜G11のartifact hashをregistry順でexact 12件参照し、hard failを上書きできません。generator、G2 blind reviewer、G12 adjudicatorはprovider/model/run tupleが相互に異なり、生成runを評価runへ流用しません。各evaluation packetは一問だけを含めますが、G9のdeterministic evidenceは固定bundle全体との124,750組の比較結果から当該問題の全候補・nearest neighborを射影します。
 
@@ -1101,6 +1200,9 @@ quality gateとreview artifactで使用するtokenizer、embedding model、calib
 
 | hash / digest | exact preimage object | 除外field | 配列順 |
 |---|---|---|---|
+| official source `artifactHash` | `OfficialSourceVerificationEvidenceV1`の全field | `artifactHash`だけ | 配列なし。`sourceId`と`sourceUrl`はregistryの同一entryへ一致し、取得bytesから再計算した`downloadedBytesSha256`を使う |
+| `officialSourceRequirementRegistryHash` | `OfficialSourceRequirementRegistryV1`の全field | `officialSourceRequirementRegistryHash`だけ | `sources`はJSTQB syllabus、JSTQB guidance、ISTQB Exam Structure Tablesのschema記載順。各`requiredClaimCodes`はschema記載順、重複なし |
+| `officialSourceVerificationCoverageHash` | `OfficialSourceVerificationCoverageV1`の全field | `officialSourceVerificationCoverageHash`だけ | `requiredSourceIds`と`evidenceRefs`はregistry source順、`requiredClaimCodes`はschema記載順。source ID・evidence ID・artifact hashはexact一対一、重複拒否 |
 | `officialExamStructureBasisHash` | `ContentOfficialExamStructureBasisV1`の全field | `officialExamStructureBasisHash`だけ | chapterは章1→6、KはK1→K3。小数剰余が同率の場合は章番号昇順のliteral規則 |
 | `allocationHash` | `ContentAllocationDefinitionV1`の全field | なし。definitionにhash/approval/actor/時刻/statusは存在しない | `officialExamStructureBasis`とそのhashをlosslessに含む。`chapterCounts`とmultiple chapterは章1→6、multiple KはK1→K3。`kLevelCounts`と`learningObjectiveCounts`はobjectでありJCS key順。別のLO配列へ変換しない |
 | `blueprintHash` | `{blueprint,normativeRegistry}`。`blueprint`は`LoQuestionBlueprintV1`全field、`normativeRegistry`は`{chapters,sections,learningObjectives}`全literal | `blueprintHash`、Markdown文書SHA、承認actor/時刻/status | `blueprint.entries`とlearning objectivesは§3.3 LO registry順、chapters/sectionsは同registry順、familyは`familyId`のUTF-8 byte昇順、enum集合は本書literal registry順 |
@@ -1132,9 +1234,11 @@ quality gateとreview artifactで使用するtokenizer、embedding model、calib
 | `accountabilityCoverageHash` | `ContentAccountabilityCoverageV1`の全field | `accountabilityCoverageHash`だけ | `requiredRefs`はcontent ref tuple順。`artifactRefs`はcontent ref tuple、`accountabilityReviewArtifactHash`順。exact一対一、重複拒否 |
 | `provenanceCoverageHash` | `ContentProvenanceCoverageV1`の全field | `provenanceCoverageHash`だけ | `requiredRefs`はcontent ref tuple順。`artifactRefs`はcontent ref tuple、`provenanceCanonicalHash`順。exact一対一、重複拒否 |
 
-`copyrightCorpusRegistryHash`は上表の`registryDigest`とbyte-for-byte同値とし、別preimageによる二重hashを作りません。statement registry digestは`{schemaVersion,statements}`、formula/LO/chapter/section registry digestも「schemaVersionと全literal entry」だけをpreimageとし、digest自身、Markdownの空白・見出し・表罫線を含めません。manifest outer hashは対応manifest schemaが定義する全fieldから`manifestHash`だけを除いたJCSであり、ここに列挙した補助hashのpreimageを再構築して置換しません。
+`copyrightCorpusRegistryHash`は上表の`registryDigest`とbyte-for-byte同値とし、別preimageによる二重hashを作りません。statement registry digestは`{schemaVersion,statements}`、formula/LO/chapter/section registry digestも「schemaVersionと全literal entry」だけをpreimageとし、digest自身、Markdownの空白・見出し・表罫線を含めません。公式source evidenceは実取得後のcanonical artifactだけをgoldenへ固定し、実取得前の推測digestをfixture、registry、basisへ書きません。
 
-各実装は実装関数からexpectedを生成しないliteral golden fixtureを共有します。fixtureは入力JSONだけでなく、手作業で固定したexact JCS bytes、UTF-8 hex、lowercase SHA-256を定数として持ちます。最小の肯定goldenは`allocationApprovalArtifactHash`を対象とし、review V2についても6 branch各一件のexact JCS/UTF-8 hex/SHA-256とreview coverage一件を固定します。exact JCS bytesを次の一行へ固定します（末尾改行なし）。
+manifest outer hashはAPI境界の唯一の契約に従います。`PersonalPreviewReleaseManifestV2`と`PublicReleaseManifestV2`のstrict branchはself hash fieldを一切持たず、除外fieldもありません。`ReleaseHashSetV2.manifestHash = SHA-256(JCS(strict ContentReleaseManifestV2の該当branch全field))`だけを唯一のmanifest hashとし、branch全fieldには`officialSourceVerificationCoverageHash`を含めます。branch内`manifestHash`、`personalManifestHash`、`publicManifestHash`、`stageManifestHash`等のself hash/stage別aliasを生成、保存、受理しません。補助hashのpreimageをbranch内で展開・置換せず、上表で独立再計算したembedded値との一致を別に検証します。
+
+各実装は実装関数からexpectedを生成しないliteral golden fixtureを共有します。fixtureは入力JSONだけでなく、手作業で固定したexact JCS bytes、UTF-8 hex、lowercase SHA-256を定数として持ちます。最小の肯定goldenは`allocationApprovalArtifactHash`を対象とし、review V2についても6 branch各一件のexact JCS/UTF-8 hex/SHA-256とreview coverage一件を固定します。manifestはpersonal/public各branchの全fieldを含むself-hashなしgoldenを固定し、branch bytesのSHA-256が別objectの`ReleaseHashSetV2.manifestHash`へexact一致することを検証します。branchへself hash、stage別alias、未知fieldを一つでも追加したnegative fixtureはstrict parse段階で拒否し、除外して元digestへ戻す実装を禁止します。公式sourceはcontrolled downloadで実在bytesを取得した後に、evidence、registry、coverageそれぞれのexact JCS/UTF-8 hex/SHA-256を独立固定し、source/URL swap、evidence ID/hash swap、bytes一bit変更、`verified`以外、claim欠落、basis参照差替えをnegative fixtureにします。exact JCS bytesを次の一行へ固定します（末尾改行なし）。
 
 ```text
 {"allocationHash":"0000000000000000000000000000000000000000000000000000000000000000","approvedAt":"2026-08-13T00:00:00.000Z","approvedBy":"00000000-0000-4000-8000-000000000001","decision":"owner_approved","ownerDecisionReference":"D-04","schemaVersion":"content-allocation-approval-artifact.v1","sourceDesignDocumentHash":"1111111111111111111111111111111111111111111111111111111111111111"}
@@ -1387,7 +1491,7 @@ interface NormativeLearningObjectiveV1 {
 
 ## 5. 検証invariant
 
-公式章配分の根拠は`ContentOfficialExamStructureBasisV1`だけを正本とし、CTFL 40問の章別`8 / 6 / 4 / 11 / 9 / 2`を固定します。500倍換算は`500 * chapterQuestionCount / 40`とし、生値は`100 / 75 / 50 / 137.5 / 112.5 / 25`です。まずfloorした合計499へ最大の小数剰余から一問を加え、小数剰余が同率の第4章・第5章は章番号昇順で第4章を選ぶため、exact quotaは`100 / 75 / 50 / 138 / 112 / 25`になります。K別`8 / 24 / 8`は端数なしで`100 / 300 / 100`です。source documentの版・SHA-256・確認時刻と丸め規則は`officialExamStructureBasisHash`へ固定し、同hashを含むbasis全体を`allocationHash`へlosslessに含めます。公式構成改訂時は既存allocationを上書きせず新versionを作ります。
+公式章配分の根拠は`ContentOfficialExamStructureBasisV1`だけを正本とし、CTFL 40問の章別`8 / 6 / 4 / 11 / 9 / 2`を固定します。500倍換算は`500 * chapterQuestionCount / 40`とし、生値は`100 / 75 / 50 / 137.5 / 112.5 / 25`です。まずfloorした合計499へ最大の小数剰余から一問を加え、小数剰余が同率の第4章・第5章は章番号昇順で第4章を選ぶため、exact quotaは`100 / 75 / 50 / 138 / 112 / 25`になります。K別`8 / 24 / 8`は端数なしで`100 / 300 / 100`です。source documentの版・SHA-256・確認時刻・evidence ID/hashと丸め規則は`officialExamStructureBasisHash`へ固定し、同hashを含むbasis全体を`allocationHash`へlosslessに含めます。basisのsource参照は`OfficialSourceVerificationCoverageV1`のExam Structure Tables referenceへexact一致させ、coverage hashをpersonal/public manifest branchへ含めます。公式構成改訂時は既存allocationを上書きせず、新しいsource evidence、coverage、basis、allocation versionを作ります。
 
 ### 5.1 blueprint自身
 

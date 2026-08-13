@@ -35,6 +35,8 @@ mainへ入る前に次のGitHub Checksを必須にします。
 
 初期はGitHubアカウント1つで運用するため、承認数を0、最新push以外の人による承認をOFFにします。自己承認を作るbotや偽装レビューは設定しません。独立reviewerが固定head SHAへ出したBlocking/High 0の結果だけをPR commentへ記録し、root orchestratorがhead一致・未解決thread 0・正規5 checks成功を再確認するまでauto-mergeをenableしません。PR本文の自己申告は独立review gateとして認めません。
 
+後続DB/tooling PRで専用required check `independent-review`を実装しRulesetへ必須化します。trusted GitHub Appだけが、許可済み独立reviewer identity、対象PR/head SHA、review artifact hash、Blocking=0/High=0、未解決対象0を検証してcheckを成功にでき、head更新でstaleにします。root orchestrator/PR作者の自己申告や任意status contextは受理せず、正規5 checksとこのcheckの全成功前にauto-mergeを許可しません。現Rulesetをこの文書設計PRで即変更することはscope外であり、後続PRはApp issuer偽装、別head、B/H残存、stale reviewのnegative試験とRuleset実適用証跡を受入条件にします。
+
 別の人間レビュアーを追加した時点で`.github/rulesets/main.json`を次のように変更し、スクリプトを再実行します。
 
 ```json
@@ -60,7 +62,7 @@ pnpm test:database
 4. `combined-order` phase: fresh経路とupgrade経路の適用migration ID/hash/順序、最終schema契約、生成RPC signatureを照合し、欠落・重複・順序差を拒否する。
 5. `atomic-failure` phase: preflight、constraint、trigger、worker契約の各異常fixtureを注入し、失敗後のschema/data/migration履歴/audit/operation receiptが適用前と完全一致することを確認する。
 6. `production-boundary` phase: synthetic fixture stable ID/canary/本文/hashがproduction migration、seed、bundle、artifactへ0件であることを検証する。
-7. 全phase成功後だけ`database` checkを成功にし、失敗時は秘密を除くPostgreSQL末尾ログを表示する。成否にかかわらず一時環境をbackupなしで停止し、コンテナ残留を失敗扱いにする。
+7. 各phaseで実DBのRLS/default privileges/SECURITY DEFINER owner・search_path/EXECUTEを共通検査し、anon/authenticated owner/一般learner/service_role/worker各roleのallow/denyを照合する。全phase成功後だけ`database` checkと対応capabilityを成功にする。
 
 DBパスワード、privileged credential、ローカル環境の状態出力はログやartifactへ保存しません。fixture phaseはproduction deployコマンドから参照不能なtest専用path/roleだけを使います。上記5検証phaseの一つでもskipされたrunはrequired evidenceとして認めません。migration失敗は既存migrationの書換えで直さず、原則として加算的な修正migrationで解決します。
 
@@ -96,13 +98,20 @@ Pages用ビルドではリポジトリ名をExpo Routerの`baseUrl`へ設定し�
 
 公開リポジトリのサンプルは`pnpm test:content`で検査します。本番500題は公開リポジトリへ置かず、controlled offline release runnerで公開候補のJSONエクスポートに対して次を実行します。
 
+managed runnerは`CONTENT_PRIVATE_EXPORT_PATH`を必須にし、non-empty、絶対path、allowlist済みcontrolled directory配下のregular file、placeholderでないことを`realpath`後に検証します。symlink escape、`..`、相対path、未設定、`/安全な場所/...`等の例示文字列、任意URL、位置引数fallbackを拒否します。
+
 ```bash
-CONTENT_EXACT_COUNT=500 pnpm content:verify /安全な場所/questions.json
+export CONTENT_PRIVATE_EXPORT_PATH="/srv/jstqb-controlled-private/release/questions.json"
+CONTENT_EXACT_COUNT=500 pnpm content:verify -- "${CONTENT_PRIVATE_EXPORT_PATH}"
 ```
 
 エクスポートはコミットせず、検査後もCI artifactへ保存しません。publish前検証時の問題版statusは`reviewing`だけを許可し、runner成功だけでpublishedとは扱いません。countが500以外、owner承認済みallocationVersionの章/K/64LO/single/multiple/multiple章/multiple K exact配分不一致、未レビュー、重複、根拠不足、正答数不整合、`questionExplanation/takeaway/commonTrap`欠落・空文字・canonical/DB不一致、quality/review artifact hash不一致が1件でもある場合は公開しません。499件、501件、single/multiple一件不一致、LO一件ずれ、正答だけswapの旧hash流用拒否fixtureを必須にします。M1の`compatibility_only`18問は入力・count・catalog・exam blueprintへ0件でなければ失敗します。公開repoへ返す証跡は本文・正答を含まないhash、count、gate version、attestation IDだけです。
 
-作問入力は`content-blueprint-v1.md`の`ContentPrivateQuestionV3` strict schemaへ一致させます。release順序は (1) controlled private artifactをcreate-only保存してprivate/独立canonicalを一致、(2) `content-allocation-approval-artifact.v1`のauthenticated owner recent-auth記録、one-shot sampling/reviewを確定、(3) private release storeでpersonal/public immutable manifestを生成、(4) content-control stage transactionがprivate object version/etag/raw hashとDB canonicalを再検証してcontent import、import versions、review/provenance artifacts、manifestを同時append、です。manifest前のDB importとimport tableからmanifestへの逆FK/hashを禁止します。human review coverageは`reviewCoverageHash`へ統合します。
+作問入力は`content-blueprint-v1.md`のstrict schemaへ一致させます。D-04未決定中はpersonal/public manifest、stage、preview activation、content-control job、対応runtime capabilityをすべて0件にします。owner本人がpurpose-bound recent-authで`ContentAllocationApprovalArtifactV1`をappend-only確定し、allocation definition/version/hashへexact結合した後だけ初期personal manifest生成・stage・accept・activation用job/capabilityを順に許可します。public manifest/job/capabilityはowner approval後も0件で、将来のpublic review、4者attestation、parent personal hash等のpublic gate完了後にだけ別operationで生成します。artifact未確定・hash不一致・personal gateだけでいずれの経路も先行させません。
+
+公式根拠取得はcontrolled runnerが`OfficialSourceVerificationEvidenceV1`をappend-only生成し、`artifactHash`を自身だけ除外したRFC 8785 JCSから独立再計算します。`OfficialSourceRequirementRegistryV1`のexact 3 source/6 claimと`OfficialSourceVerificationCoverageV1`のsource順3 evidence tupleをDB/private/独立runnerで照合し、manifestの`officialSourceVerificationCoverageHash`、official exam basisのevidence ID/hash、source version/document bytes hash/retrievedAtへ固定します。HTTP取得失敗、required source/evidence欠落、unverified、bytes 1-bit不一致、URL/version/hash差替え、推測digest、source不足ならallocation生成、stage、40問/60分/26点policy activationを失敗させます。
+
+DB transaction失敗はDB row/migration履歴をrollbackしますが、Auth Admin、Storage、外部archive/KMS side effectは自動rollbackされたとは扱いません。各外部stepへoperation ID、expected hash、immutable receiptを付け、failure injection後はidempotent retryまたは規定compensationを行います。全scopeのmatching external receiptがDB job/manifest/upper boundと一致するまでcompleted、capability発行、traffic cutoverを禁止します。
 
 controlled artifactのbucket=`controlled-private-release`、content type=`application/json`、positive safe size、固定key/version/etag/raw hashとcreate-only制約を検証します。stage/publish jobのenqueue receiptがNULL、suspend/retire jobのenqueue receiptがnon-nullで、human operation IDとserver internal operation IDが別値であることを確認します。receiptのrequested-by principal/human request/response hashとjob/claimのinternal operation principal/internal request hashは別preimageで、job/internal operation ID/kind/target/server mappingだけがdeferred exact一対一です。human response hashはstrict responseから`operationResponseHash`だけを除いたJCSのSHA-256で、JSON内同fieldとのdeferred equality、自己包含0をgolden照合します。principal/hashのコピー・等値化をnegative fixtureで拒否します。human recent-authはpersonal操作とUI suspend/retire enqueueでだけ消費し、stage/publish/suspend/retire internal receiptはreauth NULLです。authenticated direct internal call、任意URL/client key、未claimを拒否します。保存internal receipt replayはACL/ID/kind/internal principal/internal request hash一致をlease freshness/claim再消費より先に検証します。
 

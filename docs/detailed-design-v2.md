@@ -247,12 +247,14 @@ bootstrap beginは参照personal acceptanceとquestion versionをacceptance UUID
 
 portable selection basisはconsume済みのbasis ID/version/ordinal/choice orderだけを`PortableSelectionBasisFactV2`に保存します。selection basis discardのfact/receiptはserver/local control auditにだけ保持し、portable payload、restore replay archive、restore materialization linkへ含めません。bootstrap/sessionのsourceはclient eventとserver-origin terminalを別branchにし、clientだけrequest hashを必須、server `session.submitted`だけrequest hash nullとserver canonical hash/sequence/revisionを必須にします。通常branchのsource generationはrow/page generationと一致させます。restore-materialization v2 branchだけsource/target generation差を許し、legacy branchだけsource generation nullを要求します。全branchをsource archiveとmaterialization linkのbranch列、ID/hashへ拘束します。
 
+semantic/CAS conflict本文はowner scoped `learning_sync_conflicts`だけに保存し、strict kindごとのlocal/remote bodyと各version hash、採用hash、状態、DB期限を持たせます。owner本人RLSの`get_learning_conflict_v2`/`resolve_learning_conflict_v2`はexpected両hash、同kindの採用body/hash、未解決・期限内・current generationを検証し、aggregate反映、conflict解決、`event_kind='resolved'`かつadopted hash non-nullの本文なしaudit、冪等receiptを一transactionで確定します。期限sweeperはconflict単位の`expired_purged` audit append、本文、従属receipt削除を同じDB transactionで行います。account deletionも対象conflict単位の`account_deleted` audit append後、本文・receipt・raw user FK行を同じDB transactionでcascade/deleteします。purge二種のauditはadopted hash NULL、pseudonymous owner refとlocal/remote hashだけです。batch `run_operation_id`と`UNIQUE(run_operation_id,conflict_id,event_kind)`でkill/retry時の二重auditを防ぎます。generic audit/log/trace/analyticsへ本文・選択・メモ・端末表示名を複製しません。local `LocalConflictRecordV2`はserver全fieldをlosslessに保持し、resolution ACKとdomainを一local transactionで適用します。
+
 ### 6.3 9種類のcanonical event（client ingest 8種類＋server terminal 1種類）
 
 | kind | client payload | server canonical追加・処理 |
 |---|---|---|
 | `session.created` | 通常はDB発行済みbasis IDと選定条件、client item列は禁止。模試は資格・syllabusだけ | 通常はbasisに保存済みsafe pin/順序を一回consume、模試はDBが40問選定。startedAt、expiresAt、revision |
-| `draft.saved` | session、question、selected、expectedRevision、deviceId | pinnedVersion、revision、updatedAt、`saved|invalidated|superseded-by-answer` disposition |
+| `draft.saved` | session、question、selected、expectedRevision、deviceId | pinnedVersion、revision、updatedAt、`saved\|invalidated\|superseded-by-answer` disposition |
 | `answer.submitted` | 通常演習のsession/item/version/selected | DB採点、isCorrect、answeredAt、invalidated |
 | `session.advanced` | session、question、expectedRevision | index、revision、updatedAt |
 | `session.submitted` | client ingest不可。DB finalizerが生成 | attempt summaries、score、denominator、passed、submittedAt |
@@ -344,7 +346,9 @@ M2は同じtransactionで`anon/authenticated`からquestions、question_versions
 - `sync_events`: sequence、event、owner、data generation、kind、origin、contract、request/canonical hash、canonical payload。client-originはrequest hash必須、server-origin terminalはrequest hash null
 - `user_question_states`: wrong/recovered/SRSの再構築可能なmaterialized state
 - `daily_activities`: 現地日付単位の再構築可能な集計
-- `sync_conflicts`: conflictのlocal/remote/resolution
+- `learning_sync_conflicts`: owner/data generation、aggregate、strict `draft/note/answer` kind、local/remote strict body、各version hash、adopted hash、pending/resolved、DB created/updated/expires atを期限付き保存する唯一の本文正本。owner本人RLSとstrict get/resolve RPCだけを許可する。通常UPDATE/DELETEを拒否し、規定expiry/account deletion cleanupだけがaudit appendと同じDB transactionで本文を削除できる
+- `learning_sync_conflict_operation_receipts`: owner FKとconflict FKをともに`ON DELETE CASCADE`へ固定したowner/operation/request hash、strict response/hashのappend-only冪等正本。retentionは本文以下で、通常DELETEを拒否し規定cleanupだけが本文と同transactionで削除する
+- `learning_sync_conflict_audits`: `fact_id UUID PK`、conflict ID、pseudonymous owner ref、local/remote/adopted version hash、`run_operation_id`、`event_kind`、DB timeだけのappend-only監査。event kindは`resolved/expired_purged/account_deleted`、resolvedだけadopted non-null、purge二種はNULLを双方向CHECKし、`UNIQUE(run_operation_id,conflict_id,event_kind)`でbatch retryを冪等化する。本文・選択・メモ・端末表示名・raw user FKを持たず、generic audit/logへも複製しない
 - `content_catalog_streams`、`content_catalog_changes`
 - `question_stable_id`、`version_stable_key`、`choice_stable_id`: certification/syllabus scope付きUNIQUE、import/publish後immutable。DB UUIDはcanonical sort/hashから除外
 - `content_imports`、`content_import_versions`、`content_release_manifests`
@@ -644,7 +648,7 @@ Auth Admin、Storage、scheduled exam finalizer、export/restore/deleteは、cli
 | 第6章 | 25 |
 | 合計 | 500 |
 
-D-04はblueprint生成型`ContentAllocationDefinitionV1.officialExamStructureBasis`をlosslessな唯一の配分根拠とし、公式40問の章別問数`8 / 6 / 4 / 11 / 9 / 2`、source document title/version/hash/reviewedAt、K配分、scaling/rounding ruleをallocation hashへ含めます。500倍して40で割ったexact quotaは`100 / 75 / 50 / 137.5 / 112.5 / 25`です。floor後の残り1問はlargest-remainderで配り、剰余同値は章番号昇順で第4章を第5章より先にするため、章配分を`100 / 75 / 50 / 138 / 112 / 25`へ一意に固定します。KレベルはK1=100、K2=300、K3=100です。次の64学習目標別配分は`allocationVersion: 1`のrelease invariantであり、manifest versionへ固定します。
+D-04はblueprint生成型`ContentAllocationDefinitionV1.officialExamStructureBasis`をlosslessな唯一の配分根拠とし、公式40問の章別問数`8 / 6 / 4 / 11 / 9 / 2`、source document title/version/hash/reviewedAt、source verification evidence ID/hash、K配分、scaling/rounding ruleをallocation hashへ含めます。`OfficialSourceRequirementRegistryV1`のexact 3 source/6 claimと`OfficialSourceVerificationCoverageV1`のexact 3 verified evidenceを先に固定し、manifestへ`officialSourceVerificationCoverageHash`を必須化します。basisのsource version/document bytes hash/reviewedAt/evidence ID/hashはexam-structure evidenceのexact version/downloaded bytes hash/retrievedAt/evidence ID/artifact hashへ一致させます。evidenceの`artifactHash`は自身だけを除外したstrict artifactのRFC 8785 JCS SHA-256です。欠落・unverified・bytes不一致・source不足・推測digestではallocation生成、stage、40問/60分/26点policy activationを拒否します。500倍して40で割ったexact quotaは`100 / 75 / 50 / 137.5 / 112.5 / 25`です。floor後の残り1問はlargest-remainderで配り、剰余同値は章番号昇順で第4章を第5章より先にするため、章配分を`100 / 75 / 50 / 138 / 112 / 25`へ一意に固定します。KレベルはK1=100、K2=300、K3=100です。次の64学習目標別配分は`allocationVersion: 1`のrelease invariantであり、manifest versionへ固定します。
 
 Kレベル対応はISTQB CTFL Syllabus v4.0.1のLearning Objectivesを規範とし、次で固定します。
 
@@ -655,6 +659,8 @@ Kレベル対応はISTQB CTFL Syllabus v4.0.1のLearning Objectivesを規範と�
 本節のLO別問題数をこの対応へ適用すると、K1は25+20+25+20+10=100、K3は58+42=100、残りK2は300です。検証器は問題ごとの`learningObjectiveCode`からこの規範表を引き、入力側の自己申告`kLevel`だけを信用しません。規範sourceは<https://istqb.org/wp-content/uploads/2024/11/ISTQB_CTFL_Syllabus_v4.0.1.pdf>です。
 
 配分値そのものはactor/timeを含まない`ContentAllocationDefinitionV1`へ固定し、`allocationHash=SHA-256(JCS(definition))`とします。D-04のowner決定は別のimmutable `ContentAllocationApprovalArtifactV1`としてallocation hash、owner、時刻、固定設計文書hashへ結合し、personal manifestへdefinition/hash/approval/artifact hashを全て含めます。definitionへapproval状態を混ぜません。ownerがPR Aで承認した時点で、初回release invariantを総数500、章100 / 75 / 50 / 138 / 112 / 25、K1 / K2 / K3 = 100 / 300 / 100、本節の64 LO exact countへ固定します。変更には`allocationVersion: 2`と新しいowner承認artifactを要求します。
+
+D-04未決定中はapproval artifactが存在しないため、personal/public manifest、stage、preview activation、content-control job、対応runtime capabilityを全て0件にします。owner本人がpurpose-bound recent-authでappend-only approval artifactを確定し、definition/version/hashへexact結合した後だけ初期personal経路を開始します。public manifest/job/capabilityはその後も0件で、将来のpublic review、4自然人attestation、parent personal manifest等のpublic gate完了まで作成しません。
 
 DB正本は次のappend-only分離で固定します。
 

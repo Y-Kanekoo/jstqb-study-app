@@ -45,6 +45,8 @@ flowchart LR
 
 端末正本はowner/data generation namespaceごとにlocal/remote session状態、source event/sequence/revision/received metadata、append-only lifecycle/result/issue/session-item-invalidation fact ID/hash、selection basis/lifecycle、command receiptをlosslessに保持します。bootstrapはowner/preview acceptanceと全sectionのquestion versionをlockし、suspended、fanout pending、acceptance-revoked版のcatalog/session item/basis contentをNULL tombstone、feedbackを0件にします。basis ID・順序・lifecycle/hashは不変で、safe contentだけavailable/suspended/acceptance-revoked unionにします。catalog/item invalidationの適用時に同版本文/feedback cacheを原子的にpurgeします。同一generationでもserver terminal/lifecycle/content/tombstone/attempt/factを優先します。保持可能なlocal intentは未ACK `session.created`、未ACK offline pack issue/consume専用command、pending answer、draft/note/bookmark/issue未ACK mutation、未解決conflictだけです。basisはrow hash exact一致かつserver lifecycle=`unconsumed`だけをrebaseし、それ以外をquarantineしてterminalを復活させません。本文なしportable export型とは分離します。generation不一致時は旧namespaceをstrict source branch付きで隔離し、現在namespaceへoverlay・再送・暗黙ACKしません。
 
+semantic/CAS競合のlocal/remote本文はowner/data generation namespaceの`learning_sync_conflicts`だけへ期限付きで隔離します。kind別strict bodyと各version hashを保存し、JWT owner本人だけがRLS経由でread/resolveできます。resolve RPCはexpected local/remote hashと採用body/hashを再計算し、domain反映、conflict status、本文なしappend-only audit、冪等receiptを一transactionで確定します。別ownerは存在推測もできず、期限sweeperとaccount deletion cascadeが本文を削除します。generic audit/log/analyticsにはconflict ID、pseudonymous owner ref、version/adopted hash、operation、DB時刻だけを許し、本文・選択値・メモ・端末表示名を禁止します。
+
 ## 4. セキュリティ境界
 
 - クライアントにはSupabase URLとpublishable keyだけを置きます。
@@ -59,7 +61,7 @@ flowchart LR
 - isolated workerのAuth Admin credentialとDB credentialを分離します。client RPCはauthenticatedだけへEXECUTEをgrantして`auth.uid()`からownerを導出します。internal RPCは用途ごとのexact専用NOLOGIN execution roleだけへgrantし、worker LOGIN roleには対応する一roleへの`SET ROLE`だけを許可します。内部RPCはclaim済みjob/member、lease/fencingを検証し、`auth.uid()`やclient入力user IDへ依存しません。runtime capabilityは基礎tableへ到達しない固定safe RPCだけをanon/authenticatedへgrantします。
 - controlled private artifactを固定bucket/key/version/etag/size/type/raw hashでcreate-only保存します。human enqueue receiptはrequested-by principal snapshot・human request/response hash、content-control job/claimは別のinternal operation principal・internal request hashとoperation/target/lease/fencing/capabilityを固定し、両principal/preimageのコピー・同一視を禁止します。human recent-authは本人操作またはUI suspend/retire enqueueでだけ消費し、stage/publish/suspend/retire internal receiptはreauth NULLです。保存receipt replayのACL/ID/kind/internal principal/internal hash検証をlease/claim検証より先に行い、authenticated direct internal call、任意URL/client keyを拒否します。
 
-確定回答とdraftが競合した時はattemptが正本です。serverはdraftを更新せずcanonical `superseded-by-answer` ACKを返し、bootstrapとkill/restart replayも同じ結果へ収束します。
+確定回答とdraftが競合した時はattemptが正本です。supersession identityはexact `(sessionId,questionId,questionVersionId)`と同じsession item FKであり、serverはこのkeyの実効attemptだけへACKを結合します。別session/version/itemのattemptによる誤supersedeを拒否し、DB/RPC/bootstrap/outboxが同じkeyで収束します。
 
 ## 5. Transaction lock境界
 
@@ -71,11 +73,13 @@ user scopedなversion依存処理の唯一の順序は`user advisory shared/excl
 
 - development: ローカルSupabase、サンプル問題
 - staging: 本番同等、テストアカウント、レビュー候補問題
-- production: 本人だけをallowlistした実データ、本人利用へ承認済みの問題。self-sign-upと一般公開を無効化
+- production: 本人だけをallowlistした実データ。D-04未決定中はpersonal/public manifest、stage、preview activation、content-control job、対応runtime capabilityをすべて0件にする。owner本人のpurpose-bound recent-authでappend-only `ContentAllocationApprovalArtifactV1`を確定した後だけ初期personal経路を開始できる。public manifest/job/capabilityは将来のpublic reviewと4者attestation等のpublic gate完了まで0件のままとする
 
 プロジェクト、キー、DBを環境別に分離し、本番データを開発へコピーしません。
 
-DB-first cutoverのrequired `database` checkは、(1) 空DBへの全migration fresh適用、(2) origin/main-shaped schema/fixtureからのupgrade、(3) fresh/upgrade双方でcombined migration順序一致、(4) preflight/constraint/worker契約の異常注入時にschema・data・migration履歴が部分適用されないatomic failure、(5) synthetic fixture canaryがproduction migration/seed/artifactへ0件、を独立phaseで実DB検証します。一phaseでも未実行・失敗ならruntime capabilityを発行せず、`content-release-v2`を有効化しません。
+DB-first cutoverのrequired `database` checkは、(1) fresh、(2) origin/main-shaped upgrade、(3) combined-order、(4) atomic-failure、(5) production-boundaryの5 phaseを同一migration headの実DBで実行します。各phaseで共通security suiteを実行し、RLS、default privileges、`SECURITY DEFINER`のneutral owner/search_path、関数EXECUTE ACL、anon/authenticated owner/一般learner/service_role/各worker専用roleのallow/denyをpositive/negative両方で検証します。全phase成功時だけ署名済みruntime capabilityを発行し、一つでもskip/失敗ならOFFです。この5-phase harness・capability発行の実装は本設計PRではなく後続DB/tooling PRの必須受入です。
+
+DB transactionのrollbackはPostgreSQL内だけを原子的に戻します。Auth Admin、Private Storage、外部archive/KMS等のside effectは別のidempotent step/operation receiptで管理し、失敗注入後はretryまたは明示compensationで収束させます。jobをcompletedまたはDR cutover可能にするのは、DB stateと全外部scopeのmatching immutable receipt/hash/upper boundが揃った後だけです。DB rollbackを外部削除・object書込みの取消しと同一視しません。
 
 ## 7. リポジトリ構成
 

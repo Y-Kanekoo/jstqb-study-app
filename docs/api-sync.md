@@ -1,6 +1,6 @@
 # API・同期設計
 
-本書の概念設計を、[API・DTO契約 v2](./api-contract-v2.md)が具体化します。矛盾する場合はv2を正本とします。
+authorityは[設計書一覧](./README.md)の表に従います。本書は同期概念の説明であり、wire DTO/RPC/hashは[API・DTO契約 v2](./api-contract-v2.md)、workflow/state/受入/PR順は[詳細設計 v2](./detailed-design-v2.md)、content schema/hashは[コンテンツblueprint v1](./content-blueprint-v1.md)を狭い正本とします。
 
 ## 1. API
 
@@ -38,6 +38,8 @@ portable restoreはpayloadからsourceExportId/sourcePayloadHash、owner/user id
 
 同一generation bootstrap mergeはserver lifecycle/content/tombstone/attempt/session-item invalidation factを優先します。保持可能なのはowner/generation/aggregate/request hashが一致する未ACK `session.created`、pending answer、draft/note/bookmark/issue未ACK mutation、未解決conflictだけです。basisはrow hash exact一致かつserver lifecycle=`unconsumed`だけをrebaseし、それ以外はquarantine、terminal/suspended/revokedとの競合はsupersededにします。terminal state、purge済み本文、回答後draftをlocal stateから復活させません。
 
+semantic/CAS conflictの本文同期は`LocalConflictRecordV2`を正本とし、owner/data generation/aggregate、strict `draft/note/answer` kind、local/remote bodyと各version hash、adopted hash、status、DB created/updated/expires atをlosslessに保持します。clientは`resolve_learning_conflict_v2`へoperation ID、current generation、conflict ID、expected両version hash、keep-local/accept-remoteまたは同kindのmerge body/hashを送り、server再計算hashと一致したACKだけをdomain・receipt・outboxへ一local transactionで適用します。same-operation replayは保存response bytesへ収束し、期限切れ・別owner・hash不一致・未知kindはquarantine後にpullします。server本文はowner本人RLSのget/resolve以外へ流さず、本文なしaudit/logにはconflict ID、pseudonymous owner ref、version/adopted hash、operation、DB時刻だけを許します。端末表示名はclient presentationでdevice IDから一時解決し、server conflict本文、audit、log、analyticsへ保存しません。期限sweeper/account deletion後はbody再取得を試みずterminal purgeとしてlocal本文も同transactionで削除します。
+
 全`SECURITY DEFINER`関数はneutral NOLOGIN function-ownerが所有し、関数実行中のdefiner identityをcaller識別へ使用しません。client RPCはPUBLIC/anon/service_role/internal専用roleからEXECUTEをREVOKEしauthenticatedだけへgrantし、JWTの`auth.uid()`を必須としてownerをserver側で導出し、client入力に`userId`を許しません。internal control-plane RPCはPUBLIC/anon/authenticated/service_role/他専用roleからREVOKEし、用途ごとのexact専用NOLOGIN execution roleだけへgrantします。worker LOGIN roleは対応する一roleへの`SET ROLE`だけを許され、内部RPCはclaim済みjob/member、lease owner/expiry/fencing tokenを検証し、`auth.uid()`やclient user IDへ依存しません。`service_role`を含む接続roleへ基礎table直接SELECT/DMLをgrantしません。runtime capabilityだけは基礎tableへ到達しない固定safe RPCをanon/authenticatedへgrantします。
 
 controlled private artifactはbucket=`controlled-private-release`、content type=`application/json`、positive safe sizeと固定key/version/etag/raw hashをcreate-only保存し、任意URL/client keyを拒否します。human enqueue receiptはrequestedBy principal snapshot、humanRequestHash、humanResponseJSON/hashを固定し、content-control job/claimは別主体のoperation principal snapshot、internalRequestHash、operation kind/target/hash、lease/fencing/capabilityを固定します。job/internal operationのID/kind/target/server mappingだけをreceiptへexact一対一結合し、人間principal/requestをinternal principal/requestへコピー・等値化しません。保存済みinternal receipt replayはACL、operation ID/kind/internal principal/internal request hash一致をlease freshnessやclaim再消費より先に検証します。human recent-authはaccept/activate/revoke/attestとUI suspend/retire enqueueでだけ消費し、stage/publish/suspend/retire internal receiptのreauthはNULLです。authenticatedからinternal RPCを直接呼べません。
@@ -50,7 +52,7 @@ bootstrapはoffline pack/status/member tombstone、ownerが使う章/readiness p
 
 human enqueueの`humanResponseHash`はstrict responseから`operationResponseHash`だけを除いたRFC 8785 JCSのSHA-256で、保存JSON内`operationResponseHash`とdeferred exact一致させます。hash field自身をpreimageへ含む自己包含や未知fieldを落とした別projectionは拒否します。account deletion combined receiptはStorage subject digest値と`externalTombstoneHash`を物理列・strict JSON・署名preimageへ必須化し、同sequence tombstone、object key exact segment、immutable metadataとbyte exact一致させます。algorithm/key ID/rule versionはreceiptへ直持ちせず、署名済みtombstone hashから検証します。
 
-通常の`draft.saved`で同一itemの実効attemptが既にある場合、serverはdraftを更新せず、`supersededByAttemptId`と`supersededByAttemptHash`を実効attemptへexact結合したcanonical `superseded-by-answer` ACKを返します。DB triggerとv2 RPC、bootstrap、outbox replayは同じ規則を使い、kill/restart後も確定回答からdraftへ巻き戻しません。
+通常の`draft.saved`で同一`(sessionId,questionId,questionVersionId)`かつ同じsession itemに実効attemptが既にある場合、serverはdraftを更新せず、`supersededByAttemptId`と`supersededByAttemptHash`をそのexact attemptへ結合したcanonical `superseded-by-answer` ACKを返します。別session、別question/version、同session内別itemのattemptをsupersessionに使いません。DB trigger/RPC/bootstrap/outbox replayは同じ複合keyとitem FKを使い、kill/restart後も確定回答からdraftへ巻き戻しません。
 
 D-03はAで固定します。DR manifestは`restorePointMaxAgeDays=30`、`rpoHours=24`、`rtoHours=8`、`deletionSloHours=24`、`backupEffectivePurgeDays=30`を別fieldでpinします。live削除deadlineはDBで`acceptedAt + 24 hours` exact、30日はbackupからの実効消去期限です。challengeからcombined receiptまで両期限を物理保存・deferred exact一致させます。
 
@@ -82,7 +84,7 @@ D-03はAで固定します。DR manifestは`restorePointMaxAgeDays=30`、`rpoHou
 
 offline packのissue/consumeは通常sync eventへ偽装せず専用command outboxへoperation ID/request hashとstrict requestを保存します。issue ACKでpack/basis/reserved session/receiptを、consume ACKでsession/canonical event/receiptを同一local transactionへ適用します。kill/retryは同operation/hashで保存responseを取得し、別operationによる二重consumeを拒否します。
 
-同じaccountのiOS/Android/Webは同じsession/item/attempt/fact ID、generation、sync/change cursorを使います。SQLiteとIndexedDBは同じstrict local DTOを保存し、responsive layoutやWebの複数tabはpresentation差として扱います。端末名・時刻・選択を競合画面へ返しますが、client clockでserver revision順を決めません。
+同じaccountのiOS/Android/Webは同じsession/item/attempt/fact ID、generation、sync/change cursorを使います。SQLiteとIndexedDBは同じstrict local DTOを保存し、responsive layoutやWebの複数tabはpresentation差として扱います。競合画面はowner本人へstrict local/remote bodyの時刻・選択と、client presentationがdevice IDから一時解決した表示ラベルを示せますが、表示ラベルをserver/audit/logへ送らず、client clockでserver revision順を決めません。
 
 保存の用語は次に固定します。「この端末に保存」はoffline/kill復帰、「アカウントへ同期」はcross-device server正本、「運営のDR backup」は障害時のサービス復旧、「portable export」は本人の履歴downloadです。portable JSON/CSVへ問題文・選択肢・正答・解説を含めず、CSVはrestore入力にしません。
 

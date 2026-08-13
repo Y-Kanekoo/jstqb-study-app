@@ -120,7 +120,7 @@ investigating -> rejected
 
 問題管理画面は署名済みruntime capabilityとserver ACLの両方が許可し、database必須literal 5 phase（`fresh`、`origin-main-upgrade`、`combined-order`、`atomic-failure`、`production-boundary`）が同じexact headで成功した操作だけを表示します。期限切れ、不正署名、RPC/ACL/main SHA/DB証跡不一致では「管理機能の安全確認ができないため、現在は操作できません。」と表示してfail closedにします。
 
-runtime control `cryptographicReleaseAttestationRequired=false`かつ`cryptographic-release-attestation-v1` featureがOFFの場合だけ、P0 recent-auth acceptance/attestationを表示し、「暗号署名」「否認防止」と表現しません。controlがtrueでfeature OFFまたは依存不足の場合はaccept、attest、stage、publishを非表示・拒否し、「暗号学的な公開要件を満たしていないため、問題の受入・公開は現在できません。」と表示します。control欠落/nullはfalseへdefaultせず同じfail-closed表示です。control=trueかつP1 feature・全依存が検証済みの場合だけ暗号経路を表示します。この分岐にかかわらずglobal suspended statusと配備済み緊急suspend開始操作は維持し、事故対応を暗号機能の不足で隠しません。
+runtime control `cryptographicReleaseAttestationRequired`はstrict booleanとして扱います。literal falseかつ`cryptographic-release-attestation-v1` featureがOFFの場合だけ、P0 recent-auth acceptance/attestationを表示し、「暗号署名」「否認防止」と表現しません。controlがliteral trueでfeature OFFまたは依存不足の場合はaccept、attest、stage、publishを非表示・拒否し、「暗号学的な公開要件を満たしていないため、問題の受入・公開は現在できません。」と表示します。controlのmissing、null、non-booleanはrelease featureをOFFへ収束させ、falseへdefaultせず、同じ4操作をすべて非表示・拒否して同じfail-closed表示にします。controlがliteral trueかつP1 feature・全依存が検証済みの場合だけ暗号経路を表示します。この分岐にかかわらずglobal suspended statusと配備済み緊急suspend開始操作は維持し、事故対応を暗号機能の不足で隠しません。
 
 suspend操作は開始時の`frozenAt`で固定した`sourceCommittedAt <= frozenAt`の対象snapshot/hashと件数を表示し、workerが有効graded attempt、各模試のlatest effective result、各offline参考模試のlatest effective result/feedback pair、進行中pin itemへfanout中は「停止処理中」、receiptがexact完了した時だけ「停止済み」と表示します。後続result revisionの`sourceCommittedAt`はimmutable `revised_at`です。過去・無効・`not_graded`・latestでないrevision・境界後到着は対象件数へ含めません。端末は各停止changeのoperation ID、target member ID、materialization link ID/hash、target/user member set hashを検証して同一local transactionでitem・結果・cacheへ反映し、欠落、重複、別memberへの差替え、hash不一致では本文・回答操作をfail-closedにして「問題の停止情報を確認できません。同期をやり直してください。」を表示します。部分失敗を完了扱いせず、同operationの再開状況を表示します。retireは対象catalog streamへ`CatalogTombstoneDto(reason='retired')`をexact一件配信して新規候補から除外しますが、session/basis/feedback失効tombstone、target snapshot、fanout、materialization linkは0件です。既存pinの本文・回答・feedbackをpurgeせず開始時版のまま閲覧・再開し、「この問題は廃止済みです。新しい演習には出題されません。この演習では開始時に固定した版を表示しています。」と表示します。
 
@@ -201,7 +201,7 @@ suspend操作は開始時の`frozenAt`で固定した`sourceCommittedAt <= froze
 - 別端末の回答を使う
 - 後で決める
 
-メモは全文比較できるようにし、非採用版もconflict auditへ保持します。確定回答はdraftへ戻さず、canonical attemptを表示します。
+メモと未確定回答の採用版・非採用版の全文は、本人が比較して解決できるuser-scoped conflict dataだけへ保存します。この領域は全行をowner IDへ拘束するRLS、明示retention、account deletionの対象とし、別user、管理監査、運用logから全文を取得できません。append-only auditへ保存するのはconflict ID、owner pseudonymous ref、版hash、採用側hash、解決操作、server時刻などのhash/metadataだけで、メモ・回答内容・端末表示名の全文は保存しません。全文比較はuser domain内だけで行い、解決時は比較対象の版hashとauditのhash一致を検証します。retention期限または本人削除で全文版を消去してもauditのhash/metadataから内容を復元できないことを要求します。確定回答はdraftへ戻さず、canonical attemptを表示します。
 
 ### 4.5 停止・改訂
 
@@ -426,7 +426,8 @@ ownerの`personal_preview`では通常演習と模試を許可します。模試
 表示:
 
 - 40問、60分、1問1点
-- 出題時点の単一/複数選択比率は固定せず、公開中の`examEligibility='eligible'`問題から章・K配分だけをexact充足する
+- 出題時点の単一/複数選択比率は固定しない。`personal-preview`はownerのactive acceptance manifestへpinされた`examEligibility='eligible'`かつ`reviewing`のcurrent versions、`published`はcurrent published catalogの`examEligibility='eligible'` versionsだけから、scope内で章`8 / 6 / 4 / 11 / 9 / 2`とK`8 / 24 / 8`を同時にexact充足する
+- 同一問題stable ID・versionの重複0、全itemのeligibility、scope、acceptance ID/hash、manifest/catalog revision pinを開始前に検証し、別scope・別acceptance・manifest外・reviewing/publishedの交差混入は拒否する
 - 有効分母40なら26点以上
 - 提出まで正誤・解説なし
 - アプリを閉じても時計は停止しない

@@ -8,6 +8,7 @@ import {
   calculateCanonicalSchemaSignature,
   enumeratePgTapTestFiles,
   normalizeDeterministicPgDump,
+  queryCanonicalSchemaSignature,
   sameContainerNames,
 } from './run-database-harness.mjs';
 
@@ -47,6 +48,21 @@ describe('production database runner v2', () => {
       () => calculateCanonicalSchemaSignature(catalogRows, [{ path: 'fixture.sql', content: '' }]),
       /migration filenameが不正/u,
     );
+  });
+
+  it('PostgreSQL内部char列をtextへ明示castしてcanonical署名を取得する', async () => {
+    let sql = '';
+    const result = await queryCanonicalSchemaSignature(async (_command, _argumentsList, options) => {
+      sql = options.input;
+      return { status: 0, output: '01\n' };
+    }, [{ path: '/repo/supabase/migrations/202608110001_initial.sql', content: 'select 1;\n' }]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.signature, /^[0-9a-f]{64}$/u);
+    assert.match(sql, /c\.relkind::text/u);
+    assert.match(sql, /c\.relpersistence::text/u);
+    assert.match(sql, /typ\.typtype::text/u);
+    assert.match(sql, /d\.defaclobjtype::text/u);
   });
 
   it('pg_dumpの非決定的headerとrestrict tokenだけを除去する', () => {

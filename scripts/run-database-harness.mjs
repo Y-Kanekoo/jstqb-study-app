@@ -200,8 +200,8 @@ export async function queryCanonicalSchemaSignature(runCommand, migrationFiles) 
           from pg_catalog.pg_namespace n
          where n.nspname in ('public', 'private')
         union all
-        select 'relation:' || n.nspname || '.' || c.relname || ':kind=' || c.relkind || ':owner=' ||
-               pg_get_userbyid(c.relowner) || ':persistence=' || c.relpersistence || ':rls=' || c.relrowsecurity ||
+        select 'relation:' || n.nspname || '.' || c.relname || ':kind=' || c.relkind::text || ':owner=' ||
+               pg_get_userbyid(c.relowner) || ':persistence=' || c.relpersistence::text || ':rls=' || c.relrowsecurity ||
                ':force_rls=' || c.relforcerowsecurity || ':options=' || coalesce(c.reloptions::text, '') ||
                ':acl=' || coalesce(c.relacl::text, '')
           from pg_catalog.pg_class c
@@ -239,7 +239,7 @@ export async function queryCanonicalSchemaSignature(runCommand, migrationFiles) 
           join pg_catalog.pg_namespace n on n.oid = c.relnamespace
          where n.nspname in ('public', 'private') and not t.tgisinternal
         union all
-        select 'type:' || n.nspname || '.' || typ.typname || ':kind=' || typ.typtype || ':owner=' ||
+        select 'type:' || n.nspname || '.' || typ.typname || ':kind=' || typ.typtype::text || ':owner=' ||
                pg_get_userbyid(typ.typowner) || ':base=' || pg_catalog.format_type(typ.typbasetype, typ.typtypmod) ||
                ':notnull=' || typ.typnotnull || ':default=' || coalesce(typ.typdefault, '') ||
                ':acl=' || coalesce(typ.typacl::text, '')
@@ -285,7 +285,7 @@ export async function queryCanonicalSchemaSignature(runCommand, migrationFiles) 
           from information_schema.role_routine_grants where routine_schema in ('public', 'private')
         union all
         select 'default-acl:' || coalesce(n.nspname, '') || ':owner=' || pg_get_userbyid(d.defaclrole) ||
-               ':type=' || d.defaclobjtype || ':acl=' || coalesce(d.defaclacl::text, '')
+               ':type=' || d.defaclobjtype::text || ':acl=' || coalesce(d.defaclacl::text, '')
           from pg_catalog.pg_default_acl d
           left join pg_catalog.pg_namespace n on n.oid = d.defaclnamespace
          where n.nspname in ('public', 'private') or d.defaclnamespace = 0

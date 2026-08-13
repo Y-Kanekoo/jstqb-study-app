@@ -209,6 +209,14 @@ describe('DB upgrade harness v2', () => {
       productionFiles: safeProductionFiles,
       fixtureFiles,
     }).ok, false, 'registryの余剰fieldを拒否する');
+    assert.equal(verifyProductionBoundary({
+      canaryRegistry,
+      productionFiles: safeProductionFiles,
+      fixtureFiles: [{
+        path: 'supabase/test-fixtures/database-harness/unregistered.sql',
+        content: "select 'DB-HARNESS-UNREGISTERED-MARKER';\n",
+      }, ...fixtureFiles],
+    }).ok, false, 'fixture内の未登録stable markerを拒否する');
   });
 
   it('phase失敗ログから接続文字列の機密値をredactする', async () => {

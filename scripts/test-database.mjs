@@ -127,7 +127,13 @@ export async function acquireRepositoryLock({ execFileCommand = execFile } = {})
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`共有排他lockを取得できません（${lockDirectory}）: ${message}`);
   }
-  return async () => rmdir(lockDirectory);
+  const releaseLock = async () => rmdir(lockDirectory);
+  Object.defineProperty(releaseLock, 'lockDirectory', {
+    value: lockDirectory,
+    enumerable: false,
+    writable: false,
+  });
+  return releaseLock;
 }
 
 async function runDatabaseChecksUnlocked({ spawnCommand, log }) {

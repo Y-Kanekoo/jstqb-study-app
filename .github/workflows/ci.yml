@@ -419,7 +419,14 @@ jobs:
           finish_cleanup "${cleanup_status}"
       - name: DB upgrade harness v2の5 phaseを検証
         if: success()
+        env:
+          DB_HARNESS_OWNERSHIP_FILE: ${{ runner.temp }}/supabase-database-harness-v2-owned
         run: node scripts/run-database-harness.mjs
+      - name: DB upgrade harness v2を外側から確実にcleanup
+        if: always()
+        env:
+          DB_HARNESS_OWNERSHIP_FILE: ${{ runner.temp }}/supabase-database-harness-v2-owned
+        run: node scripts/cleanup-database-harness.mjs
 
   security:
     name: security

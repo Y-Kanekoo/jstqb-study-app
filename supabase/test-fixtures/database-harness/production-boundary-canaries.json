@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "database-harness-canary-registry.v1",
+  "canaries": [
+    "db000000-0000-4000-8000-000000000001",
+    "DB-HARNESS-CANARY-ORIGIN-MAIN-V1",
+    "DB_HARNESS_ORIGIN_MAIN_FIXTURE_MISSING",
+    "db_harness_atomic_preflight_canary",
+    "DB-HARNESS-CANARY-ATOMIC-PREFLIGHT-V1",
+    "DB_HARNESS_EXPECTED_PREFLIGHT_FAILURE_V1",
+    "db_harness_atomic_constraint_canary",
+    "db_harness_expected_constraint_failure_v1",
+    "db_harness_atomic_trigger_canary",
+    "db_harness_atomic_trigger_failure_v1",
+    "db_harness_expected_trigger_failure_v1",
+    "DB-HARNESS-CANARY-ATOMIC-TRIGGER-V1",
+    "DB_HARNESS_EXPECTED_TRIGGER_FAILURE_V1",
+    "db_harness_atomic_worker_operation_canary",
+    "db000000-0000-4000-8000-000000000004",
+    "DB-HARNESS-CANARY-ATOMIC-WORKER-RECEIPT-V1",
+    "DB_HARNESS_EXPECTED_WORKER_FAILURE_V1"
+  ]
+}

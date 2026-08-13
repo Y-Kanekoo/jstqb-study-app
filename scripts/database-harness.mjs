@@ -112,6 +112,20 @@ export function verifyProductionBoundary({ canaryRegistry, productionFiles, fixt
   const production = validateFileList(productionFiles, 'production');
   const fixtures = validateFileList(fixtureFiles, 'fixture');
   if (fixtures.length === 0) errors.push('test専用fixtureがありません。');
+  const registeredCanaries = new Set(canaries);
+  const markerPatterns = [
+    /\bDB[-_]HARNESS[-_][A-Z0-9_-]+\b/gu,
+    /\bdb_harness_[a-z0-9_]+\b/gu,
+    /\bdb[0-9a-f]{6}-[0-9a-f-]{27}\b/gu,
+  ];
+  for (const file of fixtures) {
+    const discovered = markerPatterns.flatMap((pattern) => [...file.content.matchAll(pattern)].map(([value]) => value));
+    for (const marker of new Set(discovered)) {
+      if (!registeredCanaries.has(marker)) {
+        errors.push(`fixture内のstable markerがcanary registryにありません: ${file.path}:${marker}`);
+      }
+    }
+  }
   for (const canary of canaries) {
     if (!fixtures.some((file) => file.path.endsWith('.sql') && file.content.includes(canary))) {
       errors.push(`canaryをtest専用fixture内で確認できません: ${canary}`);

@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "database-harness-fixture-manifest.v1",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "cc91b0ebc0b28fc3ffba1b97376268ead9635f7661829cfef35f42661d53b982"
+    },
+    {
+      "path": "atomic-constraint-failure.sql",
+      "sha256": "2008802f70aa6ff5727178487c1bdfecdaef9c2d8d5d90e894f03a05e1257f2b"
+    },
+    {
+      "path": "atomic-preflight-failure.sql",
+      "sha256": "26f9123bfb61c4804a8e0fc91293242714d206226db8126aa51720d2cdfce45f"
+    },
+    {
+      "path": "atomic-trigger-failure.sql",
+      "sha256": "cd1efc03063032ec079487df915882f1600c98b92537405b2c4062a74a6c1a90"
+    },
+    {
+      "path": "atomic-worker-failure.sql",
+      "sha256": "6094562b7a981f70265ce37a2d7ad9aff77d49b5bbe84720683b598dc1dd5da1"
+    },
+    {
+      "path": "origin-main-shape.sql",
+      "sha256": "46803f9e96df9720931f4355219d5369e6d77c778ce0ffbbb1202bab720ff503"
+    },
+    {
+      "path": "production-boundary-canaries.json",
+      "sha256": "5f855f91764ce21e9df47cbdc4e4272382dbd768b7240321d8181881e87714d5"
+    }
+  ],
+  "pgTapFiles": [
+    {
+      "path": "database_harness_security.test.sql",
+      "sha256": "eb14a27dbbaf1fae73f433746be1dd00092951072b7956c967f5bf8b37174fc2"
+    },
+    {
+      "path": "database_smoke.test.sql",
+      "sha256": "a41ee25b19c7a3e03ada88f73b97e572ba9630e7f222d301ea9e40bf2145a40d"
+    }
+  ],
+  "originMainFixture": {
+    "path": "origin-main-shape.sql",
+    "sha256": "46803f9e96df9720931f4355219d5369e6d77c778ce0ffbbb1202bab720ff503"
+  },
+  "atomicFailures": [
+    {
+      "kind": "preflight",
+      "path": "atomic-preflight-failure.sql",
+      "sha256": "26f9123bfb61c4804a8e0fc91293242714d206226db8126aa51720d2cdfce45f",
+      "expectedError": "DB_HARNESS_EXPECTED_PREFLIGHT_FAILURE_V1",
+      "residueObjects": [
+        "public.db_harness_atomic_preflight_canary"
+      ]
+    },
+    {
+      "kind": "constraint",
+      "path": "atomic-constraint-failure.sql",
+      "sha256": "2008802f70aa6ff5727178487c1bdfecdaef9c2d8d5d90e894f03a05e1257f2b",
+      "expectedError": "db_harness_expected_constraint_failure_v1",
+      "residueObjects": [
+        "public.db_harness_atomic_constraint_canary"
+      ]
+    },
+    {
+      "kind": "trigger",
+      "path": "atomic-trigger-failure.sql",
+      "sha256": "cd1efc03063032ec079487df915882f1600c98b92537405b2c4062a74a6c1a90",
+      "expectedError": "DB_HARNESS_EXPECTED_TRIGGER_FAILURE_V1",
+      "residueObjects": [
+        "public.db_harness_atomic_trigger_canary",
+        "public.db_harness_atomic_trigger_failure_v1()"
+      ]
+    },
+    {
+      "kind": "worker",
+      "path": "atomic-worker-failure.sql",
+      "sha256": "6094562b7a981f70265ce37a2d7ad9aff77d49b5bbe84720683b598dc1dd5da1",
+      "expectedError": "DB_HARNESS_EXPECTED_WORKER_FAILURE_V1",
+      "residueObjects": [
+        "public.db_harness_atomic_worker_operation_canary"
+      ]
+    }
+  ]
+}

@@ -27,6 +27,6 @@ pnpm test:database
 2. `origin-main-upgrade`: `origin/main`のmigrationとsynthetic既存データから現在HEADへupgradeし、全pgTAPを実行します。
 3. `combined-order`: fresh/upgradeのmigration履歴と最終schema・RPC署名が一致することを確認します。
 4. `atomic-failure`: 意図的な失敗後にDDL、data、migration履歴が残らないことを確認します。
-5. `production-boundary`: test fixtureのstable ID/canaryがproduction migrationと最終DBへ混入していないことを確認します。
+5. `production-boundary`: `supabase/test-fixtures/database-harness/manifest.json`で完全列挙したtest fixtureのstable ID/canaryが、production migration・seed・content bundle・release artifact・public/private DBへ混入していないことを確認します。
 
-runnerは同projectの既存containerがあればfail-closedで中止し、所有を確認したcontainerだけを停止します。成否にかかわらず残留container 0を検査し、接続URL、DBパスワード、service role keyをログ・ファイル・Gitへ保存しません。
+各phaseは共通security suiteを実行し、RLS、default privilege、`SECURITY DEFINER` owner/search path、関数ACLを照合します。runnerは同projectの既存containerがあればfail-closedで中止し、stop直前にlabel/nameが所有証跡と完全一致したcontainerだけを停止します。SIGINT/SIGTERMでは実行中commandを停止して所有確認付きcleanupへ移り、CIは独立した`always()` cleanupでも残留container/lock 0を検査します。接続URL、DBパスワード、service role keyをログ・ファイル・Gitへ保存しません。

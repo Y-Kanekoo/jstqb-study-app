@@ -33,7 +33,7 @@
   "pgTapFiles": [
     {
       "path": "database_harness_security.test.sql",
-      "sha256": "70ba2f1e55a62cd9d3c098252eeab5865f851ec0f81c4b8a28f5068de8026b5a"
+      "sha256": "11f591bc3a072ec9b6403979144525360fe8b26bcc07639fd89fece49ca0769e"
     },
     {
       "path": "database_smoke.test.sql",

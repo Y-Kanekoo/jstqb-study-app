@@ -59,7 +59,8 @@ export function createCommandRunner(
   if (!Number.isSafeInteger(terminationGraceMs) || terminationGraceMs <= 0) {
     throw new Error('command終了猶予は正のsafe integerで指定してください。');
   }
-  return (command, argumentsList, options = {}) => new Promise((resolveResult) => {
+  const activeCommands = new Map();
+  const runCommand = (command, argumentsList, options = {}) => new Promise((resolveResult) => {
     const child = spawnCommand(command, argumentsList, {
       cwd: options.cwd ?? workspacePath,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -67,44 +68,59 @@ export function createCommandRunner(
     activeChildren.add(child);
     let output = '';
     let settled = false;
-    let timedOut = false;
+    let terminationKind;
+    let terminationSignal;
     let timeoutTimer;
     let graceTimer;
+    const terminationResult = () => terminationKind === 'timeout'
+      ? { status: 124, output: `commandが制限時間${commandTimeoutMs}msを超えたため停止しました。` }
+      : { status: 1, output: `${terminationSignal ?? 'signal'}によりcommandを中断しました。` };
     const finish = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
       if (graceTimer !== undefined) clearTimeout(graceTimer);
       activeChildren.delete(child);
+      activeCommands.delete(child);
       resolveResult(result);
     };
-    const timeoutResult = () => ({
-      status: 124,
-      output: `commandが制限時間${commandTimeoutMs}msを超えたため停止しました。`,
-    });
-    timeoutTimer = setTimeout(() => {
-      if (settled) return;
-      timedOut = true;
+    const terminate = (kind, signal) => {
+      if (settled || terminationKind !== undefined) return;
+      terminationKind = kind;
+      terminationSignal = signal;
+      clearTimeout(timeoutTimer);
       try { child.kill?.('SIGTERM'); } catch { /* grace後のSIGKILLへ進む。 */ }
       graceTimer = setTimeout(() => {
         if (settled) return;
-        try { child.kill?.('SIGKILL'); } catch { /* timeout結果へ必ず収束する。 */ }
-        finish(timeoutResult());
+        try { child.kill?.('SIGKILL'); } catch { /* 中断結果へ必ず収束する。 */ }
+        finish(terminationResult());
       }, terminationGraceMs);
+    };
+    activeCommands.set(child, terminate);
+    timeoutTimer = setTimeout(() => {
+      terminate('timeout', 'TIMEOUT');
     }, commandTimeoutMs);
     child.stdout?.on('data', (chunk) => { output += chunk.toString(); });
     child.stderr?.on('data', (chunk) => { output += chunk.toString(); });
     child.once('error', (error) => {
-      finish(timedOut ? timeoutResult() : { status: 1, output: `${output}${error.message}` });
+      finish(terminationKind === undefined
+        ? { status: 1, output: `${output}${error.message}` }
+        : terminationResult());
     });
     child.once('exit', (code, signal) => {
-      finish(timedOut ? timeoutResult() : { status: signal ? 1 : code ?? 1, output });
+      finish(terminationKind === undefined
+        ? { status: signal ? 1 : code ?? 1, output }
+        : terminationResult());
     });
     if (options.input !== undefined) {
       child.stdin?.write(options.input);
     }
     child.stdin?.end();
   });
+  runCommand.cancelAll = (signal) => {
+    for (const terminate of activeCommands.values()) terminate('signal', signal);
+  };
+  return runCommand;
 }
 
 function parseContainers(output) {
@@ -512,6 +528,7 @@ export async function runProductionDatabaseHarness({
   commandTimeoutMs = defaultCommandTimeoutMs,
   cleanupCommandTimeoutMs = defaultCleanupCommandTimeoutMs,
   terminationGraceMs = defaultTerminationGraceMs,
+  signalTarget = process,
   log = console,
 } = {}) {
   const activeChildren = new Set();
@@ -534,9 +551,10 @@ export async function runProductionDatabaseHarness({
   let terminationSignal;
 
   const handleTermination = (signal) => {
+    if (terminationSignal !== undefined) return;
     terminationSignal = signal;
     log.error(`DB harnessが${signal}を受信したため、実行中commandを停止して所有確認付きcleanupへ移行します。`);
-    for (const child of activeChildren) child.kill?.('SIGTERM');
+    runCommand.cancelAll(signal);
   };
   const handleSigint = () => handleTermination('SIGINT');
   const handleSigterm = () => handleTermination('SIGTERM');
@@ -752,8 +770,8 @@ export async function runProductionDatabaseHarness({
     return 1;
   }
 
-  process.once('SIGINT', handleSigint);
-  process.once('SIGTERM', handleSigterm);
+  signalTarget.once('SIGINT', handleSigint);
+  signalTarget.once('SIGTERM', handleSigterm);
 
   let status;
   try {
@@ -792,8 +810,8 @@ export async function runProductionDatabaseHarness({
       log.error(`DB harnessの共有排他lock解放に失敗しました: ${redactDatabaseOutput(message)}`);
       if (status === 0) status = 1;
     }
-    process.removeListener('SIGINT', handleSigint);
-    process.removeListener('SIGTERM', handleSigterm);
+    signalTarget.removeListener('SIGINT', handleSigint);
+    signalTarget.removeListener('SIGTERM', handleSigterm);
   }
   if (terminationSignal !== undefined) return 1;
   return status;

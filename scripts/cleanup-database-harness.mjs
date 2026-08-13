@@ -9,15 +9,58 @@ import { projectLabel } from './test-database.mjs';
 
 const projectLabelFilter = `label=${projectLabel}`;
 const containerFormat = '{{.ID}}\t{{.Names}}';
+const defaultCleanupCommandTimeoutMs = 2 * 60 * 1000;
+const defaultTerminationGraceMs = 5 * 1000;
 
-function createCommandRunner(spawnCommand) {
+export function createCleanupCommandRunner(
+  spawnCommand,
+  {
+    commandTimeoutMs = defaultCleanupCommandTimeoutMs,
+    terminationGraceMs = defaultTerminationGraceMs,
+  } = {},
+) {
+  if (!Number.isSafeInteger(commandTimeoutMs) || commandTimeoutMs <= 0) {
+    throw new Error('cleanup command timeoutは正のsafe integerで指定してください。');
+  }
+  if (!Number.isSafeInteger(terminationGraceMs) || terminationGraceMs <= 0) {
+    throw new Error('cleanup command終了猶予は正のsafe integerで指定してください。');
+  }
   return (command, argumentsList) => new Promise((resolveResult) => {
     const child = spawnCommand(command, argumentsList, { stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
+    let settled = false;
+    let timedOut = false;
+    let timeoutTimer;
+    let graceTimer;
+    const timeoutResult = () => ({
+      status: 124,
+      output: `cleanup commandが制限時間${commandTimeoutMs}msを超えたため停止しました。`,
+    });
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (graceTimer !== undefined) clearTimeout(graceTimer);
+      resolveResult(result);
+    };
+    timeoutTimer = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      try { child.kill?.('SIGTERM'); } catch { /* grace後のSIGKILLへ進む。 */ }
+      graceTimer = setTimeout(() => {
+        if (settled) return;
+        try { child.kill?.('SIGKILL'); } catch { /* timeout結果へ必ず収束する。 */ }
+        finish(timeoutResult());
+      }, terminationGraceMs);
+    }, commandTimeoutMs);
     child.stdout?.on('data', (chunk) => { output += chunk.toString(); });
     child.stderr?.on('data', (chunk) => { output += chunk.toString(); });
-    child.once('error', (error) => resolveResult({ status: 1, output: `${output}${error.message}` }));
-    child.once('exit', (code, signal) => resolveResult({ status: signal ? 1 : code ?? 1, output }));
+    child.once('error', (error) => finish(timedOut
+      ? timeoutResult()
+      : { status: 1, output: `${output}${error.message}` }));
+    child.once('exit', (code, signal) => finish(timedOut
+      ? timeoutResult()
+      : { status: signal ? 1 : code ?? 1, output }));
   });
 }
 
@@ -53,8 +96,13 @@ export async function cleanupDatabaseHarness({
   readOwnershipFile = readFile,
   removeOwnershipFile = (path) => rm(path, { force: true }),
   removeLockDirectory = rmdir,
+  commandTimeoutMs = defaultCleanupCommandTimeoutMs,
+  terminationGraceMs = defaultTerminationGraceMs,
 } = {}) {
-  const runCommand = createCommandRunner(spawnCommand);
+  const runCommand = createCleanupCommandRunner(spawnCommand, {
+    commandTimeoutMs,
+    terminationGraceMs,
+  });
   const containers = await runCommand('docker', [
     'ps', '--all', '--filter', projectLabelFilter, '--format', containerFormat,
   ]);
@@ -98,7 +146,11 @@ export async function cleanupDatabaseHarness({
     'ps', '--all', '--filter', projectLabelFilter, '--format', containerFormat,
   ]);
   if (remaining.status !== 0 || parseContainerNames(remaining.output).length > 0) {
-    log.error('DB harness外側cleanup後にcontainerが残留しています。');
+    if (remaining.status !== 0) {
+      log.error(`DB harness外側cleanup後のDocker再照会に失敗しました: ${redactDatabaseOutput(remaining.output)}`);
+    } else {
+      log.error('DB harness外側cleanup後にcontainerが残留しています。');
+    }
     return remaining.status === 0 ? 1 : remaining.status;
   }
   try {

@@ -110,7 +110,7 @@ function logContainerQueryFailure(log, label, result) {
   log.error(`${label}のDocker照会が${containerQueryAttempts}回すべて失敗したため、所有権を確定せず停止を中止します。`);
 }
 
-async function acquireRepositoryLock({ execFileCommand = execFile } = {}) {
+export async function acquireRepositoryLock({ execFileCommand = execFile } = {}) {
   const gitCommonDirectoryResult = await execFileCommand(
     'git',
     ['rev-parse', '--git-common-dir'],

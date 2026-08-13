@@ -21,4 +21,14 @@ Dockerを起動し、CIと同じ順序で実行します。
 pnpm test:database
 ```
 
-`pnpm test:database`は`db reset`で全migrationを空DBから再適用し、`test db`で`supabase/tests/*.sql`のpgTAPを実DBで実行した後、成否にかかわらずローカルSupabaseを停止します。失敗時はコンテナ一覧とPostgreSQL末尾ログだけを表示します。接続URL、DBパスワード、service role keyをログ・ファイル・Gitへ保存しません。
+`pnpm test:database`は共有排他lockを取得し、次の5 phaseを固定順で実行します。
+
+1. `fresh`: 空DBへ全production migrationを適用し、全pgTAPを実行します。
+2. `origin-main-upgrade`: `origin/main`のmigrationとsynthetic既存データから現在HEADへupgradeし、全pgTAPを実行します。
+3. `combined-order`: fresh/upgradeのmigration履歴と最終schema・RPC署名が一致することを確認します。
+4. `atomic-failure`: 意図的な失敗後にDDL、data、migration履歴が残らないことを確認します。
+5. `production-boundary`: `supabase/test-fixtures/database-harness/manifest.json`で完全列挙したtest fixtureのstable ID/canaryが、production migration・seed・content bundle・release artifact・public/private DBへ混入していないことを確認します。
+
+各phaseは共通security suiteを実行し、RLS、default privilege、`SECURITY DEFINER` owner/search path、関数ACLを照合します。runnerは同projectの既存containerがあればfail-closedで中止し、stop直前にlabel/nameが所有証跡と完全一致したcontainerだけを停止します。SIGINT/SIGTERMでは実行中commandを停止して所有確認付きcleanupへ移り、CIは独立した`always()` cleanupでも残留container/lock 0を検査します。接続URL、DBパスワード、service role keyをログ・ファイル・Gitへ保存しません。
+
+`pnpm test:database:legacy`は旧経路の局所診断に限って使用します。5 phase、production boundary、upgrade、atomicityを検証しないため、CI・release gate・`pnpm test:database`の代替にはできません。

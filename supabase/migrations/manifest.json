@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "production-migration-manifest.v1",
+  "migrations": [
+    {
+      "file": "202608110001_initial.sql",
+      "sha256": "05b3972f32686fe06d55f3981ded1f02e8a951baedd6154ab67a507a4e90cc48"
+    },
+    {
+      "file": "202608140001_function_execute_security.sql",
+      "sha256": "d08b5a56b156c27385d788670b1c1d3dc73b49379ea9fd3743298790f084660b"
+    }
+  ]
+}

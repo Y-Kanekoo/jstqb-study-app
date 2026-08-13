@@ -133,11 +133,13 @@ jobs:
   database:
     name: database
     runs-on: ubuntu-latest
+    # Run 31745880718の実測6分06秒に対し3倍超の余裕を確保する。旧検証はM1まで互換証跡として維持する。
     timeout-minutes: 20
     steps:
       - name: ソースを取得
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Supabase CLIを準備
         uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
@@ -416,6 +418,16 @@ jobs:
             if [[ "${cleanup_status}" -eq 0 ]]; then cleanup_status=1; fi
           fi
           finish_cleanup "${cleanup_status}"
+      - name: DB upgrade harness v2の5 phaseを検証
+        if: success()
+        env:
+          DB_HARNESS_OWNERSHIP_FILE: ${{ runner.temp }}/supabase-database-harness-v2-owned
+        run: node scripts/run-database-harness.mjs
+      - name: DB upgrade harness v2を外側から確実にcleanup
+        if: always()
+        env:
+          DB_HARNESS_OWNERSHIP_FILE: ${{ runner.temp }}/supabase-database-harness-v2-owned
+        run: node scripts/cleanup-database-harness.mjs
 
   security:
     name: security

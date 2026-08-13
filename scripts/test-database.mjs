@@ -110,7 +110,7 @@ function logContainerQueryFailure(log, label, result) {
   log.error(`${label}のDocker照会が${containerQueryAttempts}回すべて失敗したため、所有権を確定せず停止を中止します。`);
 }
 
-async function acquireRepositoryLock({ execFileCommand = execFile } = {}) {
+export async function acquireRepositoryLock({ execFileCommand = execFile } = {}) {
   const gitCommonDirectoryResult = await execFileCommand(
     'git',
     ['rev-parse', '--git-common-dir'],
@@ -127,7 +127,13 @@ async function acquireRepositoryLock({ execFileCommand = execFile } = {}) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`共有排他lockを取得できません（${lockDirectory}）: ${message}`);
   }
-  return async () => rmdir(lockDirectory);
+  const releaseLock = async () => rmdir(lockDirectory);
+  Object.defineProperty(releaseLock, 'lockDirectory', {
+    value: lockDirectory,
+    enumerable: false,
+    writable: false,
+  });
+  return releaseLock;
 }
 
 async function runDatabaseChecksUnlocked({ spawnCommand, log }) {

@@ -23,7 +23,8 @@ import {
 } from './database-harness.mjs';
 import {
   selectProductionBoundaryPaths,
-  verifyFixtureManifestFile,
+  verifyFixtureManifestV2File,
+  verifyM1ScenarioRegistration,
 } from './database-boundary.mjs';
 import { acquireRepositoryLock, projectLabel } from './test-database.mjs';
 
@@ -33,7 +34,6 @@ const migrationDirectory = join(workspacePath, 'supabase', 'migrations');
 const fixtureDirectory = join(workspacePath, 'supabase', 'test-fixtures', 'database-harness');
 const manifestPath = join(migrationDirectory, 'manifest.json');
 const canaryRegistryPath = join(fixtureDirectory, 'production-boundary-canaries.json');
-const originFixturePath = join(fixtureDirectory, 'origin-main-shape.sql');
 const fixtureManifestPath = join(fixtureDirectory, 'manifest.json');
 const projectId = projectLabel.split('=').at(-1) ?? '';
 const databaseContainerName = `supabase_db_${projectId}`;
@@ -41,6 +41,7 @@ const projectLabelFilter = `label=${projectLabel}`;
 const containerFormat = '{{.ID}}\t{{.Names}}';
 const migrationFilePattern = /^\d{12,14}_[a-z0-9_]+\.sql$/u;
 const pgTapFilePattern = /\.sql$/u;
+const sha256Pattern = /^[0-9a-f]{64}$/u;
 const defaultCommandTimeoutMs = 5 * 60 * 1000;
 const defaultCleanupCommandTimeoutMs = 2 * 60 * 1000;
 const defaultTerminationGraceMs = 5 * 1000;
@@ -190,17 +191,17 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
 
-async function getOriginMigrationNames(execFileCommand) {
+async function getMigrationNamesAtRef(execFileCommand, ref) {
   const result = await execFileCommand('git', [
-    'ls-tree', '-r', '--name-only', 'origin/main', 'supabase/migrations',
+    'ls-tree', '-r', '--name-only', ref, 'supabase/migrations',
   ], { cwd: workspacePath, encoding: 'utf8' });
   return result.stdout.split('\n').map((line) => line.trim()).filter((line) => migrationFilePattern.test(basename(line)));
 }
 
-async function readOriginMigrationEntries(execFileCommand) {
-  const names = await getOriginMigrationNames(execFileCommand);
+async function readMigrationEntriesAtRef(execFileCommand, ref) {
+  const names = await getMigrationNamesAtRef(execFileCommand, ref);
   return Promise.all(names.map(async (path) => {
-    const result = await execFileCommand('git', ['show', `origin/main:${path}`], {
+    const result = await execFileCommand('git', ['show', `${ref}:${path}`], {
       cwd: workspacePath,
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
@@ -209,8 +210,12 @@ async function readOriginMigrationEntries(execFileCommand) {
   }));
 }
 
-async function buildOriginUpgradeRoot({ execFileCommand, headMigrationFiles }) {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'jstqb-origin-upgrade-'));
+function migrationEntryFromManifest(entry) {
+  return { path: entry.path, content: entry.content, sha256: sha256(entry.content) };
+}
+
+export async function buildImmutableUpgradeRoot({ execFileCommand, base, headMigrationFiles }) {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'jstqb-immutable-upgrade-'));
   const temporarySupabase = join(temporaryRoot, 'supabase');
   const temporaryMigrations = join(temporarySupabase, 'migrations');
   const temporaryTests = join(temporarySupabase, 'tests');
@@ -219,8 +224,22 @@ async function buildOriginUpgradeRoot({ execFileCommand, headMigrationFiles }) {
   await cp(join(workspacePath, 'supabase', 'config.toml'), join(temporarySupabase, 'config.toml'));
   await cp(join(workspacePath, 'supabase', 'tests'), temporaryTests, { recursive: true });
 
-  const originEntries = await readOriginMigrationEntries(execFileCommand);
-  const originByName = new Map(originEntries.map((entry) => [basename(entry.path), entry]));
+  const baseEntries = await readMigrationEntriesAtRef(execFileCommand, base.commitSha);
+  const expectedBaseEntries = base.migrations.map(({ path, sha256: digest }) => ({ path, sha256: digest }));
+  const actualBaseEntries = baseEntries.map(migrationEntryFromManifest)
+    .map(({ path, sha256: digest }) => ({ path: basename(path), sha256: digest }));
+  if (JSON.stringify(actualBaseEntries) !== JSON.stringify(expectedBaseEntries)) {
+    throw new Error(`immutable upgrade base ${base.id}のmigration filename・SHA-256がcommitと一致しません。`);
+  }
+  const baseManifest = await execFileCommand('git', ['show', `${base.commitSha}:supabase/migrations/manifest.json`], {
+    cwd: workspacePath,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (sha256(baseManifest.stdout) !== base.migrationManifestSha256) {
+    throw new Error(`immutable upgrade base ${base.id}のmigration manifest SHA-256がcommitと一致しません。`);
+  }
+  const originByName = new Map(baseEntries.map((entry) => [basename(entry.path), entry]));
   const headByName = new Map(headMigrationFiles.map((entry) => [basename(entry.path), entry]));
   for (const [name, originEntry] of originByName) {
     const headEntry = headByName.get(name);
@@ -228,11 +247,11 @@ async function buildOriginUpgradeRoot({ execFileCommand, headMigrationFiles }) {
       throw new Error(`origin/main適用済みmigrationがHEADで変更されています: ${name}`);
     }
   }
-  for (const entry of originEntries) {
+  for (const entry of baseEntries) {
     await writeFile(join(temporaryMigrations, basename(entry.path)), entry.content, { flag: 'wx' });
   }
   const headOnlyEntries = headMigrationFiles.filter((entry) => !originByName.has(basename(entry.path)));
-  return { temporaryRoot, originEntries, headOnlyEntries };
+  return { temporaryRoot, baseEntries, headOnlyEntries };
 }
 
 function sha256(content) {
@@ -374,6 +393,15 @@ export async function queryCanonicalSchemaSignature(runCommand, migrationFiles) 
           join pg_catalog.pg_roles granted on granted.oid = membership.roleid
           join pg_catalog.pg_roles member on member.oid = membership.member
           join pg_catalog.pg_roles grantor on grantor.oid = membership.grantor
+         where granted.rolname ~ '^jstqb_[a-z0-9_]+_owner$'
+            or member.rolname ~ '^jstqb_[a-z0-9_]+_owner$'
+        union all
+        select 'role:' || role.rolname || ':super=' || role.rolsuper || ':inherit=' || role.rolinherit ||
+               ':createrole=' || role.rolcreaterole || ':createdb=' || role.rolcreatedb || ':canlogin=' ||
+               role.rolcanlogin || ':replication=' || role.rolreplication || ':bypassrls=' || role.rolbypassrls ||
+               ':connlimit=' || role.rolconnlimit || ':validuntil=' || coalesce(role.rolvaliduntil::text, '')
+          from pg_catalog.pg_roles role
+         where role.rolname ~ '^jstqb_[a-z0-9_]+_owner$'
         union all
         select 'migration-row:' || to_jsonb(migration)::text
           from supabase_migrations.schema_migrations migration
@@ -452,10 +480,117 @@ async function assertAtomicFailures(runCommand, atomicFailures, fixtureByPath, m
   return { status: 0, output: '' };
 }
 
-async function runPgTapTests(runCommand, cwd, testDirectory) {
-  const testFiles = await enumeratePgTapTestFiles(testDirectory);
-  if (testFiles.length === 0) return { status: 1, output: '再帰列挙したpgTAP testが0件です。' };
-  return runCommand('supabase', ['test', 'db', ...testFiles], { cwd });
+function exactMigrationEntries(entries) {
+  return entries.map(({ path, content }) => ({ path: basename(path), sha256: sha256(content) }));
+}
+
+function isPlainRecord(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isMigrationFileEntry(entry) {
+  return isPlainRecord(entry)
+    && typeof entry.path === 'string'
+    && typeof entry.content === 'string';
+}
+
+function isExpectedMigrationFileEntry(entry) {
+  return isPlainRecord(entry)
+    && typeof entry.path === 'string'
+    && typeof entry.sha256 === 'string'
+    && sha256Pattern.test(entry.sha256);
+}
+
+export function verifyUpgradeScenarioMigrationFiles({ baseMigrationFiles, headMigrationFiles, expectedMigrationFiles }) {
+  if (!Array.isArray(baseMigrationFiles)
+    || !Array.isArray(headMigrationFiles)
+    || !Array.isArray(expectedMigrationFiles)
+    || !baseMigrationFiles.every(isMigrationFileEntry)
+    || !headMigrationFiles.every(isMigrationFileEntry)
+    || !expectedMigrationFiles.every(isExpectedMigrationFileEntry)) {
+    return { ok: false, errors: ['upgrade scenario migration入力が不正です。'] };
+  }
+  const baseNames = new Set(baseMigrationFiles.map(({ path }) => basename(path)));
+  const headOnlyEntries = headMigrationFiles.filter(({ path }) => !baseNames.has(basename(path)));
+  const actual = exactMigrationEntries(headOnlyEntries);
+  const expected = expectedMigrationFiles.map(({ path, sha256: digest }) => ({ path, sha256: digest }));
+  return JSON.stringify(actual) === JSON.stringify(expected)
+    ? { ok: true, errors: [] }
+    : { ok: false, errors: ['upgrade scenarioの対象migration filename・SHA-256がHEADとの差分と一致しません。'] };
+}
+
+async function executeFixtureSql(runCommand, fixtureContent) {
+  return runCommand('docker', [
+    'exec', '-i', databaseContainerName,
+    'psql', '--username', 'postgres', '--dbname', 'postgres', '--no-psqlrc',
+    '--quiet', '--set', 'ON_ERROR_STOP=1',
+  ], { input: fixtureContent });
+}
+
+async function assertNoResidueObjects(runCommand, residueObjects, name) {
+  const expressions = residueObjects.map((objectName) => {
+    const escaped = objectName.replaceAll("'", "''");
+    return objectName.endsWith('()')
+      ? `coalesce(to_regprocedure('${escaped}')::text, '')`
+      : `coalesce(to_regclass('${escaped}')::text, '')`;
+  });
+  const residue = await runCommand('docker', [
+    'exec', '-i', databaseContainerName,
+    'psql', '--username', 'postgres', '--dbname', 'postgres', '--no-psqlrc',
+    '--tuples-only', '--no-align', '--quiet', '--set', 'ON_ERROR_STOP=1',
+  ], { input: `select concat_ws(':', ${expressions.join(', ')});` });
+  if (residue.status !== 0 || residue.output.trim() !== ':'.repeat(Math.max(0, expressions.length - 1))) {
+    return { status: 1, output: `${name}失敗後にfixture objectが残留しました。` };
+  }
+  return { status: 0, output: '' };
+}
+
+/**
+ * M1 PRで登録する異常upgrade scenarioの実行API。
+ * 呼出元はimmutable baseだけをreset済みのtemporaryRootを渡す。fixture投入、実migration適用、
+ * schema/data/history/residueの全てをその場で検証するため、synthetic SQLだけの擬似失敗を許可しない。
+ */
+export async function runUpgradeFailureScenario({
+  runCommand,
+  temporaryRoot,
+  baseMigrationFiles,
+  headMigrationFiles,
+  scenario,
+  fixtureContent,
+}) {
+  const contract = verifyUpgradeScenarioMigrationFiles({
+    baseMigrationFiles,
+    headMigrationFiles,
+    expectedMigrationFiles: scenario.expectedMigrationFiles,
+  });
+  if (!contract.ok) return { status: 1, output: contract.errors.join('\n') };
+  const fixture = await executeFixtureSql(runCommand, fixtureContent);
+  if (fixture.status !== 0) return fixture;
+  const beforeSchema = await queryCanonicalSchemaSignature(runCommand, baseMigrationFiles);
+  if (beforeSchema.status !== 0 || beforeSchema.signature === '') return asPhaseResult(beforeSchema);
+  const beforeData = await queryCanonicalDatabaseDataSignature(runCommand);
+  if (beforeData.status !== 0 || beforeData.signature === '') return asPhaseResult(beforeData);
+  const baseNames = new Set(baseMigrationFiles.map(({ path }) => basename(path)));
+  for (const entry of headMigrationFiles.filter(({ path }) => !baseNames.has(basename(path)))) {
+    await writeFile(join(temporaryRoot, 'supabase', 'migrations', basename(entry.path)), entry.content, { flag: 'wx' });
+  }
+  const failed = await runCommand('supabase', ['migration', 'up', '--local'], { cwd: temporaryRoot });
+  if (failed.status === 0 || !failed.output.includes(scenario.expectedError)) {
+    return { status: 1, output: `${scenario.name}が規定の実migration失敗になりませんでした。` };
+  }
+  const afterSchema = await queryCanonicalSchemaSignature(runCommand, baseMigrationFiles);
+  if (afterSchema.status !== 0 || afterSchema.signature !== beforeSchema.signature) {
+    return { status: 1, output: `${scenario.name}失敗後にDDL・migration履歴・ACLが変化しました。` };
+  }
+  const afterData = await queryCanonicalDatabaseDataSignature(runCommand);
+  if (afterData.status !== 0 || afterData.signature !== beforeData.signature) {
+    return { status: 1, output: `${scenario.name}失敗後にdata・sequence・auditが変化しました。` };
+  }
+  const history = await verifyMigrationHistory(runCommand, baseMigrationFiles);
+  if (history.status !== 0) return history;
+  return assertNoResidueObjects(runCommand, scenario.residueObjects, scenario.name);
 }
 
 async function runCommonSecuritySuite(runCommand, cwd, testDirectory) {
@@ -465,6 +600,54 @@ async function runCommonSecuritySuite(runCommand, cwd, testDirectory) {
     return { status: 1, output: '共通security suiteをexactに1件確認できません。' };
   }
   return runCommand('supabase', ['test', 'db', matches[0]], { cwd });
+}
+
+export async function runDeclaredPgTapTests(runCommand, cwd, testDirectory, declaredFiles) {
+  if (!Array.isArray(declaredFiles)) return { status: 1, output: 'declared pgTAP file一覧が不正です。' };
+  if (declaredFiles.length === 0) return { status: 0, output: '' };
+  const root = resolve(testDirectory);
+  const paths = declaredFiles.map(({ path }) => resolve(root, path));
+  if (paths.some((path) => path !== root && !path.startsWith(`${root}/`))) {
+    return { status: 1, output: 'declared pgTAP pathがtest root外を指しています。' };
+  }
+  return runCommand('supabase', ['test', 'db', ...paths], { cwd });
+}
+
+export function selectGenericPgTapFiles(pgTapFiles, fixtureManifest) {
+  if (!Array.isArray(pgTapFiles) || fixtureManifest === null || typeof fixtureManifest !== 'object') {
+    return { ok: false, errors: ['pgTAP phase分離入力が不正です。'], files: [] };
+  }
+  const dedicatedEntries = [
+    ...(Array.isArray(fixtureManifest.normalPgTapFiles) ? fixtureManifest.normalPgTapFiles : []),
+    ...(Array.isArray(fixtureManifest.racePgTapFiles) ? fixtureManifest.racePgTapFiles : []),
+    ...(Array.isArray(fixtureManifest.postUpgradePgTapFiles) ? fixtureManifest.postUpgradePgTapFiles : []),
+  ];
+  if (dedicatedEntries.some((entry) => entry === null || typeof entry !== 'object' || typeof entry.path !== 'string')) {
+    return { ok: false, errors: ['phase専用pgTAP一覧が不正です。'], files: [] };
+  }
+  const dedicatedPaths = new Set(dedicatedEntries.map(({ path }) => path));
+  const files = pgTapFiles.filter(({ path }) => !dedicatedPaths.has(path));
+  if (files.length + dedicatedPaths.size !== pgTapFiles.length) {
+    return { ok: false, errors: ['phase専用pgTAPのexact coverageが不正です。'], files: [] };
+  }
+  return { ok: true, errors: [], files };
+}
+
+export async function runRegisteredUpgradeFailures(scenarios, runScenario) {
+  if (!Array.isArray(scenarios) || typeof runScenario !== 'function') {
+    return { status: 1, output: 'upgrade failure実行契約が不正です。' };
+  }
+  const executedNames = new Set();
+  for (const scenario of scenarios) {
+    if (scenario === null || typeof scenario !== 'object' || typeof scenario.name !== 'string'
+      || scenario.name.trim() === '' || executedNames.has(scenario.name)) {
+      return { status: 1, output: 'upgrade failure名が不正または重複しています。' };
+    }
+    executedNames.add(scenario.name);
+    const result = await runScenario(scenario);
+    if (result.status !== 0) return result;
+  }
+  return { status: 0, output: '' };
 }
 
 export function sameContainerNames(containers, expectedNames) {
@@ -549,12 +732,12 @@ export async function loadDatabaseHarnessContracts(execFileCommand = execFile) {
   const pgTapPaths = await enumeratePgTapTestFiles(pgTapRoot);
   const pgTapFiles = await readRelativeEntries(pgTapRoot, pgTapPaths);
   const fixtureManifestContent = await readFile(fixtureManifestPath, 'utf8');
-  const fixtureResult = verifyFixtureManifestFile({
+  const fixtureV2Result = verifyFixtureManifestV2File({
     manifestContent: fixtureManifestContent,
     fixtureFiles,
     pgTapFiles,
   });
-  if (!fixtureResult.ok) return fixtureResult;
+  if (!fixtureV2Result.ok) return fixtureV2Result;
   return {
     ok: true,
     value: {
@@ -633,11 +816,96 @@ export async function runProductionDatabaseHarness({
     productionFiles,
   } = contracts.value;
   const fixtureByPath = new Map(fixtureFiles.map(({ path, content }) => [path, content]));
+  const genericPgTapResult = selectGenericPgTapFiles(pgTapFiles, fixtureManifest);
+  if (!genericPgTapResult.ok) {
+    log.error(genericPgTapResult.errors.join('\n'));
+    return 1;
+  }
+  const genericPgTapFiles = genericPgTapResult.files;
+  const primaryUpgradeBase = fixtureManifest.upgradeBases.length === 1
+    ? fixtureManifest.upgradeBases[0]
+    : undefined;
 
   const persistOwnership = async () => {
     if (ownershipFilePath === undefined || ownershipFilePath === '') return;
     await writeOwnershipFile(ownershipFilePath, expectedNames, repositoryLockDirectory);
     ownershipFileWritten = true;
+  };
+
+  const runRegisteredFailureScenario = async (scenario) => {
+    let built;
+    let result = { status: 1, output: `${scenario.name}を開始できませんでした。` };
+    let cleanupStatus = 0;
+    try {
+      built = await buildImmutableUpgradeRoot({
+        execFileCommand,
+        base: primaryUpgradeBase,
+        headMigrationFiles,
+      });
+      const started = await runCommand('supabase', ['start'], { cwd: built.temporaryRoot });
+      const afterStart = await listProjectContainers(runCommand);
+      if (afterStart.status === 0) expectedNames = afterStart.containers.map(({ name }) => name);
+      if (afterStart.status !== 0 || expectedNames.length === 0 || !expectedNames.includes(databaseContainerName)) {
+        result = started.status !== 0
+          ? started
+          : { status: 1, output: `${scenario.name}のfixed-base stack所有権を確定できません。` };
+      } else {
+        await persistOwnership();
+        if (started.status !== 0) {
+          result = started;
+        } else {
+          const beforeResetNames = [...expectedNames];
+          const reset = await runCommand('supabase', ['db', 'reset'], { cwd: built.temporaryRoot });
+          const afterReset = await listProjectContainers(runCommand);
+          if (afterReset.status !== 0 || !sameContainerNames(afterReset.containers, beforeResetNames)) {
+            result = reset.status !== 0
+              ? reset
+              : { status: 1, output: `${scenario.name}のreset後所有権を確定できません。` };
+          } else {
+            expectedNames = afterReset.containers.map(({ name }) => name);
+            await persistOwnership();
+            if (reset.status !== 0) {
+              result = reset;
+            } else {
+              const baseHistory = await verifyMigrationHistory(runCommand, built.baseEntries);
+              const fixtureContent = fixtureByPath.get(scenario.fixture.path);
+              if (baseHistory.status !== 0) {
+                result = baseHistory;
+              } else if (fixtureContent === undefined) {
+                result = { status: 1, output: `${scenario.name}のfixtureがありません。` };
+              } else {
+                result = await runUpgradeFailureScenario({
+                  runCommand,
+                  temporaryRoot: built.temporaryRoot,
+                  baseMigrationFiles: built.baseEntries,
+                  headMigrationFiles,
+                  scenario,
+                  fixtureContent,
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result = { status: 1, output: `${scenario.name}の独立実行に失敗しました: ${redactDatabaseOutput(message)}` };
+    } finally {
+      if (built !== undefined && expectedNames.length > 0) {
+        const stopped = await stopOwnedStack(runCleanupCommand, expectedNames, built.temporaryRoot);
+        if (stopped.status !== 0) cleanupStatus = stopped.status;
+      }
+      expectedNames = [];
+      try { await persistOwnership(); } catch { cleanupStatus = cleanupStatus || 1; }
+      const remaining = await listProjectContainers(runCleanupCommand);
+      if (remaining.status !== 0 || remaining.containers.length > 0) cleanupStatus = remaining.status || 1;
+      if (built !== undefined) {
+        try { await rm(built.temporaryRoot, { recursive: true, force: true }); } catch { cleanupStatus = cleanupStatus || 1; }
+      }
+    }
+    return cleanupStatus === 0
+      ? result
+      : { status: cleanupStatus, output: `${scenario.name}の独立cleanupに失敗しました。` };
   };
 
   const phases = {
@@ -649,12 +917,20 @@ export async function runProductionDatabaseHarness({
       }
       const manifestResult = verifyMigrationManifest({ manifest, migrationFiles: headMigrationFiles });
       if (!manifestResult.ok) return { status: 1, output: manifestResult.errors.join('\n') };
-      const fixtureResult = verifyFixtureManifestFile({
+      const fixtureV2Result = verifyFixtureManifestV2File({
         manifestContent: fixtureManifestContent,
         fixtureFiles,
         pgTapFiles,
       });
-      if (!fixtureResult.ok) return { status: 1, output: fixtureResult.errors.join('\n') };
+      if (!fixtureV2Result.ok) return { status: 1, output: fixtureV2Result.errors.join('\n') };
+      const m1Result = verifyM1ScenarioRegistration({
+        manifest: fixtureManifest,
+        migrationFiles: headMigrationFiles,
+      });
+      if (!m1Result.ok) return { status: 1, output: m1Result.errors.join('\n') };
+      if (primaryUpgradeBase === undefined) {
+        return { status: 1, output: '現行5 phaseではimmutable upgrade baseをexactに1件要求します。' };
+      }
       const start = await runCommand('supabase', ['start']);
       const afterStart = await listProjectContainers(runCommand);
       if (afterStart.status === 0) expectedNames = afterStart.containers.map(({ name }) => name);
@@ -672,7 +948,12 @@ export async function runProductionDatabaseHarness({
       expectedNames = afterReset.containers.map(({ name }) => name);
       await persistOwnership();
       if (reset.status !== 0) return reset;
-      const tests = await runPgTapTests(runCommand, workspacePath, join(workspacePath, 'supabase', 'tests'));
+      const tests = await runDeclaredPgTapTests(
+        runCommand,
+        workspacePath,
+        join(workspacePath, 'supabase', 'tests'),
+        genericPgTapFiles,
+      );
       if (tests.status !== 0) return tests;
       const signature = await queryCanonicalSchemaSignature(runCommand, headMigrationFiles);
       freshSignature = signature.signature;
@@ -688,7 +969,32 @@ export async function runProductionDatabaseHarness({
       if (remaining.status !== 0 || remaining.containers.length > 0) {
         return { status: 1, output: 'fresh stack停止後にcontainerが残留しています。' };
       }
-      const built = await buildOriginUpgradeRoot({ execFileCommand, headMigrationFiles });
+      if (fixtureManifest.m1ScenarioState === 'registered') {
+        const failures = await runRegisteredUpgradeFailures(
+          fixtureManifest.upgradeFailures,
+          runRegisteredFailureScenario,
+        );
+        if (failures.status !== 0) return failures;
+      }
+      const built = await buildImmutableUpgradeRoot({
+        execFileCommand,
+        base: primaryUpgradeBase,
+        headMigrationFiles,
+      });
+      const normalScenario = fixtureManifest.m1ScenarioState === 'registered'
+        ? fixtureManifest.upgradeScenarios[0]
+        : undefined;
+      if (normalScenario !== undefined) {
+        const migrationContract = verifyUpgradeScenarioMigrationFiles({
+          baseMigrationFiles: built.baseEntries,
+          headMigrationFiles,
+          expectedMigrationFiles: normalScenario.expectedMigrationFiles,
+        });
+        if (!migrationContract.ok) {
+          await rm(built.temporaryRoot, { recursive: true, force: true });
+          return { status: 1, output: migrationContract.errors.join('\n') };
+        }
+      }
       temporaryUpgradeRoot = built.temporaryRoot;
       const started = await runCommand('supabase', ['start'], { cwd: temporaryUpgradeRoot });
       const afterStart = await listProjectContainers(runCommand);
@@ -711,13 +1017,18 @@ export async function runProductionDatabaseHarness({
       expectedNames = afterReset.containers.map(({ name }) => name);
       await persistOwnership();
       if (reset.status !== 0) return reset;
-      const originHistory = await verifyMigrationHistory(runCommand, built.originEntries);
+      const originHistory = await verifyMigrationHistory(runCommand, built.baseEntries);
       if (originHistory.status !== 0) return originHistory;
+      const normalFixturePath = normalScenario?.fixture.path ?? fixtureManifest.originMainFixture.path;
+      const normalFixtureContent = fixtureByPath.get(normalFixturePath);
+      if (normalFixtureContent === undefined) {
+        return { status: 1, output: `正常upgrade fixtureがありません: ${normalFixturePath}` };
+      }
       const fixture = await runCommand('docker', [
         'exec', '-i', databaseContainerName,
         'psql', '--username', 'postgres', '--dbname', 'postgres', '--no-psqlrc',
         '--quiet', '--set', 'ON_ERROR_STOP=1',
-      ], { input: await readFile(originFixturePath, 'utf8') });
+      ], { input: normalFixtureContent });
       if (fixture.status !== 0) return fixture;
       for (const entry of built.headOnlyEntries) {
         await writeFile(
@@ -730,26 +1041,40 @@ export async function runProductionDatabaseHarness({
       if (upgrade.status !== 0) return upgrade;
       const headHistory = await verifyMigrationHistory(runCommand, headMigrationFiles);
       if (headHistory.status !== 0) return headHistory;
-      const fixtureCheck = await runCommand('docker', [
-        'exec', '-i', databaseContainerName,
-        'psql', '--username', 'postgres', '--dbname', 'postgres', '--no-psqlrc',
-        '--tuples-only', '--no-align', '--quiet', '--set', 'ON_ERROR_STOP=1',
-      ], { input: "select count(*) from public.certifications where code = 'DB-HARNESS-CANARY-ORIGIN-MAIN-V1';" });
-      if (fixtureCheck.status !== 0 || fixtureCheck.output.trim() !== '1') {
-        return { status: 1, output: 'origin/main-shaped fixtureの保持を確認できません。' };
+      if (normalScenario === undefined) {
+        const fixtureCheck = await runCommand('docker', [
+          'exec', '-i', databaseContainerName,
+          'psql', '--username', 'postgres', '--dbname', 'postgres', '--no-psqlrc',
+          '--tuples-only', '--no-align', '--quiet', '--set', 'ON_ERROR_STOP=1',
+        ], { input: "select count(*) from public.certifications where code = 'DB-HARNESS-CANARY-ORIGIN-MAIN-V1';" });
+        if (fixtureCheck.status !== 0 || fixtureCheck.output.trim() !== '1') {
+          return { status: 1, output: 'origin/main-shaped fixtureの保持を確認できません。' };
+        }
       }
-      const tests = await runPgTapTests(
+      const tests = await runDeclaredPgTapTests(
         runCommand,
         temporaryUpgradeRoot,
         join(temporaryUpgradeRoot, 'supabase', 'tests'),
+        genericPgTapFiles,
       );
       if (tests.status !== 0) return tests;
-      const removeFixtureData = await runCommand('docker', [
-        'exec', '-i', databaseContainerName,
-        'psql', '--username', 'postgres', '--dbname', 'postgres', '--no-psqlrc',
-        '--quiet', '--set', 'ON_ERROR_STOP=1',
-      ], { input: "delete from public.certifications where id = 'db000000-0000-4000-8000-000000000001' and code = 'DB-HARNESS-CANARY-ORIGIN-MAIN-V1';" });
-      if (removeFixtureData.status !== 0) return removeFixtureData;
+      if (fixtureManifest.m1ScenarioState === 'registered') {
+        const normal = await runDeclaredPgTapTests(
+          runCommand,
+          temporaryUpgradeRoot,
+          join(temporaryUpgradeRoot, 'supabase', 'tests'),
+          fixtureManifest.normalPgTapFiles,
+        );
+        if (normal.status !== 0) return normal;
+      }
+      if (normalScenario === undefined) {
+        const removeFixtureData = await runCommand('docker', [
+          'exec', '-i', databaseContainerName,
+          'psql', '--username', 'postgres', '--dbname', 'postgres', '--no-psqlrc',
+          '--quiet', '--set', 'ON_ERROR_STOP=1',
+        ], { input: "delete from public.certifications where id = 'db000000-0000-4000-8000-000000000001' and code = 'DB-HARNESS-CANARY-ORIGIN-MAIN-V1';" });
+        if (removeFixtureData.status !== 0) return removeFixtureData;
+      }
       const signature = await queryCanonicalSchemaSignature(runCommand, headMigrationFiles);
       upgradeSignature = signature.signature;
       return signature.status === 0 && upgradeSignature !== ''
@@ -760,11 +1085,20 @@ export async function runProductionDatabaseHarness({
       if (freshSignature === '' || upgradeSignature === '' || freshSignature !== upgradeSignature) {
         return { status: 1, output: 'freshとorigin-main-upgradeの最終schema/migration署名が一致しません。' };
       }
-      return runCommonSecuritySuite(
+      const common = await runCommonSecuritySuite(
         runCommand,
         temporaryUpgradeRoot ?? workspacePath,
         join(temporaryUpgradeRoot ?? workspacePath, 'supabase', 'tests'),
       );
+      if (common.status !== 0) return common;
+      return fixtureManifest.m1ScenarioState === 'registered'
+        ? runDeclaredPgTapTests(
+          runCommand,
+          temporaryUpgradeRoot ?? workspacePath,
+          join(temporaryUpgradeRoot ?? workspacePath, 'supabase', 'tests'),
+          fixtureManifest.racePgTapFiles,
+        )
+        : { status: 0, output: '' };
     },
     async 'atomic-failure'() {
       const atomic = await assertAtomicFailures(
@@ -774,13 +1108,53 @@ export async function runProductionDatabaseHarness({
         headMigrationFiles,
       );
       if (atomic.status !== 0) return atomic;
-      return runCommonSecuritySuite(
+      const common = await runCommonSecuritySuite(
         runCommand,
         temporaryUpgradeRoot ?? workspacePath,
         join(temporaryUpgradeRoot ?? workspacePath, 'supabase', 'tests'),
       );
+      if (common.status !== 0) return common;
+      return fixtureManifest.m1ScenarioState === 'registered'
+        ? runDeclaredPgTapTests(
+          runCommand,
+          temporaryUpgradeRoot ?? workspacePath,
+          join(temporaryUpgradeRoot ?? workspacePath, 'supabase', 'tests'),
+          fixtureManifest.postUpgradePgTapFiles,
+        )
+        : { status: 0, output: '' };
     },
     async 'production-boundary'() {
+      // rich fixtureを使ったupgrade検証のstackを破棄し、fixture-freeなHEAD DBから境界を確認する。
+      const stopped = await stopOwnedStack(runCommand, expectedNames, temporaryUpgradeRoot ?? workspacePath);
+      if (stopped.status !== 0) return stopped;
+      expectedNames = [];
+      const remaining = await listProjectContainers(runCommand);
+      if (remaining.status !== 0 || remaining.containers.length !== 0) {
+        return { status: 1, output: 'fixture stack停止後にcontainerが残留しています。' };
+      }
+      const started = await runCommand('supabase', ['start'], { cwd: workspacePath });
+      const afterStart = await listProjectContainers(runCommand);
+      if (afterStart.status === 0) expectedNames = afterStart.containers.map(({ name }) => name);
+      if (afterStart.status !== 0 || expectedNames.length === 0 || !expectedNames.includes(databaseContainerName)) {
+        return started.status !== 0
+          ? started
+          : { status: 1, output: 'fixture-free current-head stackの所有権を確定できません。' };
+      }
+      await persistOwnership();
+      if (started.status !== 0) return started;
+      const resetNames = [...expectedNames];
+      const reset = await runCommand('supabase', ['db', 'reset'], { cwd: workspacePath });
+      const afterReset = await listProjectContainers(runCommand);
+      if (afterReset.status !== 0 || !sameContainerNames(afterReset.containers, resetNames)) {
+        return reset.status !== 0
+          ? reset
+          : { status: 1, output: 'fixture-free current-head reset後の所有権を確定できません。' };
+      }
+      expectedNames = afterReset.containers.map(({ name }) => name);
+      await persistOwnership();
+      if (reset.status !== 0) return reset;
+      const freshHeadHistory = await verifyMigrationHistory(runCommand, headMigrationFiles);
+      if (freshHeadHistory.status !== 0) return freshHeadHistory;
       const boundary = verifyProductionBoundary({
         canaryRegistry,
         productionFiles,
@@ -796,11 +1170,7 @@ export async function runProductionDatabaseHarness({
       if (canaryRegistry.canaries.some((canary) => databaseDump.output.includes(canary))) {
         return { status: 1, output: 'production DB schemaへfixture canaryが混入しています。' };
       }
-      return runCommonSecuritySuite(
-        runCommand,
-        temporaryUpgradeRoot ?? workspacePath,
-        join(temporaryUpgradeRoot ?? workspacePath, 'supabase', 'tests'),
-      );
+      return runCommonSecuritySuite(runCommand, workspacePath, join(workspacePath, 'supabase', 'tests'));
     },
   };
 

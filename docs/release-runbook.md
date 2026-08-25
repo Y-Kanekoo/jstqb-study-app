@@ -117,59 +117,63 @@ registered profileの`phasePgTapFiles` literal tableは次の7行exactで、表�
 
 array registryもliteral自体をUTF-8 byte昇順へ固定します。`upgradeBases=['pr9-main-00411ef']`、`upgradeScenarios=['m1-expired-decision-table','m1-legacy-content-integrity','m1-legacy-five-kind-acl','m1-legacy-request-fingerprint','m1-normal-upgrade']`、`writeRaces=['m1-legacy-write-race']`です。registered `upgradeFailures`は次の一原因一ID exact 51件です。これは[詳細設計 §7.3](./detailed-design-v2.md#73-m1実装固定補遺)のrequired構造原因を、注入一件が一つだけ壊す粒度で全展開した正本です。
 
-| UTF-8順 | failure ID | 独立注入cause |
-|---:|---|---|
-| 1 | `m1-active-answer-key-count-mismatch` | active answer keyのcorrect件数不一致
-| 2 | `m1-active-answer-key-foreign-choice` | active correct choiceが別version所属
-| 3 | `m1-active-answer-key-missing` | active answer key欠落
-| 4 | `m1-active-completed-at-present` | active fixed-base sessionの`completed_at`がnon-NULL
-| 5 | `m1-active-revision-negative` | active revisionが負
-| 6 | `m1-active-revision-unsafe` | active revisionが`9007199254740992`以上
-| 7 | `m1-active-updated-before-started` | active fixed-base sessionの`updated_at < started_at`
-| 8 | `m1-answered-question-set-duplicate` | answered question IDが重複
-| 9 | `m1-answered-set-foreign` | answered question IDがsession外
-| 10 | `m1-attempt-owner-mismatch` | attempt ownerがsession ownerと不一致
-| 11 | `m1-attempt-question-mismatch` | attempt questionがsession item pinと不一致
-| 12 | `m1-attempt-session-mismatch` | attempt sessionがsession itemのsessionと不一致
-| 13 | `m1-attempt-version-mismatch` | attempt versionがsession item pinと不一致
-| 14 | `m1-bookmark-time-order-invalid` | fixed-base bookmarkの`updated_at < created_at`
-| 15 | `m1-choice-order-gap` | choice order ordinalにgap
-| 16 | `m1-completed-answer-key-count-mismatch` | completed answer keyのcorrect件数不一致
-| 17 | `m1-completed-answer-key-foreign-choice` | completed correct choiceが別version所属
-| 18 | `m1-completed-answer-key-missing` | completed answer key欠落
-| 19 | `m1-completed-answered-set-incomplete` | completed answered setがanswerable question全件を含まない
-| 20 | `m1-completed-completed-at-missing` | completed fixed-base sessionの`completed_at`がNULL
-| 21 | `m1-completed-effective-attempt-missing` | completed answered questionに実効attemptがない
-| 22 | `m1-completed-revision-negative` | completed revisionが負
-| 23 | `m1-completed-revision-unsafe` | completed revisionが`9007199254740992`以上
-| 24 | `m1-completed-updated-before-completed` | completed fixed-base sessionの`updated_at < completed_at`
-| 25 | `m1-current-index-invalid` | current indexが範囲外
-| 26 | `m1-current-version-question-mismatch` | questionのcurrent versionが別questionを参照
-| 27 | `m1-draft-owner-mismatch` | fixed-base answer_draftsの`user_id`が同session ownerと不一致
-| 28 | `m1-draft-question-foreign` | fixed-base draftの`question_id`がsession `question_ids`外
-| 29 | `m1-draft-revision-negative` | fixed-base draft revisionが負
-| 30 | `m1-draft-revision-unsafe` | fixed-base draft revisionが`9007199254740992`以上
-| 31 | `m1-draft-selected-choice-count-exceeded` | single-choice draftの選択数がrequired count超過
-| 32 | `m1-draft-selected-choice-foreign` | fixed-base draftのselected choiceがpin版外
-| 33 | `m1-duplicate-attempt` | 同itemの有効attemptが重複
-| 34 | `m1-duplicate-session-question` | session questionが重複
-| 35 | `m1-empty-question-ids` | session question_idsが空
-| 36 | `m1-expired-answer-key-count-mismatch` | expired answer keyのcorrect件数不一致
-| 37 | `m1-expired-answer-key-foreign-choice` | expired correct choiceが別version所属
-| 38 | `m1-expired-answer-key-missing` | expired answer key欠落
-| 39 | `m1-expired-revision-max-safe` | expired prior revisionが`9007199254740991`
-| 40 | `m1-expired-revision-max-safe-plus-one` | expired prior revisionが`9007199254740992`
-| 41 | `m1-expired-revision-negative` | expired prior revisionが負
-| 42 | `m1-expired-revision-zero` | expired prior revisionが0
-| 43 | `m1-expired-updated-before-started` | expired fixed-base sessionの`updated_at < started_at`
-| 44 | `m1-foreign-selected-choice` | attemptのselected choiceが別version所属
-| 45 | `m1-invalidation-reason-only` | legacy invalidation reasonだけnon-NULL
-| 46 | `m1-invalidation-timestamp-only` | legacy invalidation timestampだけnon-NULL
-| 47 | `m1-legacy-content-collision` | 18問stable ref/content hash衝突
-| 48 | `m1-missing-pin` | question/version pin欠落
-| 49 | `m1-selected-choice-duplicate` | attemptのselected choiceが重複
-| 50 | `m1-started-after-terminal` | started_atがterminalAtより後
-| 51 | `m1-terminal-after-migration-recorded` | terminalAtがmigrationRecordedAtより後
+第四列のcontrolは、全18問content、choice order、answer keyを正にした`Q0` fixed baseを毎fixtureで新規構築し、`u1=10000000-0000-4000-8000-000000000001`、`u2=10000000-0000-4000-8000-000000000002`、`S1=73000000-0000-4000-8000-000000000001`、`T1=83000000-0000-4000-8000-000000000001`、`T2=83000000-0000-4000-8000-000000000002`へ固定する。以下の短縮時刻は全て`2026-08-14T00:00:`を接頭辞に持つUTC6桁wireである。`fl-001-v1`はsingle/required count 1、正解`fl-001-D`、`fl-002-v1`の正解は`fl-002-C`である。`A0`はactive S1、`question_ids=['fl-001']`、index 0、answered空、revision 1、started `00.000000Z`、updated `03.123456Z`、completed NULL、`A1`はA0のansweredを`['fl-001']`とし、u1/S1/`fl-001`/`fl-001-v1`/`['fl-001-D']`/both invalidation NULLのvalid T1を一件持つ。`A2`はactive S1、`question_ids=['fl-001','fl-002']`、index 0、answered空、revision/timeはA0と同じでattemptを持たない。`C1`はcompleted S1、一問answered/valid T1、started `00.000000Z`、completed `02.123456Z`、updated `03.123456Z`、`C2`は`question_ids`とansweredをともに`['fl-001','fl-002']`として各pinにvalid T1/T2を一件ずつ持つ。`E1`はexpired S1、一問answered/valid T1、started `00.000000Z`、updated `03.123456Z`、completed NULL、`D1`はA0にowner u1/question `fl-001`/selected `['fl-001-D']`/revision 1のvalid draftを加えたcontrol、`B1`はowner u1/question `fl-001`、created `01.123456Z`/updated `02.123456Z`のvalid bookmarkである。各行は第四列の一つのsemantic mutationだけを適用し、補助fieldを併記した場合は他predicateを正に保つ同一mutationのbindingであり、記載外のrow/fieldはcontrolとbyte-exact同一とする。
+
+| UTF-8順 | failure ID | 独立注入cause | base-valid control + 唯一mutation |
+|---:|---|---|---|
+| 1 | `m1-active-answer-key-count-mismatch` | active answer keyのcorrect件数不一致 | `A0`; `UPDATE public.question_answer_keys SET correct_choice_ids=ARRAY['fl-001-A','fl-001-B'] WHERE question_version_id='fl-001-v1'` |
+| 2 | `m1-active-answer-key-foreign-choice` | active correct choiceが別version所属 | `A0`; `UPDATE public.question_answer_keys SET correct_choice_ids=ARRAY['fl-002-C'] WHERE question_version_id='fl-001-v1'` |
+| 3 | `m1-active-answer-key-missing` | active answer key欠落 | `A0`; `DELETE FROM public.question_answer_keys WHERE question_version_id='fl-001-v1'` |
+| 4 | `m1-active-completed-at-present` | active fixed-base sessionの`completed_at`がnon-NULL | `A0`; `public.learning_sessions`へS1を`INSERT`し`completed_at='2026-08-14T00:00:01.000000Z'`だけをcontrolから変更 |
+| 5 | `m1-active-revision-negative` | active revisionが負 | `A0`; `public.learning_sessions`へS1を`INSERT`し`revision=-1`だけをcontrolから変更 |
+| 6 | `m1-active-revision-unsafe` | active revisionが`9007199254740992`以上 | `A0`; `public.learning_sessions`へS1を`INSERT`し`revision=9007199254740992`だけをcontrolから変更 |
+| 7 | `m1-active-updated-before-started` | active fixed-base sessionの`updated_at < started_at` | `A0`; `public.learning_sessions`へS1を`INSERT`しstarted `02.123456Z`/updated `01.123456Z`だけをcontrolから変更 |
+| 8 | `m1-answered-question-set-duplicate` | answered question IDが重複 | `A2`; `public.learning_sessions`へS1を`INSERT`し`answered_question_ids=ARRAY['fl-001','fl-001']`だけをcontrolから変更 |
+| 9 | `m1-answered-set-foreign` | answered question IDがsession外 | `A0`; `public.learning_sessions`へS1を`INSERT`し`answered_question_ids=ARRAY['fl-002']`だけをcontrolから変更 |
+| 10 | `m1-attempt-owner-mismatch` | attempt ownerがsession ownerと不一致 | `A1`; `public.answer_attempts`へT1を`INSERT`し`user_id=u2`だけをcontrolから変更 |
+| 11 | `m1-attempt-question-mismatch` | attempt questionがsession item pinと不一致 | `A1`; `public.answer_attempts`へT1を`INSERT`しtarget tripleを`question_id='fl-002',question_version_id='fl-002-v1',selected_choice_ids=ARRAY['fl-002-C']`へ一体変更 |
+| 12 | `m1-attempt-session-mismatch` | attempt sessionがsession itemのsessionと不一致 | `A1`; `public.answer_attempts`へT1を`INSERT`し`session_id='73000000-0000-4000-8000-000000000002'`だけをcontrolから変更（該当sessionなし） |
+| 13 | `m1-attempt-version-mismatch` | attempt versionがsession item pinと不一致 | `A1`; `public.answer_attempts`へT1を`INSERT`し`question_version_id='fl-002-v1',selected_choice_ids=ARRAY['fl-002-C']`へ一体変更、questionは`fl-001`を保持 |
+| 14 | `m1-bookmark-time-order-invalid` | fixed-base bookmarkの`updated_at < created_at` | `B1`; `public.bookmarks`へu1/`fl-001` rowを`INSERT`しcreated `02.123456Z`/updated `01.123456Z`だけをcontrolから変更 |
+| 15 | `m1-choice-order-gap` | choice order ordinalにgap | `Q0`; `UPDATE public.choices SET sort_order=7 WHERE id='fl-001-B'` |
+| 16 | `m1-completed-answer-key-count-mismatch` | completed answer keyのcorrect件数不一致 | `C1`; `UPDATE public.question_answer_keys SET correct_choice_ids=ARRAY['fl-001-A','fl-001-B'] WHERE question_version_id='fl-001-v1'` |
+| 17 | `m1-completed-answer-key-foreign-choice` | completed correct choiceが別version所属 | `C1`; `UPDATE public.question_answer_keys SET correct_choice_ids=ARRAY['fl-002-C'] WHERE question_version_id='fl-001-v1'` |
+| 18 | `m1-completed-answer-key-missing` | completed answer key欠落 | `C1`; `DELETE FROM public.question_answer_keys WHERE question_version_id='fl-001-v1'` |
+| 19 | `m1-completed-answered-set-incomplete` | completed answered setがanswerable question全件を含まない | `C2`; `public.learning_sessions`へS1を`INSERT`し`answered_question_ids=ARRAY['fl-001']`だけをcontrolから変更、T1/T2はともに`INSERT` |
+| 20 | `m1-completed-completed-at-missing` | completed fixed-base sessionの`completed_at`がNULL | `C1`; `public.learning_sessions`へS1を`INSERT`し`completed_at=NULL`だけをcontrolから変更、valid T1も`INSERT` |
+| 21 | `m1-completed-effective-attempt-missing` | completed answered questionに実効attemptがない | `C1`; S1を`public.learning_sessions`へ`INSERT`するが、対応T1の`public.answer_attempts INSERT`だけを省略 |
+| 22 | `m1-completed-revision-negative` | completed revisionが負 | `C1`; `public.learning_sessions`へS1を`INSERT`し`revision=-1`だけをcontrolから変更、valid T1も`INSERT` |
+| 23 | `m1-completed-revision-unsafe` | completed revisionが`9007199254740992`以上 | `C1`; `public.learning_sessions`へS1を`INSERT`し`revision=9007199254740992`だけをcontrolから変更、valid T1も`INSERT` |
+| 24 | `m1-completed-updated-before-completed` | completed fixed-base sessionの`updated_at < completed_at` | `C1`; `public.learning_sessions`へS1を`INSERT`しupdated `01.123456Z`/completed `02.123456Z`だけをcontrolから変更、valid T1も`INSERT` |
+| 25 | `m1-current-index-invalid` | current indexが範囲外 | `A0`; `public.learning_sessions`へS1を`INSERT`し`current_index=1`だけをcontrolから変更 |
+| 26 | `m1-current-version-question-mismatch` | questionのcurrent versionが別questionを参照 | `Q0`; `UPDATE public.questions SET current_version_id='fl-002-v1' WHERE id='fl-001'` |
+| 27 | `m1-draft-owner-mismatch` | fixed-base answer_draftsの`user_id`が同session ownerと不一致 | `D1`; `public.answer_drafts`へu2/S1/`fl-001` rowを`INSERT`し`user_id=u2`だけをcontrolから変更 |
+| 28 | `m1-draft-question-foreign` | fixed-base draftの`question_id`がsession `question_ids`外 | `D1`; `public.answer_drafts`へu1/S1 rowを`INSERT`し`question_id='fixture-foreign-question',selected_choice_ids=ARRAY[]::text[]`へ一体変更 |
+| 29 | `m1-draft-revision-negative` | fixed-base draft revisionが負 | `D1`; `public.answer_drafts`へu1/S1/`fl-001` rowを`INSERT`し`revision=-1`だけをcontrolから変更 |
+| 30 | `m1-draft-revision-unsafe` | fixed-base draft revisionが`9007199254740992`以上 | `D1`; `public.answer_drafts`へu1/S1/`fl-001` rowを`INSERT`し`revision=9007199254740992`だけをcontrolから変更 |
+| 31 | `m1-draft-selected-choice-count-exceeded` | single-choice draftの選択数がrequired count超過 | `D1`; `public.answer_drafts`へu1/S1/`fl-001` rowを`INSERT`し`selected_choice_ids=ARRAY['fl-001-A','fl-001-B']`だけをcontrolから変更 |
+| 32 | `m1-draft-selected-choice-foreign` | fixed-base draftのselected choiceがpin版外 | `D1`; `public.answer_drafts`へu1/S1/`fl-001` rowを`INSERT`し`selected_choice_ids=ARRAY['fl-002-C']`だけをcontrolから変更 |
+| 33 | `m1-duplicate-attempt` | 同itemの有効attemptが重複 | `A1`; `public.answer_attempts`へT1と同bindingのT2を追加`INSERT` |
+| 34 | `m1-duplicate-session-question` | session questionが重複 | `A0`; `public.learning_sessions`へS1を`INSERT`し`question_ids=ARRAY['fl-001','fl-001']`だけをcontrolから変更 |
+| 35 | `m1-empty-question-ids` | session question_idsが空 | `A0`; `public.learning_sessions`へS1を`INSERT`し`question_ids=ARRAY[]::text[]`だけをcontrolから変更 |
+| 36 | `m1-expired-answer-key-count-mismatch` | expired answer keyのcorrect件数不一致 | `E1`; `UPDATE public.question_answer_keys SET correct_choice_ids=ARRAY['fl-001-A','fl-001-B'] WHERE question_version_id='fl-001-v1'` |
+| 37 | `m1-expired-answer-key-foreign-choice` | expired correct choiceが別version所属 | `E1`; `UPDATE public.question_answer_keys SET correct_choice_ids=ARRAY['fl-002-C'] WHERE question_version_id='fl-001-v1'` |
+| 38 | `m1-expired-answer-key-missing` | expired answer key欠落 | `E1`; `DELETE FROM public.question_answer_keys WHERE question_version_id='fl-001-v1'` |
+| 39 | `m1-expired-revision-max-safe` | expired prior revisionが`9007199254740991` | `E1`; `public.learning_sessions`へS1を`INSERT`し`revision=9007199254740991`だけをcontrolから変更、valid T1も`INSERT` |
+| 40 | `m1-expired-revision-max-safe-plus-one` | expired prior revisionが`9007199254740992` | `E1`; `public.learning_sessions`へS1を`INSERT`し`revision=9007199254740992`だけをcontrolから変更、valid T1も`INSERT` |
+| 41 | `m1-expired-revision-negative` | expired prior revisionが負 | `E1`; `public.learning_sessions`へS1を`INSERT`し`revision=-1`だけをcontrolから変更、valid T1も`INSERT` |
+| 42 | `m1-expired-revision-zero` | expired prior revisionが0 | `E1`; `public.learning_sessions`へS1を`INSERT`し`revision=0`だけをcontrolから変更、valid T1も`INSERT` |
+| 43 | `m1-expired-updated-before-started` | expired fixed-base sessionの`updated_at < started_at` | `E1`; `public.learning_sessions`へS1を`INSERT`しstarted `02.123456Z`/updated `01.123456Z`/completed `03.123456Z`へ一体変更してterminal順序は正に保持、valid T1も`INSERT` |
+| 44 | `m1-foreign-selected-choice` | attemptのselected choiceが別version所属 | `A1`; `public.answer_attempts`へT1を`INSERT`し`selected_choice_ids=ARRAY['fl-002-C'],is_correct=false`へ一体変更してcontrolのDB再採点値を正に保持 |
+| 45 | `m1-invalidation-reason-only` | legacy invalidation reasonだけnon-NULL | `A1`; `public.answer_attempts`へT1を`INSERT`し`invalidation_reason='legacy fixture reason',invalidated_at=NULL`へ一体変更 |
+| 46 | `m1-invalidation-timestamp-only` | legacy invalidation timestampだけnon-NULL | `A1`; `public.answer_attempts`へT1を`INSERT`し`invalidated_at='2026-08-14T00:00:02.123456Z',invalidation_reason=NULL`へ一体変更 |
+| 47 | `m1-legacy-content-collision` | 18問stable ref/content hash衝突 | `Q0`; `UPDATE m1_fixture_legacy_content_stage SET legacy_content_hash=(SELECT legacy_content_hash FROM m1_fixture_legacy_content_stage WHERE question_stable_id='fl-002') WHERE question_stable_id='fl-001'`後に`public.question_versions`へ`INSERT`、fl-001本文は保持 |
+| 48 | `m1-missing-pin` | question/version pin欠落 | `A0`; `public.learning_sessions`へS1を`INSERT`し`question_ids=ARRAY['fixture-missing-question']`だけをcontrolから変更（対応question/versionなし） |
+| 49 | `m1-selected-choice-duplicate` | attemptのselected choiceが重複 | `A1`; `public.answer_attempts`へT1を`INSERT`し`selected_choice_ids=ARRAY['fl-001-D','fl-001-D']`だけをcontrolから変更 |
+| 50 | `m1-started-after-terminal` | started_atがterminalAtより後 | `E1`; `public.learning_sessions`へS1を`INSERT`しstarted `02.123456Z`/completed `01.123456Z`/updated `03.123456Z`へ一体変更、valid T1も`INSERT` |
+| 51 | `m1-terminal-after-migration-recorded` | terminalAtがmigrationRecordedAtより後 | `E1`; `public.learning_sessions`へS1を`INSERT`し`updated_at='2999-01-01T00:00:00.123456Z',completed_at=NULL`へ一体変更、valid T1も`INSERT` |
+
+一原因性を優先順へ依存させないため、answer-key count/foreign predicateはanswer-key存在時だけ、current-index predicateは非空`question_ids`時だけ、attempt owner/question/version/selected predicateは順にsession/item/version解決済み時だけ評価する。missing pinは非空・重複なし・範囲内indexを確認した後のquestion/version解決0件だけ、completed coverageは構造検査通過後だけを対象にする。これにより各fixtureで第四列のcause以外のpredicateはpositiveであり、複数causeのうち先頭を返す実装を禁止する。
 
 `upgradeFailureCount=51`です。causeCodeはIDから`m1-`を外して`-`を`_`へ置換したliteralだけを許可します。ID arrayは表の真UTF-8 byte昇順そのままとし、`upgradeFailureIdSetHash=SHA-256(RFC 8785 JCS(failure ID文字列array))='1e1d751eb194f6eb66a8aae95f9a2d610d754742a3ba4d985465245dd15901f8'`へ固定します。pair arrayは同じ順の`{causeCode,id}`で、`upgradeFailureIdCausePairSetHash=SHA-256(RFC 8785 JCS(pair array))='a4aa023b759fe0f70aaec7da014ec235625a6aa4b1baad6910fca7b712a5144b'`です。manifest/required registry/fixture basename/expectedErrorはこの51 pairと1:1で、swap/extra/missing/duplicate/unsortedを拒否します。
 

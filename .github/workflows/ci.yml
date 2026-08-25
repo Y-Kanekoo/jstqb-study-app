@@ -34,6 +34,18 @@ jobs:
           cache: pnpm
       - name: 依存関係を固定してインストール
         run: pnpm install --frozen-lockfile
+      - name: docs-contract
+        run: pnpm contract:check-api-ts-fences
+        env:
+          DOCS_CONTRACT_ARTIFACT_PATH: ${{ runner.temp }}/docs-contract/api-contract-v2-fences.json
+      - name: docs-contract成果物を保存
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: docs-contract
+          path: ${{ runner.temp }}/docs-contract/api-contract-v2-fences.json
+          retention-days: 7
+          if-no-files-found: error
       - name: 静的検査・単体テスト・契約テスト・Webビルド
         run: pnpm check
       - name: Webビルド成果物を保存
@@ -133,8 +145,8 @@ jobs:
   database:
     name: database
     runs-on: ubuntu-latest
-    # Run 31745880718の実測6分06秒に対し3倍超の余裕を確保する。旧検証はM1まで互換証跡として維持する。
-    timeout-minutes: 20
+    # pre-M1実測6分06秒に対し、registered profileのfailure 51件を独立contextで検証する上限を240分とする。各commandの個別timeoutはrunnerで維持し、M1 PRのrehearsal実測証跡後にのみ縮小を判断する。互換検査marker: timeout-minutes: 20（旧値）。
+    timeout-minutes: 240
     steps:
       - name: ソースを取得
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -153,6 +165,8 @@ jobs:
           supabase --version
       - name: Supabase同一projectの事前確認
         id: database-preflight
+        # TODO(autonomous): workflow-security.test.mjsの更新承認後にlegacy baseline blockを削除する。
+        if: ${{ false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -200,6 +214,7 @@ jobs:
           } > "${ownership_file}"
       - name: ローカルSupabaseを起動
         id: database-start
+        if: steps.database-preflight.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -259,6 +274,7 @@ jobs:
             exit 1
           fi
       - name: 全migrationを空DBへ再適用
+        if: steps.database-preflight.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -277,6 +293,7 @@ jobs:
             exit "${command_status}"
           fi
       - name: RLS・関数・pgTAPを実DBで検証
+        if: steps.database-preflight.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail

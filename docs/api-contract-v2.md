@@ -5462,6 +5462,22 @@ interface SessionCurrentProjectionV2 {
   readonly updatedAt: IsoUtcTimestamp | LegacyStoredTimestampV1;
   readonly completedAt: IsoUtcTimestamp | LegacyStoredTimestampV1 | null;
 }
+// `expired`はM1後のcurrent statusへ戻さない。fixed-base expired行をM1 transaction内で
+// lifecycle mutationへ接続する直前のinitial materialization historyだけがこの型を使う。
+// completedAtは旧行のnullable値を6桁のまま保持し、legacyTerminalAtは
+// `completedAt ?? updatedAt`から導出する。
+interface LegacyExpiredSessionCurrentProjectionV2 {
+  readonly status: 'expired';
+  readonly currentIndex: number;
+  readonly revision: PositiveSafeIntegerV1;
+  readonly answeredQuestionIds: readonly QuestionId[];
+  readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+  readonly updatedAt: LegacyStoredTimestampV1;
+  readonly completedAt: LegacyStoredTimestampV1 | null;
+}
+type SessionCurrentMaterializationProjectionV2 =
+  | SessionCurrentProjectionV2
+  | LegacyExpiredSessionCurrentProjectionV2;
 type ModernSessionCurrentProjectionV2 = SessionCurrentProjectionV2 & {
   readonly updatedAt: IsoUtcTimestamp;
   readonly completedAt: IsoUtcTimestamp | null;
@@ -5528,9 +5544,11 @@ type SessionCurrentMaterializationCauseV2 =
   | { readonly causeKind: 'restore-materialization'; readonly restorePhase: 'mutation'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
   | { readonly causeKind: 'legacy-fixed-row-snapshot'; readonly causeId: string; readonly causeHash: Sha256HexV1 };
 
-// currentを更新する各transactionがexact一件appendする正本。source eventだけから
+// currentを更新する通常transactionがexact一件appendする正本。M1 expiredの二件例外は後述する。source eventだけから
 // current projectionを補造しない。factHashは自身を除くstrict factのJCS SHA-256である。
-interface SessionCurrentMaterializationFactBaseV2<P extends SessionCurrentProjectionV2 = SessionCurrentProjectionV2> {
+interface SessionCurrentMaterializationFactBaseV2<
+  P extends SessionCurrentMaterializationProjectionV2 = SessionCurrentMaterializationProjectionV2,
+> {
   readonly sessionCurrentMaterializationFactId: UUID;
   readonly sessionId: UUID;
   readonly resultingRevision: NonNegativeSafeIntegerV1;
@@ -5548,7 +5566,9 @@ type SessionCurrentMaterializationMutationCauseV2 =
   | Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'restore-materialization'; readonly restorePhase: 'mutation' }>;
 // initial はcreation/current migrationの最初の一件だけ、mutation は直前factを必ず参照する。
 // `resultingRevision=priorRevision+1` はdecoderとdeferred CHECKで検証し、整数の型丸めで代替しない。
-type SessionCurrentMaterializationFactV2<P extends SessionCurrentProjectionV2 = SessionCurrentProjectionV2> =
+type SessionCurrentMaterializationFactV2<
+  P extends SessionCurrentMaterializationProjectionV2 = SessionCurrentMaterializationProjectionV2,
+> =
   | (SessionCurrentMaterializationFactBaseV2<P> & {
       readonly materializationPhase: 'initial';
       readonly priorRevision: null;
@@ -5562,6 +5582,38 @@ type SessionCurrentMaterializationFactV2<P extends SessionCurrentProjectionV2 = 
       readonly resultingRevision: PositiveSafeIntegerV1;
       readonly cause: SessionCurrentMaterializationMutationCauseV2;
     });
+
+// fixed-base expired一件はM1 transaction内でexact二件をこの順に作る。
+// 1件目は旧revision/時刻/statusを保持するfixed-row initial、2件目はそのfactを
+// priorMaterializationFactIdで参照するlifecycle mutationである。ID・revision・projection・
+// lifecycle factの相関とexact二件性はdecoder/DB deferred CHECKで検証する。
+type M1ExpiredLegacyFixedRowInitialMaterializationFactV2 =
+  Extract<SessionCurrentMaterializationFactV2<LegacyExpiredSessionCurrentProjectionV2>, {
+    readonly materializationPhase: 'initial';
+  }> & {
+    readonly cause: Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'legacy-fixed-row-snapshot' }>;
+  };
+type M1ExpiredCompletedLifecycleMutationMaterializationFactV2 =
+  Extract<SessionCurrentMaterializationFactV2<M1PostMigrationCompletedSessionCurrentProjectionV2>, {
+    readonly materializationPhase: 'mutation';
+  }> & {
+    readonly cause: Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'session-lifecycle' }>;
+  };
+type M1ExpiredInvalidatedLifecycleMutationMaterializationFactV2 =
+  Extract<SessionCurrentMaterializationFactV2<M1PostMigrationInvalidatedSessionCurrentProjectionV2>, {
+    readonly materializationPhase: 'mutation';
+  }> & {
+    readonly cause: Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'session-lifecycle' }>;
+  };
+type M1ExpiredSessionCurrentMaterializationFactPairV2 =
+  | readonly [
+      M1ExpiredLegacyFixedRowInitialMaterializationFactV2,
+      M1ExpiredCompletedLifecycleMutationMaterializationFactV2,
+    ]
+  | readonly [
+      M1ExpiredLegacyFixedRowInitialMaterializationFactV2,
+      M1ExpiredInvalidatedLifecycleMutationMaterializationFactV2,
+    ];
 
 interface SessionCurrentMaterializationBaseV2<
   P extends SessionCurrentProjectionV2,
@@ -5855,6 +5907,18 @@ type Round18M1PortableRestoreStatusSwapNeverFixtureV2 = B1ExpectTrueFixtureV2<
     readonly source: { readonly sourcePortableFact: { readonly resultingStatus: 'invalidated' } };
   }>>
 >;
+type Round22M1ExpiredInitialMaterializationNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<M1ExpiredLegacyFixedRowInitialMaterializationFactV2>
+>;
+type Round22M1ExpiredMaterializationPairNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<M1ExpiredSessionCurrentMaterializationFactPairV2>
+>;
+// expired projectionはappend-only initial historyには存在するが、M1後のcurrent sourceには存在しない。
+type Round22M1ExpiredCurrentSourceNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalSessionCurrentMaterializationSourceV2, {
+    readonly projection: LegacyExpiredSessionCurrentProjectionV2;
+  }>>
+>;
 type Round19SessionRestoreLinkM1CompletedNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
   B1IsNeverFixtureV2<Extract<
     Extract<LocalRestoreMaterializationLinkV2, { readonly targetKind: 'session' }>['source'],
@@ -6097,7 +6161,9 @@ type LearningBootstrapPageV2 =
 
 `BootstrapSessionRecordV2`は同一owner/generation/sessionのcanonical fact・derived hydration・immutable creation sourceを三hashで一組として検証する。`canonicalFactHash=SHA-256(RFC 8785 JCS(strict fact))`、`sessionHydrationHash=SHA-256(RFC 8785 JCS(strict session))`、`creationSourceHash=SHA-256(RFC 8785 JCS(strict creationSource))`であり、各hash field自身はpreimage外である。`creationSource`は`fact`の`sourceOrigin/sourceEventId/sourceSequence/sourceEventKind/sourceEventHash/sourceOccurredAt/sourceReceivedAt/sourceRevision/legacyDirectRowSource/legacyDirectRowHash`と一fieldずつexact一致する。top-level modern、legacy-sync、legacy-directを分け、legacy-sync fact/creation sourceへのdirect行、legacy-direct fact/creation sourceへのsync eventの差替えを型・decoder・DB CHECKで拒否する。legacy outer branchはさらにfixed-base current（updated/completed=6桁）とlegacy creationを保つpost-M1 current（started=6桁、updated/completed=3桁）へ分配し、fact/session/source/canonicalUpdatedAtのepochをcross-productにしない。`fact.sessionId=session.sessionId`、mode/title/status/certification/syllabus、revision/current index、question IDs/answered IDsの値とraw順序、全session timestamp、content/operation binding、requested/actual/current answerable countをexact一致させる。`initialAnswerableQuestionCount`はSessionFactのcreation canonical/direct snapshotからのみ読み、suspend item invalidation後のcurrent answerable（例: 10→9）で書き換えない。`currentMaterializationSource.projection`は上記current fieldへexact一致し、別のcurrent正本を作らない。`canonicalRevision=fact.revision=session.revision`、`canonicalUpdatedAt=fact.updatedAt=session.updatedAt`である。session itemsはfactのquestion ID順序・actual countとexact one-to-oneで、各question/version/ordinal/choice order/content bindingをcanonical item factおよびpinへ一致させる。
 
-`currentMaterializationSourceHash=SHA-256(RFC 8785 JCS(strict currentMaterializationSource))`は前記三hashとは別に検証する。currentを更新するtransactionは`SessionCurrentMaterializationFactV2`をexact一件appendし、sourceはそのfact ID/hash、prior/resulting revision、full `SessionCurrentProjectionV2`/hash、cause kind/ID/hashへ参照する。これにより`answer.submitted`単体やserver change payloadからcurrent projectionを補造しない。`currentStatus=projection.status`、`sourceRevision=projection.revision`、`updatedAt=projection.updatedAt`、`aggregateKind='session'/aggregateId/sourceHash`、materialization factとprojectionの各fieldをcurrent fact/sessionへexact一致させる。causeはinitial=`session.created|legacy-fixed-row-snapshot|restore初回`、mutation=`session.advanced|session.review-marked|answer.submitted|session.submitted|session-lifecycle|session.item-invalidated|restore更新`のphase×cause strict unionだけで、cause payload/fact/linkへFK/hash相関する。terminal化するanswerは同transaction lifecycle cause、historic legacy event単独はcurrent causeに使わずfixed row snapshotだけを使う。M1 expired→completed|invalidatedは完全`M1LegacySessionLifecycleFactV2`をcauseにする。completedのcurrent projection/materialization/portable restoreは`updatedAt=migrationRecordedAt`の`IsoUtcTimestamp` 3桁と`completedAt=legacyTerminalAt`の`LegacyStoredTimestampV1` 6桁を同時に持つmixed branch、invalidatedはupdated 3桁/completed null branchである。legacy creation provenanceを保つ通常post-M1 currentは明示modern temporal branchで3桁current snapshotを持つ。lifecycleは`PortableSessionLifecycleFactV2`、server-changeは実在`LearningServerChangeV2.kind='session.item-invalidated'`の完全payload/nested factだけをcauseにでき、三lifecycle種をserver-changeに偽装しない。materialization factはlocal、bootstrap `session-lifecycle` partition、portable export、restore source identity `session-current-materialization`へlosslessに含め、M1 completed/invalidated restoreは`LegacyBoundPostM1CurrentMaterializationSourceV2`のportable fact cause chainへexactに再結合する。`snapshotReceivedAt`はsource受信時刻ではなくbootstrap snapshot取得時のDB clockを一度だけmillisecondへ切り詰めた全branch共通`IsoUtcTimestamp`である。transport受信時刻はlegacy sync=6桁、legacy direct=null、restore=3桁を保持し、`snapshotReceivedAt`との同値化・精度変換を禁止する。別sessionのfact/session/creation source/current source/materialization factを同数swapする、binding/count/time/hashだけを差し替えるrowをstrict decoder、DB staging CHECK、partition hash検証でrejectし、canonical factからderived session/sourceをexact再構築できない場合はbootstrap全体をcommitしない。
+`currentMaterializationSourceHash=SHA-256(RFC 8785 JCS(strict currentMaterializationSource))`は前記三hashとは別に検証する。currentを更新する通常transactionは`SessionCurrentMaterializationFactV2`をexact一件appendし、sourceはそのfact ID/hash、prior/resulting revision、full `SessionCurrentProjectionV2`/hash、cause kind/ID/hashへ参照する。これにより`answer.submitted`単体やserver change payloadからcurrent projectionを補造しない。`currentStatus=projection.status`、`sourceRevision=projection.revision`、`updatedAt=projection.updatedAt`、`aggregateKind='session'/aggregateId/sourceHash`、materialization factとprojectionの各fieldをcurrent fact/sessionへexact一致させる。causeはinitial=`session.created|legacy-fixed-row-snapshot|restore初回`、mutation=`session.advanced|session.review-marked|answer.submitted|session.submitted|session-lifecycle|session.item-invalidated|restore更新`のphase×cause strict unionだけで、cause payload/fact/linkへFK/hash相関する。terminal化するanswerは同transaction lifecycle cause、historic legacy event単独はcurrent causeに使わずfixed row snapshotだけを使う。
+
+M1 expired→completed|invalidatedだけは同一migration transactionで`M1ExpiredSessionCurrentMaterializationFactPairV2`のexact二件を作る。第一factは`LegacyExpiredSessionCurrentProjectionV2`と`legacy-fixed-row-snapshot` initialで、旧revision、`status='expired'`、旧`updatedAt`の6桁、旧`completedAt`のNULLまたは6桁を保持する。第二factは完全`M1LegacySessionLifecycleFactV2`をcauseにするmutationで、`priorMaterializationFactId=第一fact.id`、`priorRevision=第一fact.resultingRevision=old.revision`、`resultingRevision=old.revision+1`を満たし、`legacyTerminalAt=第一fact.projection.completedAt ?? 第一fact.projection.updatedAt`へexact一致する。expired projectionはmaterialization history専用で`LocalSessionCurrentMaterializationSourceV2`、SessionFact、owned currentへ露出しない。completedのcurrent projection/materialization/portable restoreは`updatedAt=migrationRecordedAt`の`IsoUtcTimestamp` 3桁と`completedAt=legacyTerminalAt`の`LegacyStoredTimestampV1` 6桁を同時に持つmixed branch、invalidatedはupdated 3桁/completed null branchである。legacy creation provenanceを保つ通常post-M1 currentは明示modern temporal branchで3桁current snapshotを持つ。lifecycleは`PortableSessionLifecycleFactV2`、server-changeは実在`LearningServerChangeV2.kind='session.item-invalidated'`の完全payload/nested factだけをcauseにでき、三lifecycle種をserver-changeに偽装しない。materialization factはlocal、bootstrap `session-lifecycle` partition、portable export、restore source identity `session-current-materialization`へlosslessに含め、M1 completed/invalidated restoreは二factを保持した`LegacyBoundPostM1CurrentMaterializationSourceV2`のportable fact cause chainへexactに再結合する。`snapshotReceivedAt`はsource受信時刻ではなくbootstrap snapshot取得時のDB clockを一度だけmillisecondへ切り詰めた全branch共通`IsoUtcTimestamp`である。transport受信時刻はlegacy sync=6桁、legacy direct=null、restore=3桁を保持し、`snapshotReceivedAt`との同値化・精度変換を禁止する。別sessionのfact/session/creation source/current source/materialization factを同数swapする、M1 pairの片側を欠落/余剰化する、prior ID/revisionやbinding/count/time/hashだけを差し替えるrowをstrict decoder、DB staging CHECK、partition hash検証でrejectし、canonical factからderived session/sourceをexact再構築できない場合はbootstrap全体をcommitしない。
 
 generation discovery RPCはactive JWTのowner本人へ現在整数だけを返し、他の本人dataを返しません。beginはそのgenerationをshared user lock下で再検証します。profile/selection-bases/drafts/session/history/bookmark/note/issueのscope keyはliteral `global`だけ、catalog/projectionはheader登録済みscope keyだけを許可します。`selection-bases/global`はsnapshot上限時点でserverに存在する本人の全basisを、未consume・consume済み・discard済みの別なくstrict `BootstrapSelectionBasisRowV2`で返します。各itemはfreeze時点で配信可能なら`contentAvailability='available'`と回答前safe content、global statusがsuspendedなら`suspended-tombstone`、personal acceptanceがrevokedなら`acceptance-revoked-tombstone`とし、両tombstone branchは`content=null`です。acceptance-revoked branchのacceptance ID、revocation ID/timeはbasisがpinしたacceptanceとappend-only revocation factにexact一致させます。`BootstrapSessionRecordV2.session.items`も同じavailable、suspended tombstone、acceptance-revoked tombstoneのstrict unionとし、両tombstone branchは`content=null`です。正答、総合解説、choice解説、feedbackは全branchで禁止します。portable exportは別の`PortableSelectionBasisFactV2`だけを使用し、bootstrap rowやsafe contentを流用しません。各sessionの`selectionBasisId`はこのpartitionのexact一件かnullへ結合し、別generation・別owner・欠損basisを拒否します。historyはselected choiceと実効結果・訂正/無効化・result revisionを含みますが、正答集合・解説を含めずfeedback RPCで後取得します。`BootstrapSessionRecordV2`はowned pre-answer sessionにcanonical revision/update time、snapshot受信時刻、immutable `creationSource`と`SessionCurrentProjectionV2`付き`currentMaterializationSource`をlosslessに付与します。通常`sync-event/server-change` branchの`sourceDataGeneration`はpage/sessionのcurrent generationとexact一致します。restore直後でsource event/factを旧generation archiveからmaterializeしたrowだけは`restore-materialization` branchとし、source/target generation、source event-or-fact ID/hash、restore job、materialization link ID/hashをexact保持し、`targetDataGeneration=page.dataGeneration=session.dataGeneration`、source identity/linkはrestore archive・link行と一致させます。`canonicalRevision=session.revision`である。`snapshotReceivedAt`はbootstrap snapshot取得DB clockの3桁値で全branch共通とし、sourceの`receivedAt`から独立させる。source receivedはmodern sync/server-change=3桁、legacy sync=6桁、legacy direct=null、restore=3桁で、restore branchだけ`receivedAt=materializedAt`です。command sourceはtransport parserの`LocalRemoteSourceMetadataV2`へ偽装せず、対応する`LocalCommandReceiptV2`として別rootへ保存します。
 
@@ -8270,7 +8336,7 @@ interface DisasterRecoveryBackupManifestV2 extends DeletionPolicyBindingV2 {
  * DB/Auth/Storageの一時失敗は同じdeletion job/operation IDで再試行し、全scope完了後だけappendする。 */
 ```
 
-`RestoreDryRunCountsV2.sessionCurrentMaterializations`はportable payloadの`sessionCurrentMaterializations.length`と、`sourceIdentitySets.portableFactIdentitiesByKind`中の`factKind='session-current-materialization'`のcountへexact一致する。dry-runとfinalizeは三者を別々に再計算し、同数のfact ID/hash、kind、causeを差し替えても拒否する。
+`RestoreDryRunCountsV2.sessionCurrentMaterializations`はportable payloadの`sessionCurrentMaterializations.length`と、`sourceIdentitySets.portableFactIdentitiesByKind`中の`factKind='session-current-materialization'`のcountへexact一致する。M1 expired sessionはfixed-row initialとlifecycle mutationを別identityの二件として数え、payload ordinal、第一fact ID/hash、mutationのprior fact ID/revision、projection/cause hashをpair単位で再計算する。dry-runとfinalizeは三者を別々に再計算し、pair片側の欠落・余剰、同数のfact ID/hash、kind、cause、prior参照を差し替えても拒否する。
 
 `RestoreSourceIdentityArtifactV2.actorPrincipalSnapshotDigests`と`actorExportPseudonyms`はactor-bearing portable branchの参照集合だけから導出する。payload内にlegacy invalidationだけが存在しruntime actor-bearing factが0件なら両集合は`values=[]`, `count=0`, `setHash=SHA-256(JCS([]))`であり、actor map、actor child row、actor materialization linkもexact 0でなければならない。legacy invalidation件数をportable fact kindのcountへは含めるがactor countへは加えない。
 

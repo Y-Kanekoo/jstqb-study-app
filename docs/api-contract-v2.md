@@ -6,13 +6,25 @@
 
 ```ts
 type UUID = string;
-type IsoUtcTimestamp = string;
+declare const isoUtcTimestampBrandV2: unique symbol;
+declare const legacyStoredTimestampBrandV1: unique symbol;
+// decoderだけが発行するopaque brand。modern 3桁とfixed-base legacy 6桁は
+// wireが共にstringでも相互代入できない。
+type IsoUtcTimestamp = string & { readonly [isoUtcTimestampBrandV2]: 'iso-utc-millisecond.v2' };
+type LegacyStoredTimestampV1 = string & { readonly [legacyStoredTimestampBrandV1]: 'legacy-stored-microsecond.v1' };
 type QuestionId = string;
 type QuestionVersionId = string;
 type ChoiceId = string;
 type DataGeneration = number;
 type ContentChannel = 'public' | 'personal_preview';
 type ContentAssurance = 'published' | 'owner_preview' | 'legacy_compatibility';
+type LegacyCompatibilityChannelV1 = 'owned_existing_session_only';
+type LegacyCompatibilityErrorCodeV1 =
+  | 'INVALID_LEGACY_ID_SEGMENT'
+  | 'INVALID_LEGACY_CONTENT_REFERENCE'
+  | 'LEGACY_COMPATIBILITY_NOT_AVAILABLE'
+  | 'LEGACY_COMPATIBILITY_NEW_SESSION_FORBIDDEN'
+  | 'LEGACY_COMPATIBILITY_INTEGRITY_FAILURE';
 type ExamPolicy = 'verified_only' | 'allow_offline_reference';
 type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
 type Sha256HexV1 = string;
@@ -53,6 +65,7 @@ type SessionLifecycleReasonCodeV2 =
   | 'user_abandoned'
   | 'question_suspended'
   | 'acceptance_revoked'
+  | 'legacy_expired_non_resumable'
   | 'operation_invalidated';
 
 // 正本は content-blueprint-v1.md。API、DB、private runnerは同じ生成型とregistry digestを使う。
@@ -128,13 +141,13 @@ type ClientSyncKind = Exclude<LearningSyncKind, 'session.submitted'>;
 - `Sha256HexV1`はstrict schemaで`^[0-9a-f]{64}$`、`PositiveSafeIntegerV1`は`Number.isSafeInteger(value) && value > 0`、`NonNegativeSafeIntegerV1`は`Number.isSafeInteger(value) && value >= 0`を満たす値だけをbrand化する。無検証castを禁止する。
 - `Base64Url32BytesV1`と`Base64Url64BytesV1`はbase64url no-paddingをdecodeしてexact 32/64 bytes、canonical再encode一致を要求する。
 - UUIDはlowercase canonical形式とする。
-- `QuestionVersionId`はDBのlowercase canonical UUIDだけを受理する。`QuestionId`と`ChoiceId`はcontent stable IDであり、version row lockのsort keyへ使用しない。
-- timestampはUTC millisecond固定の`YYYY-MM-DDTHH:mm:ss.SSSZ`だけを受理する。
+- `QuestionVersionId`はDBのlowercase canonical UUIDだけを受理する。M1移行ではUUIDv5 DNS namespace `6ba7b810-9dad-11d1-80b4-00c04fd430c8`とUTF-8 literal name `jstqb-study-app/question-version/v1/<certificationCode>/<syllabusVersion>/<questionStableId>/<versionStableKey>`を使う。4可変segmentを連結前に各々`^[A-Za-z0-9._:-]+$`でfull-matchし、空、slash/backslash、空白、非ASCII、trim/case fold/Unicode正規化を拒否する。goldenは`JSTQB-FL/2023V4.0.J02/fl-001/fl-001-v1 -> 5d34f6e0-fa36-523a-8f68-0fc254997316`、`JSTQB-FL/2023V4.0.J02/fl-018/fl-018-v1 -> 40792f0d-bf60-52eb-b4bf-83be7de03592`である。4 segmentそれぞれの`''|'x/y'|'x\\y'|' x'|'x '|'ｘ'`は`INVALID_LEGACY_ID_SEGMENT`、namespace/name/order/末尾改行/UUID version差はgolden mismatchとする。legacy adapterだけが`(questionId,versionStableKey)`をexact一件のUUIDへ解決でき、v2 request/response、lock sort、hashはtext version IDを受理しない。`QuestionId`と`ChoiceId`はtext content stable IDのまま保持し、version row lockのsort keyへ使用しない。
+- `IsoUtcTimestamp`（modern）と`LegacyStoredTimestampV1`はdecoderだけが発行する相異なる`unique symbol` opaque brandであり、無検証cast、stringからの直接代入、相互代入を禁止する。modern decoderはUTC millisecond固定の`YYYY-MM-DDTHH:mm:ss.SSSZ`だけを、legacy decoderはfixed-base PostgreSQL `timestamptz`の保存instantを元入力文字列ではなくlossless canonical wireへ整形したUTC・大文字`Z`・常に6桁の`YYYY-MM-DDTHH:mm:ss.SSSSSSZ`だけを受理する。両decoderはregexだけで終えずcalendar/leap year、UTC round-tripを検証する。legacyはDB instantからUTC 6桁へformatし、同wireをDBへparseしたinstantがexact一致しなければならない。offset、7桁以上/3桁/5桁、rounding、truncationを拒否する。DB CHECK/strict decoderに加え、compiler fixtureでmodern→legacy、legacy→modernがともに非代入可能であることを固定し、同一field/unionへの混在を許可しない。
 - canonical bytesはRFC 8785 JCSのUTF-8とし、Unicode正規化を行わず入力code pointを保持する。
 - `undefined`、`NaN`、`Infinity`、浮動小数をDTOに含めない。
 - numberはJavaScript safe integer範囲に限定する。
 - objectの未知keyと文字長超過は全strict schemaで拒否する。配列の重複拒否は、schemaで`set-like`または`uniqueBy(registry key/tuple)`と明示した配列だけへ適用し、各annotationが指定する正規keyで判定する。ordered tuple、順序に意味があるlist、multiset、count tupleには包括的な重複除去を適用せず、同値要素を保持する。たとえば公式K配分`[8,24,8]`は有効なordered count tupleであり、二つの`8`を重複エラーにしない。validatorは各生成schemaのunique annotation/registryを正本とし、annotationのない配列へ推測でunique制約を足さない。共通fixtureは、unique指定配列の同一key二件を拒否するnegative、`[8,24,8]`と重複を含む許可済みordered/multisetをその順序・件数のまま受理するpositive、ならびに各schema固有のtuple長・位置・count制約違反を拒否するnegativeを分離する。
-- `contentChannel='personal_preview'`は`contentAssurance='owner_preview'`だけ、通常の`public`は`published`だけを許可する。`legacy_compatibility`はM1で既存18問sessionへ付与したowned hydration専用で、新規catalog/basis/session/exam/preview、正式SRS・分析へ使用しない。
+- `contentChannel='personal_preview'`は`contentAssurance='owner_preview'`だけ、通常の`public`は`published`だけを許可する。`legacy_compatibility`は`contentChannel=null AND legacyCompatibilityChannel='owned_existing_session_only'`のM1既存session hydration専用branchだけに許可し、新規catalog/basis/session/exam/preview、正式SRS・分析へ使用しない。
 
 ## 2. 同期Envelope
 
@@ -246,8 +259,8 @@ interface LegacyCanonicalSyncEventBaseV1 {
   readonly sequence: number;
   readonly eventId: UUID;
   readonly entityId: string;
-  readonly occurredAt: IsoUtcTimestamp;
-  readonly receivedAt: IsoUtcTimestamp;
+  readonly occurredAt: LegacyStoredTimestampV1;
+  readonly receivedAt: LegacyStoredTimestampV1;
 }
 
 type LegacyCanonicalSyncEventV1 =
@@ -255,10 +268,10 @@ type LegacyCanonicalSyncEventV1 =
       readonly kind: 'session.created';
       readonly payload: {
         readonly sessionId: UUID;
-        readonly mode: 'chapter' | 'random' | 'wrong' | 'review';
+        readonly mode: 'chapter' | 'random' | 'wrong' | 'review' | 'exam';
         readonly title: string;
         readonly questionIds: readonly QuestionId[];
-        readonly createdAt: IsoUtcTimestamp;
+        readonly createdAt: LegacyStoredTimestampV1;
       };
     })
   | (LegacyCanonicalSyncEventBaseV1 & {
@@ -277,7 +290,7 @@ type LegacyCanonicalSyncEventV1 =
         readonly questionVersionId: QuestionVersionId;
         readonly selectedChoiceIds: readonly ChoiceId[];
         readonly isCorrect: boolean;
-        readonly answeredAt: IsoUtcTimestamp;
+        readonly answeredAt: LegacyStoredTimestampV1;
       };
     })
   | (LegacyCanonicalSyncEventBaseV1 & {
@@ -293,21 +306,180 @@ type LegacyCanonicalSyncEventV1 =
         readonly questionId: QuestionId;
         readonly enabled: boolean;
       };
-    })
-  | (LegacyCanonicalSyncEventBaseV1 & {
-      readonly kind: 'session.submitted';
-      readonly payload: {
-        readonly sessionId: UUID;
-        readonly status: 'completed';
-        readonly answeredQuestionIds: readonly QuestionId[];
-        readonly submittedAt: IsoUtcTimestamp;
-      };
     });
 
 type PullLearningEventDto =
   | AnyCanonicalSyncEventV2
   | LegacyCanonicalSyncEventV1;
 ```
+
+fixed-base pullのlegacy branchは`session.created`、`draft.saved`、`answer.submitted`、`session.advanced`、`bookmark.changed`の5 kindだけである。outer `occurredAt/receivedAt`とDB保存由来payload timestamp（session作成の`createdAt`、回答の`answeredAt`を含む）は全て`LegacyStoredTimestampV1`のUTC 6桁であり、modern canonical event/terminalの3桁値と同一field・同一hash preimageへ混在させない。unknown key、6 kind目の`session.submitted`、3桁/offset/rounding/truncationをrejectする。
+
+M1の旧direct INSERT requestは次のstrict unionを、DB再採点・canonical payload生成より前にfingerprint化します。
+
+```ts
+type M1LegacySyncEventRequestV1 =
+  | {
+      readonly eventId: UUID;
+      readonly userId: UUID;
+      readonly kind: 'session.created';
+      readonly entityId: string;
+      readonly occurredAt: IsoUtcTimestamp;
+      readonly payload: {
+        readonly sessionId: UUID;
+        readonly mode: 'chapter' | 'random' | 'wrong' | 'review' | 'exam';
+        readonly title: string;
+        readonly questionIds: readonly QuestionId[];
+        readonly createdAt: IsoUtcTimestamp;
+      };
+    }
+  | {
+      readonly eventId: UUID;
+      readonly userId: UUID;
+      readonly kind: 'draft.saved';
+      readonly entityId: string;
+      readonly occurredAt: IsoUtcTimestamp;
+      readonly payload: {
+        readonly sessionId: UUID;
+        readonly questionId: QuestionId;
+        readonly selectedChoiceIds: readonly ChoiceId[];
+      };
+    }
+  | {
+      readonly eventId: UUID;
+      readonly userId: UUID;
+      readonly kind: 'answer.submitted';
+      readonly entityId: string;
+      readonly occurredAt: IsoUtcTimestamp;
+      readonly payload: {
+        readonly sessionId: UUID;
+        readonly questionId: QuestionId;
+        readonly questionVersionId: string;
+        readonly selectedChoiceIds: readonly ChoiceId[];
+        readonly isCorrect: boolean;
+        readonly answeredAt: IsoUtcTimestamp;
+      };
+    }
+  | {
+      readonly eventId: UUID;
+      readonly userId: UUID;
+      readonly kind: 'session.advanced';
+      readonly entityId: string;
+      readonly occurredAt: IsoUtcTimestamp;
+      readonly payload: {
+        readonly sessionId: UUID;
+        readonly questionId: QuestionId;
+      };
+    }
+  | {
+      readonly eventId: UUID;
+      readonly userId: UUID;
+      readonly kind: 'bookmark.changed';
+      readonly entityId: string;
+      readonly occurredAt: IsoUtcTimestamp;
+      readonly payload: {
+        readonly questionId: QuestionId;
+        readonly enabled: boolean;
+      };
+    };
+
+// fixed-baseに実在するtrigger後payload。timestampはDBに保存されたinstantを6桁で
+// canonical化した値であり、元requestのmillisecond文字列を再利用しない。
+// answer.submittedはtriggerがDB採点済みisCorrectを書き戻しているため必須である。
+type M1LegacyStoredPayloadAfterInitialTriggerV1 =
+  | { readonly kind: 'session.created'; readonly payloadAfterInitialTrigger: Omit<Extract<M1LegacySyncEventRequestV1, { readonly kind: 'session.created' }>['payload'], 'createdAt'> & { readonly createdAt: LegacyStoredTimestampV1 } }
+  | { readonly kind: 'draft.saved'; readonly payloadAfterInitialTrigger: Extract<M1LegacySyncEventRequestV1, { readonly kind: 'draft.saved' }>['payload'] }
+  | { readonly kind: 'answer.submitted'; readonly payloadAfterInitialTrigger: Omit<Extract<M1LegacySyncEventRequestV1, { readonly kind: 'answer.submitted' }>['payload'], 'answeredAt'> & { readonly answeredAt: LegacyStoredTimestampV1 } }
+  | { readonly kind: 'session.advanced'; readonly payloadAfterInitialTrigger: Extract<M1LegacySyncEventRequestV1, { readonly kind: 'session.advanced' }>['payload'] }
+  | { readonly kind: 'bookmark.changed'; readonly payloadAfterInitialTrigger: Extract<M1LegacySyncEventRequestV1, { readonly kind: 'bookmark.changed' }>['payload'] };
+
+// incoming再送の比較だけに用いる、受信時刻を含めない復元可能なidentity。
+// answer.submittedのclient supplied isCorrectはfixed-baseから復元不能なので除外する。
+type M1LegacyRecoverablePayloadV1 =
+  | Exclude<M1LegacySyncEventRequestV1, { readonly kind: 'answer.submitted' }>
+  | (Omit<
+      Extract<M1LegacySyncEventRequestV1, { readonly kind: 'answer.submitted' }>,
+      'payload'
+    > & {
+      readonly payload: Omit<
+        Extract<
+          M1LegacySyncEventRequestV1,
+          { readonly kind: 'answer.submitted' }
+        >['payload'],
+        'isCorrect'
+      >;
+    });
+
+// historical replay identityもfixed-base保存値から作るため、時刻は6桁canonicalである。
+type M1LegacyStoredRecoverablePayloadV1 =
+  | { readonly kind: 'session.created'; readonly recoverablePayload: Omit<Extract<M1LegacySyncEventRequestV1, { readonly kind: 'session.created' }>['payload'], 'createdAt'> & { readonly createdAt: LegacyStoredTimestampV1 } }
+  | { readonly kind: 'draft.saved'; readonly recoverablePayload: Extract<M1LegacySyncEventRequestV1, { readonly kind: 'draft.saved' }>['payload'] }
+  | { readonly kind: 'answer.submitted'; readonly recoverablePayload: Omit<Extract<M1LegacySyncEventRequestV1, { readonly kind: 'answer.submitted' }>['payload'], 'isCorrect' | 'answeredAt'> & { readonly answeredAt: LegacyStoredTimestampV1 } }
+  | { readonly kind: 'session.advanced'; readonly recoverablePayload: Extract<M1LegacySyncEventRequestV1, { readonly kind: 'session.advanced' }>['payload'] }
+  | { readonly kind: 'bookmark.changed'; readonly recoverablePayload: Extract<M1LegacySyncEventRequestV1, { readonly kind: 'bookmark.changed' }>['payload'] };
+
+interface LegacyHistoricalCanonicalSourceBaseV1 {
+  readonly schemaVersion: 'legacy-historical-canonical-source.v1';
+  readonly eventId: UUID;
+  readonly userId: UUID;
+  readonly entityId: string;
+  readonly occurredAt: LegacyStoredTimestampV1;
+  readonly receivedAt: LegacyStoredTimestampV1;
+}
+
+type LegacyHistoricalCanonicalSourceV1 = LegacyHistoricalCanonicalSourceBaseV1 & (
+  | Extract<M1LegacyStoredPayloadAfterInitialTriggerV1, { readonly kind: 'session.created' }>
+  | Extract<M1LegacyStoredPayloadAfterInitialTriggerV1, { readonly kind: 'draft.saved' }>
+  | Extract<M1LegacyStoredPayloadAfterInitialTriggerV1, { readonly kind: 'answer.submitted' }>
+  | Extract<M1LegacyStoredPayloadAfterInitialTriggerV1, { readonly kind: 'session.advanced' }>
+  | Extract<M1LegacyStoredPayloadAfterInitialTriggerV1, { readonly kind: 'bookmark.changed' }>
+);
+
+interface LegacyHistoricalReplayIdentityBaseV1 {
+  readonly eventId: UUID;
+  readonly userId: UUID;
+  readonly entityId: string;
+  readonly occurredAt: LegacyStoredTimestampV1;
+}
+
+type LegacyHistoricalReplayIdentityV1 = LegacyHistoricalReplayIdentityBaseV1 & (
+  | Extract<M1LegacyStoredRecoverablePayloadV1, { readonly kind: 'session.created' }>
+  | Extract<M1LegacyStoredRecoverablePayloadV1, { readonly kind: 'draft.saved' }>
+  | Extract<M1LegacyStoredRecoverablePayloadV1, { readonly kind: 'answer.submitted' }>
+  | Extract<M1LegacyStoredRecoverablePayloadV1, { readonly kind: 'session.advanced' }>
+  | Extract<M1LegacyStoredRecoverablePayloadV1, { readonly kind: 'bookmark.changed' }>
+);
+
+type M1LegacySyncEventFingerprintV1 =
+  | {
+      readonly schemaVersion: 'm1-legacy-sync-event-fingerprint.v1';
+      readonly provenance: 'historical_reconstructed';
+      readonly legacyHistoricalCanonicalSource: LegacyHistoricalCanonicalSourceV1;
+      readonly legacySourceFactHash: Sha256HexV1;
+      readonly legacyHistoricalReplayIdentity: LegacyHistoricalReplayIdentityV1;
+      readonly replayIdentityHash: Sha256HexV1;
+      readonly rawRequest: null;
+      readonly rawRequestHash: null;
+    }
+  | {
+      readonly schemaVersion: 'm1-legacy-sync-event-fingerprint.v1';
+      readonly provenance: 'post_m1_raw';
+      readonly legacyHistoricalReplayIdentity: null;
+      readonly replayIdentityHash: null;
+      readonly legacyHistoricalCanonicalSource: null;
+      readonly legacySourceFactHash: null;
+      readonly rawRequest: M1LegacySyncEventRequestV1;
+      readonly rawRequestHash: Sha256HexV1;
+    };
+```
+
+`LegacyHistoricalCanonicalSourceV1`の`legacySourceFactHash` preimageは`schemaVersion,eventId,userId,kind,entityId,occurredAt,receivedAt,payloadAfterInitialTrigger`の八keyをexact全件含むRFC 8785 JCS objectです。`occurredAt`、`receivedAt`、payload内のDB保存timestampはすべて`LegacyStoredTimestampV1`の6桁wireであり、`payloadAfterInitialTrigger`はfixed-base `sync_events.payload`のactual stored strict key集合です。`answer.submitted={sessionId,questionId,questionVersionId,selectedChoiceIds,isCorrect,answeredAt}`（DB採点済み`isCorrect`必須）です。`LegacyHistoricalReplayIdentityV1`は別objectとして`eventId,userId,kind,entityId,occurredAt,recoverablePayload`だけをJCS化し、`receivedAt`をidentity比較へ入れません。answerの`recoverablePayload`だけは`isCorrect`を除外します。sourceとidentityのunknown key、null、欠落、kind不整合はrollbackします。incomingの3桁request時刻はDB保存instantへ変換して6桁canonical化した後、DB再採点済みstored sourceとreplay identityを比較します。
+
+fingerprintは上記strict discriminatorだけです。`legacySourceFactHash=SHA-256(RFC 8785 JCS(strict LegacyHistoricalCanonicalSourceV1))`、`replayIdentityHash=SHA-256(RFC 8785 JCS(strict LegacyHistoricalReplayIdentityV1))`、`rawRequestHash=SHA-256(RFC 8785 JCS(strict rawRequest))`です。M1以前の保存済みrowは`historical_reconstructed`とし、fixed baseのactual stored `event_id,user_id,kind,entity_id,occurred_at,received_at,payload`からsource/hashとreplay identity/hashを別々に保存します。fixed baseにv2 `canonical_hash`またはrequest rawは存在しないため、v2 `canonicalHash`、`reconstructedFromCanonicalHash`、raw request/client `isCorrect`を補造・保存・比較したと主張しません。incoming replayは同じDB answer keyで再採点し、既存sourceのDB採点済み`isCorrect`をexact照合してから、同owner/event ID/replay identity/hash exactだけを一行no-opにします。既存`receivedAt`/source factは保持し、incoming receivedAtはidentity比較外です。kind/entityId/occurredAt/selected choicesその他recoverable payload差は`IDEMPOTENCY_KEY_REUSED`です。
+
+M1以後の新規旧client INSERTは`post_m1_raw`とし、再採点前のstrict request全体とraw hashを保存します。replayは同owner・event ID・raw request全field/hash exact、したがってclient `isCorrect`もexact一致した場合だけno-opです。両branchともevent IDのtransaction advisory lock後に比較し、cross-user同IDは存在非開示拒否です。固定baseのglobal `UNIQUE(event_id)`はlegacy sync cutoverの最後まで保持し、追加の`UNIQUE(user_id,event_id)`で置換しません。旧clientの`onConflict:'event_id',ignoreDuplicates:true`もbefore-insert trigger/constraintのbranch別比較を迂回できません。global uniqueのcutover後変更はM2の別schema設計・前後試験対象です。
+
+M1 migration preflightは、各staged itemのanswer keyがexact一件、全correct choiceが同じquestion version所属、correct件数が`requiredChoiceCount`と一致し、DB再採点可能であることを`active|completed|expired`全statusの構造条件にします。欠落・複数・別版choice・件数不一致・再採点不能は全てmigration rollbackです。これらをcoverage不足へ変換せず、coverage不足は構造合格後のanswered set不足または有効attempt不足だけを意味します。
 
 初回呼出時に本人streamの`max(sequence)`を`snapshotUpperBound`へ固定し、`after < sequence <= snapshotUpperBound`をsequence昇順で返します。空streamは`snapshotUpperBound = p_after_sequence`、`nextCursor = p_after_sequence`、`hasMore = false`へ固定します。limitは1～500です。負数、`after > snapshotUpperBound`、現在stream上限より未来のcursor、継続pageでのupper bound差替えを拒否します。requestのgenerationが現在値と異なる場合は`STALE_DATA_GENERATION`を返し、端末は旧cursor/outboxを自動rebaseせず隔離してfull bootstrapします。page全件のstrict schema/semantic検証、local materialize、outbox ACK、cursor更新を一local transactionで行い、不正一件なら全て不変にします。v2 clientは本人限定allowlist RPCだけを使用します。旧client互換期間だけ既存RLSによる本人streamの直接SELECTを残し、最低対応version未満の利用が0でrollback windowも終了したcutover migrationで撤回します。v1履歴は上記read-only unionからmaterializeだけを行い、ACK、新outbox、server mutationへ使用しません。
 
@@ -385,43 +557,42 @@ type SessionCreatedRequest =
   | NormalSessionCreatedRequest
   | ExamSessionCreatedRequest;
 
-interface SessionCreatedCanonical {
+interface SessionCreatedCanonicalBase {
   readonly sessionId: UUID;
-  readonly mode: LearningMode;
   readonly title: string;
   readonly certificationCode: string;
   readonly syllabusVersion: string;
-  readonly contentChannel: ContentChannel;
-  readonly contentAssurance: ContentAssurance;
   readonly dataGeneration: DataGeneration;
-  readonly previewAcceptanceId: UUID | null;
-  readonly previewBundleId: string | null;
-  readonly previewCanonicalHash: Sha256HexV1 | null;
-  readonly previewManifestHash: Sha256HexV1 | null;
-  readonly previewSelectionRevision: number | null;
-  readonly examPolicy: ExamPolicy | null;
-  readonly catalogRevision: number;
-  readonly selectionBasisId: UUID | null;
   readonly requestedQuestionCount: 10 | 20 | 30 | 40;
   readonly actualQuestionCount: number;
   readonly answerableQuestionCount: number;
-  readonly selectionSpec: NormalSelectionSpecV2 | null;
-  readonly examBlueprintVersion: string | null;
-  readonly examBlueprintHash: Sha256HexV1 | null;
-  readonly items: readonly {
-    readonly questionId: QuestionId;
-    readonly questionVersionId: QuestionVersionId;
-    readonly ordinal: number;
-    readonly choiceOrder: readonly ChoiceId[];
-    readonly status: 'active' | 'invalidated';
-    readonly invalidatedReason: 'question_suspended' | 'acceptance_revoked' | null;
-  }[];
+  readonly items: readonly (SessionCreatedCanonicalItemBaseV2 & SessionItemStatusV2)[];
   readonly createdAt: IsoUtcTimestamp;
   readonly startedAt: IsoUtcTimestamp;
   readonly durationMinutes: number | null;
   readonly expiresAt: IsoUtcTimestamp | null;
   readonly revision: number;
 }
+
+// server itemは全経路で同じ判別unionを使う。status/reasonを独立nullable fieldへ戻さない。
+type SessionItemStatusV2 =
+  | { readonly status: 'active'; readonly invalidatedReason: null }
+  | {
+      readonly status: 'invalidated';
+      readonly invalidatedReason: 'question_suspended' | 'acceptance_revoked';
+    };
+
+interface SessionCreatedCanonicalItemBaseV2 {
+    readonly questionId: QuestionId;
+    readonly questionVersionId: QuestionVersionId;
+    readonly ordinal: number;
+    readonly choiceOrder: readonly ChoiceId[];
+}
+
+// modern creationはmode、content binding、operation bindingを一つの判別unionとして持つ。
+// legacy decoderはこのcanonical型を生成せず、LegacySessionOperationBindingV2だけを使う。
+type SessionCreatedCanonical = SessionCreatedCanonicalBase &
+  ModernSessionContentBindingV2 & ModernSessionOperationBindingV2;
 ```
 
 ```sql
@@ -1239,44 +1410,170 @@ returns jsonb
 ```
 
 ```ts
-interface OwnedSessionSummaryDto {
+type ContentBindingV2 =
+  | {
+      readonly contentChannel: 'public';
+      readonly legacyCompatibilityChannel: null;
+      readonly contentAssurance: 'published';
+      readonly previewAcceptanceId: null;
+      readonly previewBundleId: null;
+      readonly previewCanonicalHash: null;
+      readonly previewManifestHash: null;
+      readonly previewSelectionRevision: null;
+    }
+  | {
+      readonly contentChannel: 'personal_preview';
+      readonly legacyCompatibilityChannel: null;
+      readonly contentAssurance: 'owner_preview';
+      readonly previewAcceptanceId: UUID;
+      readonly previewBundleId: string;
+      readonly previewCanonicalHash: Sha256HexV1;
+      readonly previewManifestHash: Sha256HexV1;
+      readonly previewSelectionRevision: PositiveSafeIntegerV1;
+    }
+  | {
+      readonly contentChannel: null;
+      readonly legacyCompatibilityChannel: 'owned_existing_session_only';
+      readonly contentAssurance: 'legacy_compatibility';
+      readonly previewAcceptanceId: null;
+      readonly previewBundleId: null;
+      readonly previewCanonicalHash: null;
+      readonly previewManifestHash: null;
+      readonly previewSelectionRevision: null;
+    };
+
+// 全session/attempt/local/portable/bootstrap DTOはこの三branchだけを再利用する。
+// publicはpublishedかつpreview全null、personal_previewはowner_previewかつpreview全nonnull、
+// legacyは専用channel/assuranceかつpreview全null。別のcontent binding unionを定義しない。
+
+type ModernSessionOperationBindingV2 =
+  | {
+      readonly mode: Exclude<LearningMode, 'exam'>;
+      readonly examPolicy: null;
+      readonly selectionBasisId: UUID;
+      readonly catalogRevision: NonNegativeSafeIntegerV1;
+      readonly selectionSpec: NormalSelectionSpecV2;
+      readonly examBlueprintVersion: null;
+      readonly examBlueprintHash: null;
+    }
+  | {
+      readonly mode: 'exam';
+      readonly examPolicy: ExamPolicy;
+      readonly selectionBasisId: UUID;
+      readonly catalogRevision: NonNegativeSafeIntegerV1;
+      readonly selectionSpec: null;
+      readonly examBlueprintVersion: 'exam-blueprint.v1';
+      readonly examBlueprintHash: Sha256HexV1;
+    };
+
+interface LegacySessionOperationBindingV2 {
+  readonly examPolicy: null;
+  readonly selectionBasisId: null;
+  readonly catalogRevision: 0;
+  readonly selectionSpec: null;
+  readonly examBlueprintVersion: null;
+  readonly examBlueprintHash: null;
+}
+
+type SessionContentBindingV2 =
+  | (Extract<ContentBindingV2, { readonly contentChannel: 'public' }> &
+      ModernSessionOperationBindingV2)
+  | (Extract<ContentBindingV2, { readonly contentChannel: 'personal_preview' }> &
+      ModernSessionOperationBindingV2)
+  | (Extract<ContentBindingV2, { readonly contentChannel: null }> &
+      LegacySessionOperationBindingV2);
+
+type ModernSessionContentBindingV2 = Exclude<
+  SessionContentBindingV2,
+  { readonly contentChannel: null }
+>;
+type LegacySessionContentBindingV2 = Extract<
+  SessionContentBindingV2,
+  { readonly contentChannel: null }
+>;
+
+type SessionContentAndQuestionCountsV2 =
+  | (ModernSessionContentBindingV2 & {
+      readonly requestedQuestionCount: 10 | 20 | 30 | 40;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    })
+  | (LegacySessionContentBindingV2 & {
+      readonly requestedQuestionCount: null;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    });
+
+interface OwnedSessionSummaryBaseDto {
   readonly sessionId: UUID;
   readonly mode: LearningMode;
   readonly title: string;
-  readonly contentChannel: ContentChannel;
-  readonly contentAssurance: ContentAssurance;
-  readonly previewAcceptanceId: UUID | null;
-  readonly previewBundleId: string | null;
-  readonly previewCanonicalHash: Sha256HexV1 | null;
-  readonly previewManifestHash: Sha256HexV1 | null;
-  readonly previewSelectionRevision: number | null;
-  readonly examPolicy: ExamPolicy | null;
-  readonly selectionBasisId: UUID | null;
-  readonly catalogRevision: number;
-  readonly selectionSpec: NormalSelectionSpecV2 | null;
-  readonly examBlueprintVersion: string | null;
-  readonly examBlueprintHash: Sha256HexV1 | null;
   readonly status: SessionStatus;
-  readonly questionCount: number;
   readonly answeredCount: number;
   readonly currentIndex: number;
   readonly currentQuestionId: QuestionId | null;
-  readonly startedAt: IsoUtcTimestamp;
-  readonly updatedAt: IsoUtcTimestamp;
-  readonly expiresAt: IsoUtcTimestamp | null;
-  readonly submittedAt: IsoUtcTimestamp | null;
-  readonly completedAt: IsoUtcTimestamp | null;
 }
+
+type OwnedSessionSummaryDto =
+  | (OwnedSessionSummaryBaseDto & ModernSessionContentBindingV2 & {
+      readonly startedAt: IsoUtcTimestamp;
+      readonly updatedAt: IsoUtcTimestamp;
+      readonly expiresAt: IsoUtcTimestamp | null;
+      readonly submittedAt: IsoUtcTimestamp | null;
+      readonly completedAt: IsoUtcTimestamp | null;
+      readonly requestedQuestionCount: 10 | 20 | 30 | 40;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    })
+  | (OwnedSessionSummaryBaseDto & LegacySessionContentBindingV2 & {
+      readonly startedAt: LegacyStoredTimestampV1;
+      readonly updatedAt: LegacyStoredTimestampV1;
+      readonly expiresAt: null;
+      readonly submittedAt: null;
+      readonly completedAt: LegacyStoredTimestampV1 | null;
+      readonly requestedQuestionCount: null;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    })
+  | (OwnedSessionSummaryBaseDto & LegacySessionContentBindingV2 & {
+      // content/creationはfixed-baseのまま、post-M1 currentだけmodern temporal branchへ移る。
+      readonly startedAt: LegacyStoredTimestampV1;
+      readonly updatedAt: IsoUtcTimestamp;
+      readonly expiresAt: null;
+      readonly submittedAt: null;
+      readonly completedAt: IsoUtcTimestamp | null;
+      readonly requestedQuestionCount: null;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    })
+  | (OwnedSessionSummaryBaseDto & LegacySessionContentBindingV2 & {
+      // M1 expired→completed: updatedはmigration clock 3桁、completedはlegacy terminal 6桁。
+      readonly status: 'completed';
+      readonly startedAt: LegacyStoredTimestampV1;
+      readonly updatedAt: IsoUtcTimestamp;
+      readonly expiresAt: null;
+      readonly submittedAt: null;
+      readonly completedAt: LegacyStoredTimestampV1;
+      readonly requestedQuestionCount: null;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    });
+
+type OwnedSessionCursorV2 =
+  | { readonly branch: 'modern'; readonly updatedAt: IsoUtcTimestamp; readonly sessionId: UUID }
+  | { readonly branch: 'legacy'; readonly updatedAt: LegacyStoredTimestampV1; readonly sessionId: UUID }
+  | { readonly branch: 'legacy-post-m1'; readonly updatedAt: IsoUtcTimestamp; readonly sessionId: UUID };
 
 interface OwnedSessionListResponseV2 {
   readonly contractVersion: 2;
   readonly dataGeneration: DataGeneration;
   readonly items: readonly OwnedSessionSummaryDto[];
-  readonly nextCursor: { readonly updatedAt: IsoUtcTimestamp; readonly sessionId: UUID } | null;
+  readonly nextCursor: OwnedSessionCursorV2 | null;
 }
 ```
 
 sortは`updated_at DESC, id DESC`、limitは1～100です。
+`questionCount` aliasは存在しません。一覧summary、詳細、local session、portable session fact、bootstrap sessionは全て同じ`SessionContentAndQuestionCountsV2`をlosslessに使い、modern/legacyのbindingと三countを別々に組み替えません。M1 completed summary/detailはstarted 6桁・updated 3桁・completed 6桁の専用branch、invalidatedはstarted 6桁・updated 3桁・completed null branchであり、list/detail decoderは各positiveとstatus/time source swap negativeを検証します。
 
 ### 6.2 再開詳細
 
@@ -1286,23 +1583,36 @@ returns jsonb
 ```
 
 ```ts
-interface SessionDraftDto {
+interface ModernSessionDraftDto {
   readonly selectedChoiceIds: readonly ChoiceId[];
   readonly scrollOffset: number;
   readonly revision: number;
   readonly deviceId: string;
   readonly updatedAt: IsoUtcTimestamp;
+  readonly receivedAt: IsoUtcTimestamp;
 }
 
-interface OwnedSessionItemDto {
+interface LegacySessionDraftDto {
+  readonly selectedChoiceIds: readonly ChoiceId[];
+  readonly scrollOffset: null;
+  readonly revision: number;
+  readonly deviceId: string;
+  readonly updatedAt: LegacyStoredTimestampV1;
+  readonly receivedAt: null;
+  readonly questionVersion: LegacyDraftQuestionVersionV2;
+}
+
+type SessionDraftDto = ModernSessionDraftDto | LegacySessionDraftDto;
+
+type OwnedSessionItemDto = OwnedSessionItemBaseDto & SessionItemStatusV2;
+
+interface OwnedSessionItemBaseDto {
   readonly questionId: QuestionId;
   readonly questionVersionId: QuestionVersionId;
   readonly ordinal: number;
   readonly choiceOrder: readonly ChoiceId[];
   readonly answered: boolean;
   readonly reviewMarked: boolean;
-  readonly status: 'active' | 'invalidated';
-  readonly invalidatedReason: 'question_suspended' | 'acceptance_revoked' | null;
   readonly draft: SessionDraftDto | null;
   readonly content: OwnedPinnedContentDto;
 }
@@ -1332,17 +1642,16 @@ type OwnedPinnedContentDto =
       | { readonly selectionType: 'single'; readonly requiredChoiceCount: 1 }
       | { readonly selectionType: 'multiple'; readonly requiredChoiceCount: 2 }
     ))
-  | ({
+  | {
       readonly visibility: 'compatibility-only';
       readonly status: 'compatibility_only';
       readonly certificationCode: string;
       readonly syllabusVersion: string;
+      readonly selectionType: 'single';
+      readonly requiredChoiceCount: 1;
       readonly prompt: string;
       readonly choices: readonly CatalogChoiceDto[];
-    } & (
-      | { readonly selectionType: 'single'; readonly requiredChoiceCount: 1 }
-      | { readonly selectionType: 'multiple'; readonly requiredChoiceCount: 2 }
-    ))
+    }
   | {
       readonly visibility: 'suspended-tombstone';
       readonly status: 'suspended';
@@ -1356,58 +1665,243 @@ type OwnedPinnedContentDto =
       readonly choices: readonly [];
     };
 
-interface OwnedLearningSessionResponseV2 {
+interface OwnedLearningSessionResponseBaseV2 {
   readonly contractVersion: 2;
   readonly dataGeneration: DataGeneration;
   readonly sessionId: UUID;
   readonly mode: LearningMode;
   readonly title: string;
   readonly status: SessionStatus;
-  readonly contentChannel: ContentChannel;
-  readonly contentAssurance: ContentAssurance;
-  readonly previewAcceptanceId: UUID | null;
-  readonly previewBundleId: string | null;
-  readonly previewCanonicalHash: Sha256HexV1 | null;
-  readonly previewManifestHash: Sha256HexV1 | null;
-  readonly previewSelectionRevision: number | null;
-  readonly examPolicy: ExamPolicy | null;
   readonly certificationCode: string;
   readonly syllabusVersion: string;
-  readonly selectionBasisId: UUID | null;
-  readonly catalogRevision: number;
-  readonly selectionSpec: NormalSelectionSpecV2 | null;
-  readonly examBlueprintVersion: string | null;
-  readonly examBlueprintHash: Sha256HexV1 | null;
-  readonly requestedQuestionCount: 10 | 20 | 30 | 40;
-  readonly actualQuestionCount: number;
-  readonly answerableQuestionCount: number;
   readonly currentIndex: number;
-  readonly revision: number;
-  readonly startedAt: IsoUtcTimestamp;
-  readonly expiresAt: IsoUtcTimestamp | null;
-  readonly submittedAt: IsoUtcTimestamp | null;
-  readonly completedAt: IsoUtcTimestamp | null;
+  readonly revision: NonNegativeSafeIntegerV1;
+  // fixed-base text[]の値・順序をそのまま写す。set化・UTF-8 sortは禁止する。
+  readonly questionIds: readonly QuestionId[];
+  readonly answeredQuestionIds: readonly QuestionId[];
   readonly items: readonly OwnedSessionItemDto[];
 }
+
+type OwnedLearningSessionResponseV2 =
+  | (OwnedLearningSessionResponseBaseV2 & ModernSessionContentBindingV2 & {
+      readonly startedAt: IsoUtcTimestamp;
+      readonly updatedAt: IsoUtcTimestamp;
+      readonly expiresAt: IsoUtcTimestamp | null;
+      readonly submittedAt: IsoUtcTimestamp | null;
+      readonly completedAt: IsoUtcTimestamp | null;
+      readonly requestedQuestionCount: 10 | 20 | 30 | 40;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    })
+  | (OwnedLearningSessionResponseBaseV2 & LegacySessionContentBindingV2 & {
+      readonly startedAt: LegacyStoredTimestampV1;
+      readonly updatedAt: LegacyStoredTimestampV1;
+      readonly expiresAt: null;
+      readonly submittedAt: null;
+      readonly completedAt: LegacyStoredTimestampV1 | null;
+      readonly requestedQuestionCount: null;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    })
+  | (OwnedLearningSessionResponseBaseV2 & LegacySessionContentBindingV2 & {
+      // legacy creation/content + modern post-M1 current。startedAtだけはcreation instantを保持する。
+      readonly startedAt: LegacyStoredTimestampV1;
+      readonly updatedAt: IsoUtcTimestamp;
+      readonly expiresAt: null;
+      readonly submittedAt: null;
+      readonly completedAt: IsoUtcTimestamp | null;
+      readonly requestedQuestionCount: null;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    })
+  | (OwnedLearningSessionResponseBaseV2 & LegacySessionContentBindingV2 & {
+      // M1 expired→completedだけは、更新はmigration clock (3桁)、完了はfixed-base terminal (6桁)。
+      readonly status: 'completed';
+      readonly startedAt: LegacyStoredTimestampV1;
+      readonly updatedAt: IsoUtcTimestamp;
+      readonly expiresAt: null;
+      readonly submittedAt: null;
+      readonly completedAt: LegacyStoredTimestampV1;
+      readonly requestedQuestionCount: null;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    })
+  | (OwnedLearningSessionResponseBaseV2 & LegacySessionContentBindingV2 & {
+      // M1 expired→invalidatedはmigration clock 3桁とcompletedAt=nullを固定する。
+      readonly status: 'invalidated';
+      readonly startedAt: LegacyStoredTimestampV1;
+      readonly updatedAt: IsoUtcTimestamp;
+      readonly expiresAt: null;
+      readonly submittedAt: null;
+      readonly completedAt: null;
+      readonly requestedQuestionCount: null;
+      readonly actualQuestionCount: PositiveSafeIntegerV1;
+      readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+    });
 ```
 
 このRPCはowner、資格、syllabus、channel、pin版を検証し、正答・解説を返しません。同じquestionのcurrent版とretired pin版をquestion IDだけで統合しません。owner preview sessionに限り、固定済みreviewing版を再開できます。
 
-`legacy_compatibility`はM1が既存18問sessionを移行した場合の再開専用です。`OwnedPinnedContentDto.visibility='compatibility-only'`として明示し、新規selection basis、session、模試、global catalog、owner preview、正式SRS・分析・500問countへ使用しません。互換sessionの履歴は保持しますが、回答は互換履歴namespaceへ隔離します。
+`legacy_compatibility`はM1が既存18問sessionを移行した場合の再開専用です。release用`ContentChannel`へ値を追加せず、専用`legacyCompatibilityChannel='owned_existing_session_only'`だけを使用します。`requestedQuestionCount=null`、`actualQuestionCount=items.length`かつ1～40、DB staged item countとexact一致です。modern branchだけ`requestedQuestionCount=10|20|30|40`を持ち、legacyへ推測値18等を補いません。`OwnedPinnedContentDto.visibility='compatibility-only'`として明示し、新規selection basis、session、模試、global catalog、owner preview、正式SRS・分析・500問countへ使用しません。互換sessionの履歴は保持しますが、回答は互換履歴namespaceへ隔離します。legacy adapterの入力text version keyは移行表で一意にUUIDへ解決できる場合だけ許可し、unknown/ambiguous/non-legacyは存在件数を開示せず`INVALID_LEGACY_CONTENT_REFERENCE`で拒否します。別owner・未知sessionは`LEGACY_COMPATIBILITY_NOT_AVAILABLE`、新規作成経路は`LEGACY_COMPATIBILITY_NEW_SESSION_FORBIDDEN`、sidecar/hash/18件境界不一致は`LEGACY_COMPATIBILITY_INTEGRITY_FAILURE`です。このerror union以外の内部SQL・件数・stable keyを公開しません。
+
+### 6.2.1 互換18問の唯一のhash schema
+
+```ts
+interface LegacyCompatibilityChoiceV1 {
+  readonly choiceStableId: string;
+  readonly label: string;
+  readonly body: string;
+  readonly explanation: string;
+  readonly sortOrder: number;
+}
+
+interface LegacyCompatibilityQuestionV1 {
+  readonly schemaVersion: 'legacy-compatibility-question.v1';
+  readonly binding: {
+    readonly certificationCode: 'JSTQB-FL';
+    readonly syllabusVersion: '2023V4.0.J02';
+  };
+  readonly questionStableId: string;
+  readonly versionStableKey: string;
+  readonly versionNo: 1;
+  readonly source: {
+    readonly chapterNumber: 1 | 2 | 3 | 4 | 5 | 6;
+    readonly chapterTitle: string;
+    readonly objectiveCode: string;
+    readonly sourceReference: string;
+  };
+  readonly prompt: string;
+  readonly questionExplanation: string;
+  readonly difficulty: 1 | 2 | 3;
+  readonly selectionType: 'single';
+  readonly requiredChoiceCount: 1;
+  readonly shuffleChoices: false;
+  readonly status: 'compatibility_only';
+  readonly distributionScope: 'legacy_compatibility';
+  readonly contentAssurance: 'legacy_compatibility';
+  readonly examEligible: false;
+  readonly choices: readonly LegacyCompatibilityChoiceV1[];
+  readonly correctChoiceStableIds: readonly [string];
+}
+
+type LegacyCompatibilityObjectiveMappingV1 = {
+  readonly schemaVersion: 'legacy-compatibility-objective-mapping.v1';
+  readonly binding: {
+    readonly certificationCode: 'JSTQB-FL';
+    readonly syllabusVersion: '2023V4.0.J02';
+  };
+  readonly questionStableId: string;
+  readonly versionStableKey: string;
+  readonly source: {
+    readonly chapterNumber: 1 | 2 | 3 | 4 | 5 | 6;
+    readonly chapterTitle: string;
+    readonly objectiveCode: string;
+  };
+  readonly sourceBundleHash: Sha256HexV1;
+  readonly mappingHash: Sha256HexV1;
+} & (
+  | {
+      readonly mappingStatus: 'source_only';
+      readonly semanticCandidate: null;
+    }
+  | {
+      readonly mappingStatus: 'semantic_candidate';
+      readonly semanticCandidate: {
+        readonly objectiveCode: string;
+        readonly kLevel: 1 | 2 | 3;
+      };
+    }
+);
+
+interface LegacyCompatibilitySourceBundleV1 {
+  readonly schemaVersion: 'legacy-compatibility-source-bundle.v1';
+  readonly sourcePullRequestNumber: 9;
+  readonly sourcePullRequestHeadSha: '31c87247dcf36e6df036912a07318f3cd68f448b';
+  readonly baseMainCommitSha: '00411ef12777fdda151a66833598f6805fdfdf63';
+  readonly files: readonly [
+    {
+      readonly path: 'src/content/questions.ts';
+      readonly gitBlobSha1: 'cb1d2acce2904499c43e3fdd64a49f2c7849126b';
+      readonly sha256: 'ed63a72cb19f24e96c8b105fbd9bbf089604d799871d2d103fd2927bf1eec2f9';
+    },
+    {
+      readonly path: 'src/domain/types.ts';
+      readonly gitBlobSha1: '870f53c4d17892949f1c0cc314b04e560e4bd0e3';
+      readonly sha256: '4dab5175b04a44d7376af6010d7211946f25c8313ba3945c68f04147afff8342';
+    },
+    {
+      readonly path: 'supabase/migrations/202608110001_initial.sql';
+      readonly gitBlobSha1: '6901e6573102e92d82782529dfecaab8d9e369da';
+      readonly sha256: '05b3972f32686fe06d55f3981ded1f02e8a951baedd6154ab67a507a4e90cc48';
+    }
+  ];
+}
+
+interface LegacyCompatibilitySanitizedManifestV1 {
+  readonly schemaVersion: 'legacy-compatibility-sanitized-manifest.v1';
+  readonly binding: {
+    readonly certificationCode: 'JSTQB-FL';
+    readonly syllabusVersion: '2023V4.0.J02';
+  };
+  readonly legacyCompatibilityChannel: 'owned_existing_session_only';
+  readonly sourceBundleHash: Sha256HexV1;
+  readonly questionCount: 18;
+  readonly questionRefs: readonly {
+    readonly questionStableId: string;
+    readonly versionStableKey: string;
+    readonly contentHash: Sha256HexV1;
+  }[];
+  readonly questionRefSetHash: Sha256HexV1;
+  readonly publicCatalogCount: 0;
+  readonly personalPreviewCount: 0;
+  readonly examEligibleCount: 0;
+  readonly formalProjectionCount: 0;
+  readonly releaseCount: 0;
+}
+```
+
+`contentHash=SHA-256(RFC 8785 JCS(strict LegacyCompatibilityQuestionV1))`です。choicesは`sortOrder`数値昇順で0始まり連続、tieは`choiceStableId` UTF-8 byte昇順、correct IDsはUTF-8 byte昇順・重複なしです。DB UUID、DB時刻、物理`is_correct`、LO candidate、modern blueprint/claim/takeaway/common-trap fieldをpreimageへ含めません。source bundleも上記3 fileを記載順のexact tupleとしてJCS化し、`sourceBundleHash=bc931d2fa6dc980e5d6b9853505650b2aaf0c8b56256e29dcc50365d1bc5bdb0`へ一致させます。
+
+| ref | contentHash |
+|---|---|
+| `fl-001/fl-001-v1` | `b9aa8b66a72cac5b9ac9e3ad87e8e8f1ecbce5e6f56ddde0d3ddc0f7f26b2018` |
+| `fl-002/fl-002-v1` | `f5646ff17d199329b587481f141830216d1814528303a39ccc22ba5d44ab4e1d` |
+| `fl-003/fl-003-v1` | `aff293103899e9462b3c8c7184369785aa97470969b343821cd067868b3f711e` |
+| `fl-004/fl-004-v1` | `30ccc73119ff0c5eb7a4b6f9d3af6e26be4204b87cf5853a3722ed04cf217718` |
+| `fl-005/fl-005-v1` | `d8ec672b4741201d760f32f263d9877d1f19f21e7264b537862dbb1904c9343b` |
+| `fl-006/fl-006-v1` | `596be89f8e0ac741ea28144bbae08120a176fae7528124d8d6e9783afaeb131e` |
+| `fl-007/fl-007-v1` | `43d46a5111d034dd4ca44280748b5b0a7eaf9b9c33554c8ec7f0b04824da43d1` |
+| `fl-008/fl-008-v1` | `83b5a664f51fd4d41bfad5ee20e2b8d263381189e438b228423738e32f0e8f48` |
+| `fl-009/fl-009-v1` | `5096c3cb688c60d5d78dcbe667a85eae5f217873564a76ff37f78ce449d4cd1d` |
+| `fl-010/fl-010-v1` | `a2264ea300666a24f3e8bcaded37ade0be88feb3b02ebfd4a8bfdd32be035d14` |
+| `fl-011/fl-011-v1` | `9d51958b9c1628d66e4f6df07748c1354ac2bd83f0364d782d0e57d62f844c11` |
+| `fl-012/fl-012-v1` | `0c3a86bd57beb7e19c2edb26b8be56e48169852bea24d9be05fd221fdb3f35be` |
+| `fl-013/fl-013-v1` | `da47da2a15810a61a95e3c709ac78aee32b32549ce345f428759141a30c778ed` |
+| `fl-014/fl-014-v1` | `b85bc5381e3fcc7c24950bb09bd9971af20706db2a1dcd737e790e52ffe498e9` |
+| `fl-015/fl-015-v1` | `079a3a42521e019bf0c6e07d93d6f334a4258f97c4c05f8114061ab355bedea9` |
+| `fl-016/fl-016-v1` | `2d64397d112602777058d3038b83d8e5750b94c89d9f4d59021a7ac4d683bb00` |
+| `fl-017/fl-017-v1` | `05a06830cf81d82a9596a73969b016b1437bf9314b6c3e2108348fae5b8bb519` |
+| `fl-018/fl-018-v1` | `4a578f29dee7055f359aa54611c08fadff07042bc97832e9ce44ad0b97414ea3` |
+
+`LegacyCompatibilityObjectiveMappingV1`の`mappingHash`は自身だけを除くstrict objectのRFC 8785 JCS SHA-256です。`source_only`と`semantic_candidate`のbranch外fieldを拒否し、DB sidecar列とdeferred exact一致させます。`questionRefs`は上表順で、`questionRefSetHash=SHA-256(JCS(questionRefs))=77112e01ede608610e43f051fddfa643f55d2c821520084872c6ac0dcfe170dc`です。sanitized manifestは本文、choice本文、正答、全解説、source reference/objective、semantic candidate、UUIDを含めません。branch内にself hashを持たせず、外側で`manifestHash=SHA-256(JCS(strict manifest))=9b5078b2aee10c728e496e63e639a0ccb2179f9e36c3e14e64b007a438ef3c58`を保存します。DBはsource bundle JSON/hash、sanitized manifest JSON/hash、ordinal 0..17のmanifest membersをimmutable append-only正本として保存し、sidecarがbundle/manifestへFKします。runtime hydrationは保存済みmanifest member exact 18、stable ref、question version UUID、content hash、sidecar FKを毎回照合し、compiled sourceやcountだけから再構成しません。件数/hash/0件fieldの一つでも異なる場合は公開もowner hydrationもfail-closedです。
 
 global catalog cacheが空のcold startでもこのallowlistだけで回答画面を構築できます。retired pinのcold resume、suspended tombstone、禁止key 0をcontract/E2Eで検証します。
 
 ### 6.3 端末pre-answer snapshotとserver portable export
 
 ```ts
-interface LocalSessionRecordV2 {
+interface LocalSessionRecordBaseV2 {
   readonly schemaVersion: 2;
   readonly ownerUserId: UUID;
   readonly dataGeneration: DataGeneration;
   readonly sessionId: UUID;
-  readonly mode: LearningMode;
-  readonly title: string;
-  readonly localStatus:
+  // fixed-base question_ids / answered_question_ids text[]のraw orderを保持する。
+  readonly questionIds: readonly QuestionId[];
+  readonly answeredQuestionIds: readonly QuestionId[];
+  readonly items: readonly (LocalSessionItemBaseV2 & LocalSessionItemStateV2)[];
+}
+
+type LocalSessionIntentStatusV2 =
     | 'LOCAL_CREATING'
     | 'ACTIVE'
     | 'SUBMITTING'
@@ -1416,48 +1910,182 @@ interface LocalSessionRecordV2 {
     | 'COMPLETED'
     | 'ABANDONED'
     | 'INVALIDATED';
-  readonly remoteStatus: SessionStatus | null;
-  readonly contentChannel: ContentChannel;
-  readonly contentAssurance: ContentAssurance;
-  readonly previewAcceptanceId: UUID | null;
-  readonly previewBundleId: string | null;
-  readonly previewCanonicalHash: Sha256HexV1 | null;
-  readonly previewManifestHash: Sha256HexV1 | null;
-  readonly previewSelectionRevision: number | null;
-  readonly examPolicy: ExamPolicy | null;
-  readonly selectionBasisId: UUID | null;
-  readonly catalogRevision: number;
-  readonly selectionSpec: NormalSelectionSpecV2 | null;
-  readonly examBlueprintVersion: string | null;
-  readonly examBlueprintHash: Sha256HexV1 | null;
+
+type LocalModernSessionDeltaV2 = {
+  readonly status: LocalSessionIntentStatusV2;
+  readonly currentIndex: number;
+  // suspend/revokeで変動する現在値。creation targetへ固定しない。
+  readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+  readonly revision: NonNegativeSafeIntegerV1;
+  readonly updatedAt: IsoUtcTimestamp;
+};
+
+// targetはlocal deltaが変更してよい値から分離した、作成時に固定される値である。
+// questionIdsはraw orderのまま保持し、count/bindingをlocal editから補完しない。
+type LocalModernSessionTargetV2 = ModernSessionContentBindingV2 & {
+  readonly targetBranch: 'modern-target';
+  readonly mode: LearningMode;
+  readonly title: string;
   readonly certificationCode: string;
   readonly syllabusVersion: string;
-  readonly localCurrentIndex: number;
-  readonly remoteCurrentIndex: number | null;
-  readonly requestedQuestionCount: 10 | 20 | 30 | 40;
-  readonly actualQuestionCount: number;
-  readonly answerableQuestionCount: number;
-  readonly localRevision: number;
-  readonly localUpdatedAt: IsoUtcTimestamp;
-  readonly remoteRevision: number | null;
-  readonly remoteUpdatedAt: IsoUtcTimestamp | null;
-  readonly remoteSource: LocalRemoteSourceMetadataV2 | null;
+  readonly questionIds: readonly QuestionId[];
   readonly startedAt: IsoUtcTimestamp;
   readonly expiresAt: IsoUtcTimestamp | null;
-  readonly items: readonly {
+  readonly requestedQuestionCount: 10 | 20 | 30 | 40;
+  readonly actualQuestionCount: PositiveSafeIntegerV1;
+  readonly initialAnswerableQuestionCount: NonNegativeSafeIntegerV1;
+};
+
+type LocalLegacySessionTargetV2 = LegacySessionContentBindingV2 & {
+  readonly targetBranch: 'legacy-target';
+  readonly mode: LearningMode;
+  readonly title: string;
+  readonly certificationCode: string;
+  readonly syllabusVersion: string;
+  readonly questionIds: readonly QuestionId[];
+  readonly startedAt: LegacyStoredTimestampV1;
+  readonly expiresAt: null;
+  readonly requestedQuestionCount: null;
+  readonly actualQuestionCount: PositiveSafeIntegerV1;
+  readonly initialAnswerableQuestionCount: NonNegativeSafeIntegerV1;
+};
+
+type LocalSessionTargetV2 = LocalModernSessionTargetV2 | LocalLegacySessionTargetV2;
+
+type LocalModernSessionIntentWithModernTargetV2 = LocalModernSessionDeltaV2 & {
+  readonly target: LocalModernSessionTargetV2;
+};
+type LocalModernSessionIntentWithLegacyTargetV2 = LocalModernSessionDeltaV2 & {
+  readonly target: LocalLegacySessionTargetV2;
+};
+type LocalModernSessionIntentValueV2 =
+  | LocalModernSessionIntentWithModernTargetV2
+  | LocalModernSessionIntentWithLegacyTargetV2;
+
+type LocalSessionIntentV2 =
+  | { readonly branch: 'absent'; readonly value: null }
+  | { readonly branch: 'modern'; readonly value: LocalModernSessionIntentValueV2 };
+
+type LocalModernRemoteSessionValueV2 = ModernSessionContentBindingV2 & {
+  readonly mode: LearningMode;
+  readonly title: string;
+  readonly certificationCode: string;
+  readonly syllabusVersion: string;
+  readonly status: SessionStatus;
+  readonly currentIndex: number;
+  readonly revision: NonNegativeSafeIntegerV1;
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: IsoUtcTimestamp | null;
+  readonly startedAt: IsoUtcTimestamp;
+  readonly expiresAt: IsoUtcTimestamp | null;
+  readonly requestedQuestionCount: 10 | 20 | 30 | 40;
+  readonly actualQuestionCount: PositiveSafeIntegerV1;
+  readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+};
+
+type LocalLegacyRemoteSessionValueV2 = LegacySessionContentBindingV2 & {
+  readonly mode: LearningMode;
+  readonly title: string;
+  readonly certificationCode: string;
+  readonly syllabusVersion: string;
+  readonly status: SessionStatus;
+  readonly currentIndex: number;
+  readonly revision: NonNegativeSafeIntegerV1;
+  readonly updatedAt: LegacyStoredTimestampV1;
+  readonly completedAt: LegacyStoredTimestampV1 | null;
+  readonly startedAt: LegacyStoredTimestampV1;
+  readonly expiresAt: null;
+  readonly requestedQuestionCount: null;
+  readonly actualQuestionCount: PositiveSafeIntegerV1;
+  readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+};
+type LocalLegacyBoundPostM1RemoteSessionValueV2 = Omit<LocalLegacyRemoteSessionValueV2, 'updatedAt' | 'completedAt'> & {
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: IsoUtcTimestamp | null;
+};
+type LocalLegacyBoundM1CompletedRemoteSessionValueV2 = Omit<LocalLegacyRemoteSessionValueV2, 'updatedAt' | 'completedAt' | 'status'> & {
+  readonly status: 'completed';
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: LegacyStoredTimestampV1;
+};
+type LocalLegacyBoundM1InvalidatedRemoteSessionValueV2 = Omit<LocalLegacyRemoteSessionValueV2, 'updatedAt' | 'completedAt' | 'status'> & {
+  readonly status: 'invalidated';
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: null;
+};
+
+type LocalSessionRemoteAbsentV2 = {
+  readonly branch: 'absent';
+  readonly value: null;
+  readonly creationSource: null;
+  readonly currentMaterializationSource: null;
+};
+type LocalModernSessionRemoteFactV2 = {
+  readonly branch: 'modern';
+  readonly value: LocalModernRemoteSessionValueV2;
+  readonly creationSource: ModernSessionCreationSourceV2;
+  readonly currentMaterializationSource: ModernSessionCurrentMaterializationSourceV2;
+};
+type LocalLegacySyncSessionRemoteFactV2 =
+  | { readonly branch: 'legacy-sync'; readonly value: LocalLegacyRemoteSessionValueV2; readonly creationSource: LegacySessionSyncCreationSourceV2; readonly currentMaterializationSource: LegacySessionCurrentMaterializationSourceV2 }
+  | { readonly branch: 'legacy-sync'; readonly value: LocalLegacyBoundPostM1RemoteSessionValueV2; readonly creationSource: LegacySessionSyncCreationSourceV2; readonly currentMaterializationSource: LegacyBoundNonM1CurrentMaterializationSourceV2 }
+  | { readonly branch: 'legacy-sync'; readonly value: LocalLegacyBoundM1CompletedRemoteSessionValueV2; readonly creationSource: LegacySessionSyncCreationSourceV2; readonly currentMaterializationSource: M1ExpiredCompletedSessionCurrentMaterializationSourceV2 | M1ExpiredCompletedRestoreCurrentMaterializationSourceV2 }
+  | { readonly branch: 'legacy-sync'; readonly value: LocalLegacyBoundM1InvalidatedRemoteSessionValueV2; readonly creationSource: LegacySessionSyncCreationSourceV2; readonly currentMaterializationSource: M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2 | M1ExpiredInvalidatedRestoreCurrentMaterializationSourceV2 };
+type LocalLegacyDirectSessionRemoteFactV2 =
+  | { readonly branch: 'legacy-direct'; readonly value: LocalLegacyRemoteSessionValueV2; readonly creationSource: LegacySessionDirectCreationSourceV2; readonly currentMaterializationSource: LegacySessionCurrentMaterializationSourceV2 }
+  | { readonly branch: 'legacy-direct'; readonly value: LocalLegacyBoundPostM1RemoteSessionValueV2; readonly creationSource: LegacySessionDirectCreationSourceV2; readonly currentMaterializationSource: LegacyBoundNonM1CurrentMaterializationSourceV2 }
+  | { readonly branch: 'legacy-direct'; readonly value: LocalLegacyBoundM1CompletedRemoteSessionValueV2; readonly creationSource: LegacySessionDirectCreationSourceV2; readonly currentMaterializationSource: M1ExpiredCompletedSessionCurrentMaterializationSourceV2 | M1ExpiredCompletedRestoreCurrentMaterializationSourceV2 }
+  | { readonly branch: 'legacy-direct'; readonly value: LocalLegacyBoundM1InvalidatedRemoteSessionValueV2; readonly creationSource: LegacySessionDirectCreationSourceV2; readonly currentMaterializationSource: M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2 | M1ExpiredInvalidatedRestoreCurrentMaterializationSourceV2 };
+type LocalSessionRemoteFactV2 =
+  | LocalSessionRemoteAbsentV2
+  | LocalModernSessionRemoteFactV2
+  | LocalLegacySyncSessionRemoteFactV2
+  | LocalLegacyDirectSessionRemoteFactV2;
+
+interface LocalSessionItemBaseV2 {
     readonly questionId: QuestionId;
     readonly questionVersionId: QuestionVersionId;
     readonly ordinal: number;
     readonly choiceOrder: readonly ChoiceId[];
-    readonly state: 'unanswered' | 'pending' | 'answered' | 'invalidated';
-    readonly invalidatedReason: 'question_suspended' | 'acceptance_revoked' | null;
     readonly reviewMarked: boolean;
     readonly content: OwnedPinnedContentDto;
     readonly draft: SessionDraftDto | null;
     readonly pendingAnswerEventId: UUID | null;
     readonly canonicalAttemptId: UUID | null;
-  }[];
 }
+
+// 既存local state literalを保持する。unanswered/pending/answeredではreason=null、
+// invalidatedだけがnon-null reasonを持つ。
+type LocalSessionItemStateV2 =
+  | {
+      readonly state: 'unanswered' | 'pending' | 'answered';
+      readonly invalidatedReason: null;
+    }
+  | {
+      readonly state: 'invalidated';
+      readonly invalidatedReason: 'question_suspended' | 'acceptance_revoked';
+    };
+
+type LocalSessionRecordV2 = LocalSessionRecordBaseV2 & (
+  | {
+      readonly localIntent: { readonly branch: 'modern'; readonly value: LocalModernSessionIntentWithModernTargetV2 };
+      readonly remoteFact: LocalSessionRemoteAbsentV2 | LocalModernSessionRemoteFactV2;
+    }
+  | {
+      readonly localIntent: { readonly branch: 'modern'; readonly value: LocalModernSessionIntentWithLegacyTargetV2 };
+      readonly remoteFact: LocalLegacySyncSessionRemoteFactV2 | LocalLegacyDirectSessionRemoteFactV2;
+    }
+  | {
+      readonly localIntent: { readonly branch: 'absent'; readonly value: null };
+      readonly remoteFact: LocalModernSessionRemoteFactV2 | LocalLegacySyncSessionRemoteFactV2 | LocalLegacyDirectSessionRemoteFactV2;
+    }
+);
+
+// local intentとremote factは分配されたstrict unionであり、両方absentだけを禁止する。
+// local intentは3桁clockのdelta/current answerable countだけを編集し、targetのbinding、questionIds、creation time/expiry、requested/actual/initial answerable countを編集しない。
+// modern-targetはremote absent|modern、legacy-targetはlegacy-sync|legacy-direct（それぞれtyped restoreを含む）だけへ結合する。
+// legacy targetはremote legacyのbinding/question raw order/countへbyte-exact一致し、modern targetはremote modernまたは未ACK session.created canonical/basisへexact一致する。
+// suspend item invalidationでcurrent answerable countが10から9へ変わってもtargetのinitial値を変更せず、modern binding/countの捏造、target/source branch混在を拒否する。
 
 type LocalOutboxStateV2 =
   | 'QUEUED'
@@ -1480,7 +2108,7 @@ type LocalOutboxPayloadV2 =
   | { readonly transport: 'discard-selection-basis'; readonly request: DiscardLearningSelectionBasisCommandV2 };
 
 interface LocalOutboxRecordV2 {
-  readonly localSequence: number;
+  readonly localSequence: PositiveSafeIntegerV1;
   readonly ownerUserId: UUID;
   readonly dataGeneration: DataGeneration;
   readonly aggregateKey: string;
@@ -1547,84 +2175,247 @@ type LocalCommandReceiptV2 = LocalCommandReceiptBaseV2 & (
     }
 );
 
-type RestoreMaterializedV2SourceIdentityV2 =
-  | {
-      readonly sourceKind: 'canonical-event';
-      readonly sourceId: UUID;
-      readonly sourceHash: Sha256HexV1;
-      readonly sourceSequence: PositiveSafeIntegerV1;
-    }
-  | {
-      readonly sourceKind: 'portable-fact';
-      readonly sourceId: UUID;
-      readonly sourceHash: Sha256HexV1;
-      readonly sourceSequence: null;
-    };
-
-interface RestoreMaterializedLegacySyncEventSourceIdentityV2 {
-  readonly sourceKind: 'legacy-sync-event';
+type LocalClientSyncRemoteSourceMetadataV2<K extends ClientSyncKind> = K extends ClientSyncKind ? {
+  readonly transport: 'sync-event';
+  readonly sourceDataGeneration: DataGeneration;
+  readonly eventKind: K;
+  readonly origin: 'client';
+  readonly eventId: UUID;
+  readonly sequence: PositiveSafeIntegerV1;
+  readonly requestHash: Sha256HexV1;
+  readonly canonicalHash: Sha256HexV1;
+  readonly occurredAt: IsoUtcTimestamp;
+  readonly receivedAt: IsoUtcTimestamp;
+} : never;
+type LocalServerSubmittedRemoteSourceMetadataV2 = {
+  readonly transport: 'sync-event';
+  readonly sourceDataGeneration: DataGeneration;
+  readonly eventKind: 'session.submitted';
+  readonly origin: 'server';
+  readonly eventId: UUID;
+  readonly sequence: PositiveSafeIntegerV1;
+  readonly sourceRevision: NonNegativeSafeIntegerV1;
+  readonly requestHash: null;
+  readonly canonicalHash: Sha256HexV1;
+  readonly occurredAt: IsoUtcTimestamp;
+  readonly receivedAt: IsoUtcTimestamp;
+};
+type LocalServerChangeRemoteSourceMetadataV2 = {
+  readonly transport: 'server-change';
+  readonly sourceDataGeneration: DataGeneration;
+  readonly operationId: UUID;
+  readonly sequence: PositiveSafeIntegerV1;
+  readonly payloadHash: Sha256HexV1;
+  readonly occurredAt: IsoUtcTimestamp;
+  readonly receivedAt: IsoUtcTimestamp;
+};
+type LocalLegacySyncRemoteSourceMetadataV2<K extends LegacyLearningSyncKind> = K extends LegacyLearningSyncKind ? {
+  readonly transport: 'legacy-sync-event';
+  readonly sourceDataGeneration: DataGeneration;
   readonly legacySchema: 'learning-sync.v1';
-  readonly originalEventId: UUID;
-  readonly originalSourceSequence: PositiveSafeIntegerV1;
-  readonly sourceLegacyFactHash: Sha256HexV1;
-}
+  readonly eventKind: K;
+  readonly eventId: UUID;
+  readonly sequence: PositiveSafeIntegerV1;
+  readonly legacyEventFactHash: Sha256HexV1;
+  readonly occurredAt: LegacyStoredTimestampV1;
+  readonly receivedAt: LegacyStoredTimestampV1;
+} : never;
+type LocalLegacyDirectRemoteSourceMetadataV2<
+  T extends LegacyDirectRowSourceMetadataV2['sourceTable'],
+  A extends LegacyDirectRowSourceMetadataV2['sourceAggregateKind'],
+  R extends NonNegativeSafeIntegerV1 | null,
+> = {
+  readonly transport: 'legacy-direct-row';
+  readonly sourceDataGeneration: DataGeneration;
+  readonly source: LegacyDirectRowSourceMetadataV2 & {
+    readonly sourceTable: T;
+    readonly sourceAggregateKind: A;
+    readonly sourceRevision: R;
+  };
+  readonly legacyDirectRowHash: Sha256HexV1;
+  readonly occurredAt: LegacyStoredTimestampV1;
+  readonly receivedAt: null;
+};
 
-type LocalRemoteSourceMetadataV2 =
+type LocalRestoreTargetKindV2 = 'session' | 'draft' | 'note' | 'bookmark' | 'issue';
+type LocalRestoreSourceFactOrEventKindV2 = LearningSyncKind | 'session-current-materialization' | 'session-lifecycle' | 'server-change' | 'legacy-direct-row';
+type LocalTypedRestoreSourceMetadataV2<
+  T extends LocalRestoreTargetKindV2,
+  K extends LocalRestoreSourceFactOrEventKindV2,
+  R extends NonNegativeSafeIntegerV1 | null,
+  I extends string,
+> = {
+  readonly transport: 'restore-materialization';
+  readonly targetKind: T;
+  readonly targetId: I;
+  readonly targetHash: Sha256HexV1;
+  readonly ownerUserId: UUID;
+  readonly sourceFactOrEventKind: K;
+  readonly sourceRevision: R;
+  readonly targetDataGeneration: DataGeneration;
+  readonly restoreJobId: UUID;
+  readonly materializationLinkId: UUID;
+  readonly materializationLinkHash: Sha256HexV1;
+  readonly materializedAt: IsoUtcTimestamp;
+  readonly receivedAt: IsoUtcTimestamp;
+} & (
   | {
-      readonly transport: 'sync-event';
+      readonly sourceIdentityKind: 'canonical-event';
+      readonly sourceEventId: UUID;
+      readonly sourceSequence: PositiveSafeIntegerV1;
       readonly sourceDataGeneration: DataGeneration;
-      readonly eventKind: ClientSyncKind;
-      readonly origin: 'client';
-      readonly eventId: UUID;
-      readonly sequence: PositiveSafeIntegerV1;
-      readonly requestHash: Sha256HexV1;
-      readonly canonicalHash: Sha256HexV1;
-      readonly occurredAt: IsoUtcTimestamp;
-      readonly receivedAt: IsoUtcTimestamp;
+      readonly sourceCanonicalHash: Sha256HexV1;
+      readonly sourceHash: Sha256HexV1;
     }
   | {
-      readonly transport: 'sync-event';
+      readonly sourceIdentityKind: 'portable-fact';
+      readonly sourcePortableFactIdentity: RestorePortableFactIdentityV2;
+      readonly sourceSequence: null;
       readonly sourceDataGeneration: DataGeneration;
-      readonly eventKind: 'session.submitted';
-      readonly origin: 'server';
-      readonly eventId: UUID;
-      readonly sequence: PositiveSafeIntegerV1;
-      readonly requestHash: null;
-      readonly canonicalHash: Sha256HexV1;
-      readonly occurredAt: IsoUtcTimestamp;
-      readonly receivedAt: IsoUtcTimestamp;
+      readonly sourceFactHash: Sha256HexV1;
+      readonly sourceHash: Sha256HexV1;
     }
   | {
-      readonly transport: 'server-change';
-      readonly sourceDataGeneration: DataGeneration;
-      readonly operationId: UUID;
-      readonly sequence: PositiveSafeIntegerV1;
-      readonly payloadHash: Sha256HexV1;
-      readonly occurredAt: IsoUtcTimestamp;
-      readonly receivedAt: IsoUtcTimestamp;
-    }
-  | {
-      readonly transport: 'restore-materialization';
-      readonly sourceDataGeneration: DataGeneration;
-      readonly targetDataGeneration: DataGeneration;
-      readonly restoreJobId: UUID;
-      readonly materializationLinkId: UUID;
-      readonly materializationLinkHash: Sha256HexV1;
-      readonly source: RestoreMaterializedV2SourceIdentityV2;
-      readonly materializedAt: IsoUtcTimestamp;
-      readonly receivedAt: IsoUtcTimestamp;
-    }
-  | {
-      readonly transport: 'restore-materialization';
+      readonly sourceIdentityKind: 'legacy-sync-event';
+      readonly legacySchema: 'learning-sync.v1';
+      readonly legacyEventId: UUID;
+      readonly sourceSequence: PositiveSafeIntegerV1;
       readonly sourceDataGeneration: null;
-      readonly targetDataGeneration: DataGeneration;
-      readonly restoreJobId: UUID;
-      readonly materializationLinkId: UUID;
-      readonly materializationLinkHash: Sha256HexV1;
-      readonly source: RestoreMaterializedLegacySyncEventSourceIdentityV2;
-      readonly materializedAt: IsoUtcTimestamp;
-      readonly receivedAt: IsoUtcTimestamp;
-    };
+      readonly legacyEventFactHash: Sha256HexV1;
+      readonly sourceHash: Sha256HexV1;
+    }
+  | {
+      readonly sourceIdentityKind: 'legacy-direct-row';
+      readonly sourceRowId: string;
+      readonly sourceSequence: null;
+      readonly sourceDataGeneration: DataGeneration;
+      readonly legacyDirectRowSource: LegacyDirectRowSourceMetadataV2;
+      readonly legacyDirectRowHash: Sha256HexV1;
+      readonly sourceHash: Sha256HexV1;
+    }
+);
+// restore source identityはtarget×source kindで分配する。汎用wrapperをそのまま公開して
+// canonical eventとportable factを任意に組み替えることを許可しない。
+type LocalRestoreCanonicalEventIdentityV2<
+  T extends LocalRestoreTargetKindV2,
+  K extends LocalRestoreSourceFactOrEventKindV2,
+> =
+  T extends 'session'
+    ? K extends 'session.created' | 'session.advanced' | 'session.review-marked' | 'answer.submitted' | 'session.submitted'
+      ? { readonly sourceIdentityKind: 'canonical-event'; readonly sourceEventId: UUID; readonly sourceSequence: PositiveSafeIntegerV1; readonly sourceDataGeneration: DataGeneration; readonly sourceCanonicalHash: Sha256HexV1; readonly sourceHash: Sha256HexV1 }
+      : never
+    : T extends 'draft'
+      ? K extends 'draft.saved'
+        ? { readonly sourceIdentityKind: 'canonical-event'; readonly sourceEventId: UUID; readonly sourceSequence: PositiveSafeIntegerV1; readonly sourceDataGeneration: DataGeneration; readonly sourceCanonicalHash: Sha256HexV1; readonly sourceHash: Sha256HexV1 }
+        : never
+      : T extends 'note'
+        ? K extends 'note.saved'
+          ? { readonly sourceIdentityKind: 'canonical-event'; readonly sourceEventId: UUID; readonly sourceSequence: PositiveSafeIntegerV1; readonly sourceDataGeneration: DataGeneration; readonly sourceCanonicalHash: Sha256HexV1; readonly sourceHash: Sha256HexV1 }
+          : never
+        : T extends 'bookmark'
+          ? K extends 'bookmark.changed'
+            ? { readonly sourceIdentityKind: 'canonical-event'; readonly sourceEventId: UUID; readonly sourceSequence: PositiveSafeIntegerV1; readonly sourceDataGeneration: DataGeneration; readonly sourceCanonicalHash: Sha256HexV1; readonly sourceHash: Sha256HexV1 }
+            : never
+          : T extends 'issue'
+            ? K extends 'issue.reported'
+              ? { readonly sourceIdentityKind: 'canonical-event'; readonly sourceEventId: UUID; readonly sourceSequence: PositiveSafeIntegerV1; readonly sourceDataGeneration: DataGeneration; readonly sourceCanonicalHash: Sha256HexV1; readonly sourceHash: Sha256HexV1 }
+              : never
+            : never;
+type LocalRestorePortableFactIdentityV2<
+  T extends LocalRestoreTargetKindV2,
+  K extends LocalRestoreSourceFactOrEventKindV2,
+> =
+  T extends 'session'
+    ? K extends 'session.created' ? Extract<RestorePortableFactIdentityV2, { readonly factKind: 'session' }>
+      : K extends 'session-current-materialization' ? Extract<RestorePortableFactIdentityV2, { readonly factKind: 'session-current-materialization' }>
+      : K extends 'session-lifecycle' ? Extract<RestorePortableFactIdentityV2, { readonly factKind: 'session-lifecycle' }>
+      : K extends 'server-change' ? Extract<RestorePortableFactIdentityV2, { readonly factKind: 'session-item-invalidation' }>
+      : never
+    : T extends 'draft' ? K extends 'draft.saved' ? Extract<RestorePortableFactIdentityV2, { readonly factKind: 'draft' }> : never
+      : T extends 'note' ? K extends 'note.saved' ? Extract<RestorePortableFactIdentityV2, { readonly factKind: 'note' }> : never
+        : T extends 'bookmark' ? K extends 'bookmark.changed' ? Extract<RestorePortableFactIdentityV2, { readonly factKind: 'bookmark' }> : never
+          : T extends 'issue' ? K extends 'issue.reported' ? Extract<RestorePortableFactIdentityV2, { readonly factKind: 'issue' }> : never
+            : never;
+type LocalRestorePortableFactIdentityBranchV2<
+  T extends LocalRestoreTargetKindV2,
+  K extends LocalRestoreSourceFactOrEventKindV2,
+> = [LocalRestorePortableFactIdentityV2<T, K>] extends [never] ? never : {
+  readonly sourceIdentityKind: 'portable-fact';
+  readonly sourcePortableFactIdentity: LocalRestorePortableFactIdentityV2<T, K>;
+  readonly sourceSequence: null;
+  readonly sourceDataGeneration: DataGeneration;
+  readonly sourceFactHash: Sha256HexV1;
+  readonly sourceHash: Sha256HexV1;
+};
+type LocalTypedModernRestoreSourceMetadataV2<
+  T extends LocalRestoreTargetKindV2,
+  K extends LearningSyncKind | 'session-current-materialization' | 'session-lifecycle' | 'server-change',
+  R extends NonNegativeSafeIntegerV1 | null,
+  I extends string,
+> = K extends LearningSyncKind | 'session-current-materialization' | 'session-lifecycle' | 'server-change'
+  ? Omit<LocalTypedRestoreSourceMetadataV2<T, K, R, I>,
+      'sourceIdentityKind' | 'sourceEventId' | 'sourceSequence' | 'sourceDataGeneration' | 'sourceCanonicalHash' | 'sourcePortableFactIdentity' | 'sourceFactHash' | 'sourceHash'
+    > & (LocalRestoreCanonicalEventIdentityV2<T, K> | LocalRestorePortableFactIdentityBranchV2<T, K>)
+  : never;
+type LocalTypedLegacySyncRestoreSourceMetadataV2<
+  T extends LocalRestoreTargetKindV2,
+  K extends LegacyLearningSyncKind,
+  R extends NonNegativeSafeIntegerV1 | null,
+  I extends string,
+> = Extract<
+  LocalTypedRestoreSourceMetadataV2<T, K, R, I>,
+  { readonly sourceIdentityKind: 'legacy-sync-event' }
+>;
+type LocalTypedLegacyDirectRestoreSourceMetadataV2<
+  T extends LocalRestoreTargetKindV2,
+  R extends NonNegativeSafeIntegerV1 | null,
+  I extends string,
+> = T extends 'session'
+  ? LocalTypedRestoreSourceMetadataV2<T, 'legacy-direct-row', R, I> & {
+      readonly sourceIdentityKind: 'legacy-direct-row';
+      readonly legacyDirectRowSource: LegacyDirectRowSourceMetadataV2 & {
+        readonly sourceTable: 'learning_sessions';
+        readonly sourceAggregateKind: 'session';
+        readonly sourceRevision: R;
+      };
+    }
+  : T extends 'draft'
+    ? LocalTypedRestoreSourceMetadataV2<T, 'legacy-direct-row', R, I> & {
+        readonly sourceIdentityKind: 'legacy-direct-row';
+        readonly legacyDirectRowSource: LegacyDirectRowSourceMetadataV2 & {
+          readonly sourceTable: 'answer_drafts';
+          readonly sourceAggregateKind: 'draft';
+          readonly sourceRevision: R;
+        };
+      }
+    : T extends 'bookmark'
+      ? LocalTypedRestoreSourceMetadataV2<T, 'legacy-direct-row', R, I> & {
+          readonly sourceIdentityKind: 'legacy-direct-row';
+          readonly legacyDirectRowSource: LegacyDirectRowSourceMetadataV2 & {
+            readonly sourceTable: 'bookmarks';
+            readonly sourceAggregateKind: 'bookmark';
+            readonly sourceRevision: R;
+          };
+        }
+      : T extends 'issue'
+        ? LocalTypedRestoreSourceMetadataV2<T, 'legacy-direct-row', R, I> & {
+            readonly sourceIdentityKind: 'legacy-direct-row';
+            readonly legacyDirectRowSource: LegacyDirectRowSourceMetadataV2 & {
+              readonly sourceTable: 'content_issues';
+              readonly sourceAggregateKind: 'issue';
+              readonly sourceRevision: R;
+            };
+          }
+        : never;
+
+// これはtransport parserだけの総和であり、persisted entity/session sourceとしてwideに参照しない。
+type LocalRemoteSourceMetadataV2 =
+  | LocalClientSyncRemoteSourceMetadataV2<ClientSyncKind>
+  | LocalServerSubmittedRemoteSourceMetadataV2
+  | LocalServerChangeRemoteSourceMetadataV2
+  | LocalLegacySyncRemoteSourceMetadataV2<LegacyLearningSyncKind>
+  | LocalLegacyDirectRemoteSourceMetadataV2<LegacyDirectRowSourceMetadataV2['sourceTable'], LegacyDirectRowSourceMetadataV2['sourceAggregateKind'], NonNegativeSafeIntegerV1 | null>
+  | LocalTypedRestoreSourceMetadataV2<LocalRestoreTargetKindV2, LocalRestoreSourceFactOrEventKindV2, NonNegativeSafeIntegerV1 | null, string>;
 
 type LocalServerChangeApplyStateV2 =
   | { readonly state: 'pending'; readonly appliedAt: null; readonly quarantineId: null }
@@ -1774,6 +2565,8 @@ interface ResolveLearningConflictResponseV2 {
 }
 ```
 
+`LocalRemoteSourceMetadataV2`はtransport parser専用の総和で、persisted DTOはkind/table/aggregate/revisionを固定したsource aliasだけを使う。client/legacy event sourceは`LocalClientSyncRemoteSourceMetadataV2<K>`/`LocalLegacySyncRemoteSourceMetadataV2<K>`でKをliteralにし、wide unionへの`Extract`で`never`を作らない。通常legacy syncはlocal rowのowner/generationと元event、directは`source.sourceOwnerUserId/source.sourceDataGeneration`とexact一致する。restoreはtarget kind/ID/hash、source identity kind/fact-or-event kind/revision/hash、owner、source/target generation、restore job/link ID/hashをtyped wrapperでlosslessに持ち、entity/modern-vs-legacy以外の結合を拒否する。transportごとの`receivedAt`はmodern sync/server-change=`IsoUtcTimestamp`、legacy-sync-event=`LegacyStoredTimestampV1`、legacy-direct-row=`null`、typed restore=`IsoUtcTimestamp`だけである。
+
 `get_learning_conflict_v2(conflictId,dataGeneration)`と`resolve_learning_conflict_v2(request)`は`authenticated` owner本人だけへgrantし、ownerはJWTから導出して入力させません。resolveはuser/generation、`status='pending'`、DB時計で`now < expiresAt`、aggregate kind、local/remote bodyのstrict schema、両expected version hashを再検証します。各version hashは対応bodyのRFC 8785 JCS SHA-256です。keep-local/accept-remoteのadopted hashは該当version hashとexact一致、mergeは同じkindのstrict `adoptedBody`からserver再計算したhashとexact一致させ、domain aggregate更新・conflict解決・本文なしaudit・operation receiptを一transactionで確定します。`operationRequestHash=SHA-256(RFC 8785 JCS(strict request))`、`operationResponseHash`は同field自身だけを除外したstrict responseのRFC 8785 JCS SHA-256です。同operation ID・同request hashは保存responseをbyte-for-byte replayし、異内容、期限切れ、別owner、別generation、body kind/hash不一致を拒否します。response/audit/generic logへlocal/remote/adopted body、選択値、メモ本文、端末表示名を含めません。
 
 ```ts
@@ -1818,20 +2611,13 @@ interface LocalAttemptRecordBaseV2 {
   readonly sessionId: UUID;
   readonly questionId: QuestionId;
   readonly questionVersionId: QuestionVersionId;
-  readonly localEventId: UUID;
   readonly selectedChoiceIds: readonly ChoiceId[];
-  readonly contentChannel: ContentChannel;
-  readonly contentAssurance: ContentAssurance;
-  readonly previewAcceptanceId: UUID | null;
-  readonly previewBundleId: string | null;
-  readonly previewCanonicalHash: Sha256HexV1 | null;
-  readonly previewManifestHash: Sha256HexV1 | null;
-  readonly previewSelectionRevision: number | null;
-  readonly localSavedAt: IsoUtcTimestamp;
 }
 
-type LocalAttemptRecordV2 =
+type LocalModernAttemptStateV2 =
   | (LocalAttemptRecordBaseV2 & {
+      readonly localEventId: UUID;
+      readonly localSavedAt: IsoUtcTimestamp;
       readonly state: 'pending';
       readonly canonicalAttemptId: null;
       readonly gradingStatus: 'pending';
@@ -1841,6 +2627,8 @@ type LocalAttemptRecordV2 =
       readonly serverReceivedAt: null;
     })
   | (LocalAttemptRecordBaseV2 & {
+      readonly localEventId: UUID;
+      readonly localSavedAt: IsoUtcTimestamp;
       readonly state: 'acknowledged';
       readonly canonicalAttemptId: UUID;
       readonly gradingStatus: 'graded';
@@ -1850,6 +2638,8 @@ type LocalAttemptRecordV2 =
       readonly serverReceivedAt: IsoUtcTimestamp;
     })
   | (LocalAttemptRecordBaseV2 & {
+      readonly localEventId: UUID;
+      readonly localSavedAt: IsoUtcTimestamp;
       readonly state: 'acknowledged';
       readonly canonicalAttemptId: UUID;
       readonly gradingStatus: 'not_graded_suspended' | 'not_graded_acceptance_revoked';
@@ -1859,21 +2649,75 @@ type LocalAttemptRecordV2 =
       readonly serverReceivedAt: IsoUtcTimestamp;
     });
 
-type LocalRevisionedEntityV2<T> = {
+type LocalLegacyAttemptStateV2 = LocalAttemptRecordBaseV2 & {
+  readonly localEventId: null;
+  readonly localSavedAt: LegacyStoredTimestampV1;
+  readonly state: 'acknowledged';
+  readonly canonicalAttemptId: UUID;
+  readonly gradingStatus: 'graded';
+  readonly isCorrect: boolean;
+  readonly timingAssurance: 'legacy_unknown';
+  readonly answeredAt: LegacyStoredTimestampV1;
+  readonly serverReceivedAt: LegacyStoredTimestampV1;
+};
+
+type LocalAttemptRecordV2 =
+  | (ModernSessionContentBindingV2 & LocalModernAttemptStateV2)
+  | (LegacySessionContentBindingV2 & LocalLegacyAttemptStateV2);
+
+interface LocalRevisionedEntityBaseV2 {
   readonly ownerUserId: UUID;
   readonly dataGeneration: DataGeneration;
   readonly aggregateKey: string;
-  readonly localRevision: number;
-  readonly localSourceEventId: UUID | null;
-  readonly localSequence: number | null;
-  readonly remoteRevision: number | null;
-  readonly localUpdatedAt: IsoUtcTimestamp;
-  readonly remoteUpdatedAt: IsoUtcTimestamp | null;
-  readonly remoteSource: LocalRemoteSourceMetadataV2 | null;
   readonly syncState: 'local-only' | 'queued' | 'synced' | 'conflict';
-  readonly localValue: T;
-  readonly remoteValue: T | null;
-};
+}
+
+// 以下は4 entityの共通envelopeだけであり、entity value/sourceの直積を生成しない内部baseである。
+// public persisted schemaは後述のLocalDraft/Note/Bookmark/IssueRecordV2だけを受理する。
+interface LocalEntityIntentAbsentV2 {
+  readonly branch: 'absent';
+  readonly revision: null;
+  readonly sourceEventId: null;
+  readonly sourceEventKind: null;
+  readonly localSequence: null;
+  readonly requestHash: null;
+  readonly updatedAt: null;
+  readonly value: null;
+}
+
+interface LocalEntityModernIntentBaseV2 {
+  readonly branch: 'modern';
+  readonly revision: NonNegativeSafeIntegerV1;
+  readonly sourceEventId: UUID;
+  // server sequenceではない。outbox requestのlocal orderingだけを表す。
+  readonly localSequence: PositiveSafeIntegerV1;
+  readonly requestHash: Sha256HexV1;
+  readonly updatedAt: IsoUtcTimestamp;
+}
+
+interface LocalRemoteFactAbsentV2 {
+  readonly branch: 'absent';
+  readonly revision: null;
+  readonly updatedAt: null;
+  readonly source: null;
+  readonly value: null;
+}
+
+interface LocalModernRemoteFactBaseV2 {
+  readonly branch: 'modern';
+  readonly revision: NonNegativeSafeIntegerV1;
+  readonly updatedAt: IsoUtcTimestamp;
+}
+
+interface LocalLegacySyncRemoteFactBaseV2 {
+  readonly branch: 'legacy-sync';
+  readonly updatedAt: LegacyStoredTimestampV1;
+}
+
+interface LocalLegacyDirectRemoteFactBaseV2 {
+  readonly branch: 'legacy-direct';
+  readonly updatedAt: LegacyStoredTimestampV1;
+}
 
 interface LocalProjectionStateV2 {
   readonly ownerUserId: UUID;
@@ -1897,7 +2741,7 @@ interface LocalCatalogCacheRecordV2 {
   readonly tombstones: readonly CatalogTombstoneDto[];
 }
 
-interface LocalDraftValueV2 {
+interface LocalModernDraftIntentValueV2 {
   readonly sessionId: UUID;
   readonly questionId: QuestionId;
   readonly questionVersionId: QuestionVersionId;
@@ -1905,6 +2749,19 @@ interface LocalDraftValueV2 {
   readonly scrollOffset: number;
   readonly deviceId: string;
 }
+
+interface LocalModernDraftRemoteValueV2 extends LocalModernDraftIntentValueV2 {
+  readonly receivedAt: IsoUtcTimestamp;
+}
+
+type LocalLegacyDraftRemoteValueV2 = LegacyDraftQuestionVersionV2 & {
+  readonly sessionId: UUID;
+  readonly questionId: QuestionId;
+  readonly selectedChoiceIds: readonly ChoiceId[];
+  readonly scrollOffset: null;
+  readonly deviceId: string;
+  readonly receivedAt: null;
+};
 
 interface LocalBookmarkValueV2 {
   readonly questionId: QuestionId;
@@ -1927,6 +2784,138 @@ interface LocalIssueValueV2 {
   readonly resolution: string | null;
   readonly lastIssueUpdateFactId: UUID | null;
 }
+
+type LocalDraftModernIntentV2 = LocalEntityModernIntentBaseV2 & {
+  readonly sourceEventKind: 'draft.saved';
+  readonly value: LocalModernDraftIntentValueV2;
+};
+type LocalNoteModernIntentV2 = LocalEntityModernIntentBaseV2 & {
+  readonly sourceEventKind: 'note.saved';
+  readonly value: LocalNoteValueV2;
+};
+type LocalBookmarkModernIntentV2 = LocalEntityModernIntentBaseV2 & {
+  readonly sourceEventKind: 'bookmark.changed';
+  readonly value: LocalBookmarkValueV2;
+};
+type LocalIssueModernIntentV2 = LocalEntityModernIntentBaseV2 & {
+  readonly sourceEventKind: 'issue.reported';
+  readonly value: LocalIssueValueV2;
+};
+
+type LocalDraftModernRestoreSourceV2 = LocalTypedModernRestoreSourceMetadataV2<'draft', 'draft.saved', NonNegativeSafeIntegerV1, string>;
+type LocalDraftLegacySyncRestoreSourceV2 = LocalTypedLegacySyncRestoreSourceMetadataV2<'draft', 'draft.saved', NonNegativeSafeIntegerV1, string>;
+type LocalDraftLegacyDirectRestoreSourceV2 = LocalTypedLegacyDirectRestoreSourceMetadataV2<'draft', NonNegativeSafeIntegerV1, string>;
+type LocalDraftModernRemoteSourceV2 =
+  | LocalClientSyncRemoteSourceMetadataV2<'draft.saved'>
+  | LocalDraftModernRestoreSourceV2;
+type LocalDraftLegacySyncRemoteSourceV2 =
+  | LocalLegacySyncRemoteSourceMetadataV2<'draft.saved'>
+  | LocalDraftLegacySyncRestoreSourceV2;
+type LocalDraftLegacyDirectRemoteSourceV2 =
+  | LocalLegacyDirectRemoteSourceMetadataV2<'answer_drafts', 'draft', NonNegativeSafeIntegerV1>
+  | LocalDraftLegacyDirectRestoreSourceV2;
+type LocalDraftRemoteFactV2 =
+  | LocalRemoteFactAbsentV2
+  | (LocalModernRemoteFactBaseV2 & { readonly source: LocalDraftModernRemoteSourceV2; readonly value: LocalModernDraftRemoteValueV2 })
+  | (LocalLegacySyncRemoteFactBaseV2 & { readonly revision: NonNegativeSafeIntegerV1; readonly source: LocalDraftLegacySyncRemoteSourceV2; readonly value: LocalLegacyDraftRemoteValueV2 })
+  | (LocalLegacyDirectRemoteFactBaseV2 & { readonly revision: NonNegativeSafeIntegerV1; readonly source: LocalDraftLegacyDirectRemoteSourceV2; readonly value: LocalLegacyDraftRemoteValueV2 });
+
+type LocalNoteModernRestoreSourceV2<R extends NonNegativeSafeIntegerV1 = NonNegativeSafeIntegerV1> =
+  LocalTypedModernRestoreSourceMetadataV2<'note', 'note.saved', R, QuestionId>;
+type LocalNoteModernRemoteSourceV2<R extends NonNegativeSafeIntegerV1 = NonNegativeSafeIntegerV1> =
+  | (LocalClientSyncRemoteSourceMetadataV2<'note.saved'> & { readonly sourceRevision: R })
+  | LocalNoteModernRestoreSourceV2<R>;
+// Noteはmodern-only。legacy event/directを名前だけのwide unionへ混ぜない。
+type LocalNoteLegacyRemoteSourceForbiddenV2 = never;
+type LocalNoteRemoteFactV2<R extends NonNegativeSafeIntegerV1 = NonNegativeSafeIntegerV1> =
+  | LocalRemoteFactAbsentV2
+  | (Omit<LocalModernRemoteFactBaseV2, 'revision'> & {
+      readonly revision: R;
+      readonly source: LocalNoteModernRemoteSourceV2<R>;
+      readonly value: LocalNoteValueV2;
+      // canonical factの本文/問題版/updatedAtとremote value/rowをdecoder+deferred CHECKでexact照合する。
+      readonly canonicalFact: NoteFactV2<R>;
+      readonly canonicalFactHash: Sha256HexV1;
+    });
+
+type LocalBookmarkModernRestoreSourceV2 = LocalTypedModernRestoreSourceMetadataV2<'bookmark', 'bookmark.changed', NonNegativeSafeIntegerV1, QuestionId>;
+type LocalBookmarkLegacySyncRestoreSourceV2 = LocalTypedLegacySyncRestoreSourceMetadataV2<'bookmark', 'bookmark.changed', null, QuestionId>;
+type LocalBookmarkLegacyDirectRestoreSourceV2 = LocalTypedLegacyDirectRestoreSourceMetadataV2<'bookmark', null, QuestionId>;
+type LocalBookmarkModernRemoteSourceV2 =
+  | LocalClientSyncRemoteSourceMetadataV2<'bookmark.changed'>
+  | LocalBookmarkModernRestoreSourceV2;
+type LocalBookmarkLegacySyncRemoteSourceV2 =
+  | LocalLegacySyncRemoteSourceMetadataV2<'bookmark.changed'>
+  | LocalBookmarkLegacySyncRestoreSourceV2;
+type LocalBookmarkLegacyDirectRemoteSourceV2 =
+  | LocalLegacyDirectRemoteSourceMetadataV2<'bookmarks', 'bookmark', null>
+  | LocalBookmarkLegacyDirectRestoreSourceV2;
+type LocalBookmarkRemoteFactV2 =
+  | LocalRemoteFactAbsentV2
+  | (LocalModernRemoteFactBaseV2 & { readonly source: LocalBookmarkModernRemoteSourceV2; readonly value: LocalBookmarkValueV2 })
+  | (LocalLegacySyncRemoteFactBaseV2 & { readonly revision: null; readonly source: LocalBookmarkLegacySyncRemoteSourceV2; readonly value: LocalBookmarkValueV2 })
+  | (LocalLegacyDirectRemoteFactBaseV2 & { readonly revision: null; readonly source: LocalBookmarkLegacyDirectRemoteSourceV2; readonly value: LocalBookmarkValueV2 });
+
+type LocalIssueModernRestoreSourceV2 = LocalTypedModernRestoreSourceMetadataV2<'issue', 'issue.reported', NonNegativeSafeIntegerV1, UUID>;
+type LocalIssueLegacyDirectRestoreSourceV2 = LocalTypedLegacyDirectRestoreSourceMetadataV2<'issue', null, UUID>;
+type LocalIssueModernRemoteSourceV2 =
+  | LocalClientSyncRemoteSourceMetadataV2<'issue.reported'>
+  | LocalIssueModernRestoreSourceV2;
+type LocalIssueLegacyDirectRemoteSourceV2 =
+  | LocalLegacyDirectRemoteSourceMetadataV2<'content_issues', 'issue', null>
+  | LocalIssueLegacyDirectRestoreSourceV2;
+type LocalIssueLegacySyncRemoteSourceForbiddenV2 = never;
+type LocalIssueRemoteFactV2 =
+  | LocalRemoteFactAbsentV2
+  | (LocalModernRemoteFactBaseV2 & { readonly source: LocalIssueModernRemoteSourceV2; readonly value: LocalIssueValueV2 })
+  | (LocalLegacyDirectRemoteFactBaseV2 & { readonly revision: null; readonly source: LocalIssueLegacyDirectRemoteSourceV2; readonly value: LocalIssueValueV2 });
+
+type LocalDraftRecordV2 = LocalRevisionedEntityBaseV2 & (
+  | { readonly localIntent: LocalDraftModernIntentV2; readonly remoteFact: LocalDraftRemoteFactV2 }
+  | { readonly localIntent: LocalEntityIntentAbsentV2; readonly remoteFact: Exclude<LocalDraftRemoteFactV2, LocalRemoteFactAbsentV2> }
+);
+type LocalNoteRecordV2 = LocalRevisionedEntityBaseV2 & (
+  | { readonly localIntent: LocalNoteModernIntentV2; readonly remoteFact: LocalNoteRemoteFactV2 }
+  | { readonly localIntent: LocalEntityIntentAbsentV2; readonly remoteFact: Exclude<LocalNoteRemoteFactV2, LocalRemoteFactAbsentV2> }
+);
+type LocalBookmarkRecordV2 = LocalRevisionedEntityBaseV2 & (
+  | { readonly localIntent: LocalBookmarkModernIntentV2; readonly remoteFact: LocalBookmarkRemoteFactV2 }
+  | { readonly localIntent: LocalEntityIntentAbsentV2; readonly remoteFact: Exclude<LocalBookmarkRemoteFactV2, LocalRemoteFactAbsentV2> }
+);
+type LocalIssueRecordV2 = LocalRevisionedEntityBaseV2 & (
+  | { readonly localIntent: LocalIssueModernIntentV2; readonly remoteFact: LocalIssueRemoteFactV2 }
+  | { readonly localIntent: LocalEntityIntentAbsentV2; readonly remoteFact: Exclude<LocalIssueRemoteFactV2, LocalRemoteFactAbsentV2> }
+);
+
+type Round16DraftModernSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalDraftModernRemoteSourceV2>>;
+type Round16DraftLegacySyncSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalDraftLegacySyncRemoteSourceV2>>;
+type Round16DraftLegacyDirectSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalDraftLegacyDirectRemoteSourceV2>>;
+type Round16NoteModernSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalNoteModernRemoteSourceV2>>;
+type Round16BookmarkModernSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalBookmarkModernRemoteSourceV2>>;
+type Round16BookmarkLegacySyncSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalBookmarkLegacySyncRemoteSourceV2>>;
+type Round16BookmarkLegacyDirectSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalBookmarkLegacyDirectRemoteSourceV2>>;
+type Round16IssueModernSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalIssueModernRemoteSourceV2>>;
+type Round16IssueLegacyDirectSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalIssueLegacyDirectRemoteSourceV2>>;
+// 定義済みnever aliasではなく実remote unionを抽出し、branch再追加の回帰を検出する。
+type Round16NoteLegacySourceNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalNoteRemoteFactV2, { readonly branch: 'legacy-sync' | 'legacy-direct' }>>
+>;
+type Round16IssueLegacySyncSourceNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalIssueRemoteFactV2, { readonly branch: 'legacy-sync' }>>
+>;
+// target×source kindのrestore mapが緩んでも検出できるよう、実wrapperから不正portable kindを抽出する。
+type Round16DraftRestoreBookmarkNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalDraftModernRestoreSourceV2, { readonly sourcePortableFactIdentity: { readonly factKind: 'bookmark' } }>>
+>;
+type Round16NoteRestoreDraftNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalNoteModernRestoreSourceV2, { readonly sourcePortableFactIdentity: { readonly factKind: 'draft' } }>>
+>;
+type Round16BookmarkRestoreNoteNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalBookmarkModernRestoreSourceV2, { readonly sourcePortableFactIdentity: { readonly factKind: 'note' } }>>
+>;
+type Round16IssueRestoreSessionNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalIssueModernRestoreSourceV2, { readonly sourcePortableFactIdentity: { readonly factKind: 'session' } }>>
+>;
 
 type LocalStaleGenerationSourceV2 =
   | {
@@ -2049,12 +3038,19 @@ type LocalStaleGenerationRowV2 =
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'profile'; readonly row: PortableProfileFactV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'selection-basis'; readonly row: BootstrapSelectionBasisRowV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'content-scope'; readonly row: BootstrapContentScopeV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'canonical-session'; readonly row: SessionFactV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'canonical-draft'; readonly row: DraftFactV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'canonical-attempt'; readonly row: AttemptFactV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'canonical-bookmark'; readonly row: BookmarkFactV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'canonical-note'; readonly row: NoteFactV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'canonical-issue'; readonly row: IssueFactV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'session'; readonly row: LocalSessionRecordV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'attempt'; readonly row: LocalAttemptRecordV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'attempt-correction'; readonly row: LiveAttemptCorrectionFactV2 })
-  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'attempt-invalidation'; readonly row: LiveAttemptInvalidationFactV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'attempt-invalidation'; readonly row: AttemptInvalidationFactV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'exam-history'; readonly row: ExamTerminalFactV2 | PortableExamResultRevisionFactV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'session-lifecycle'; readonly row: PortableSessionLifecycleFactV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'session-current-materialization'; readonly row: SessionCurrentMaterializationFactV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'session-item-invalidation'; readonly row: PortableSessionItemInvalidationFactV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'outbox'; readonly row: LocalOutboxRecordV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'pending-answer'; readonly row: LocalPendingAnswerIntentV2 })
@@ -2066,11 +3062,12 @@ type LocalStaleGenerationRowV2 =
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'quarantine'; readonly row: LocalQuarantineRecordV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'feedback-cache'; readonly row: LocalFeedbackCacheRecordV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'catalog-cache'; readonly row: LocalCatalogCacheRecordV2 })
-  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'draft'; readonly row: LocalRevisionedEntityV2<LocalDraftValueV2> })
-  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'bookmark'; readonly row: LocalRevisionedEntityV2<LocalBookmarkValueV2> })
-  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'note'; readonly row: LocalRevisionedEntityV2<LocalNoteValueV2> })
-  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'issue'; readonly row: LocalRevisionedEntityV2<LocalIssueValueV2> })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'draft'; readonly row: LocalDraftRecordV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'bookmark'; readonly row: LocalBookmarkRecordV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'note'; readonly row: LocalNoteRecordV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'issue'; readonly row: LocalIssueRecordV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'issue-update'; readonly row: LiveIssueUpdateFactV2 })
+  | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'restore-materialization-link'; readonly row: LocalRestoreMaterializationLinkV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'projection'; readonly row: LocalProjectionStateV2 })
   | (LocalStaleGenerationRowEnvelopeBaseV2 & { readonly rowKind: 'offline-reference-history'; readonly row: PortableOfflineExamReferenceFactV2 | PortableOfflineReferenceResultRevisionFactV2 | PortableOfflineReferenceFeedbackRevisionFactV2 });
 
@@ -2095,6 +3092,10 @@ interface LocalStaleGenerationNamespaceV2 {
   readonly namespaceHash: Sha256HexV1;
 }
 
+// canonical 6 rootとsession-current-materialization rootは専用物理tableだけから読む。各rowは(ownerUserId,dataGeneration,
+// namespaceId) composite FK、strict full fact JSON/hash、全provenance branchを持つ。
+// bootstrapはstaging namespaceへ全partitionを検証格納し、canonical rootと表示/local projection rootを
+// 同一transactionで二重写像してpointerをatomic swapする。canonicalはauthoritativeでoverlayしない。
 interface LocalPersistedLearningStateV2 {
   readonly schemaVersion: 2;
   readonly ownerUserId: UUID;
@@ -2103,12 +3104,20 @@ interface LocalPersistedLearningStateV2 {
   readonly profile: PortableProfileFactV2;
   readonly selectionBases: readonly BootstrapSelectionBasisRowV2[];
   readonly contentScopes: readonly BootstrapContentScopeV2[];
+  // canonical remote正本。下記のlocal-value/outboxとは独立し、optimistic値で上書きしない。
+  readonly canonicalSessions: readonly SessionFactV2[];
+  readonly canonicalDrafts: readonly DraftFactV2[];
+  readonly canonicalAttempts: readonly AttemptFactV2[];
+  readonly canonicalBookmarks: readonly BookmarkFactV2[];
+  readonly canonicalNotes: readonly NoteFactV2[];
+  readonly canonicalIssues: readonly IssueFactV2[];
   readonly sessions: readonly LocalSessionRecordV2[];
   readonly attempts: readonly LocalAttemptRecordV2[];
   readonly attemptCorrections: readonly LiveAttemptCorrectionFactV2[];
-  readonly attemptInvalidations: readonly LiveAttemptInvalidationFactV2[];
+  readonly attemptInvalidations: readonly AttemptInvalidationFactV2[];
   readonly examHistory: readonly (ExamTerminalFactV2 | PortableExamResultRevisionFactV2)[];
   readonly sessionLifecycleHistory: readonly PortableSessionLifecycleFactV2[];
+  readonly sessionCurrentMaterializations: readonly SessionCurrentMaterializationFactV2[];
   readonly sessionItemInvalidationHistory: readonly PortableSessionItemInvalidationFactV2[];
   readonly outbox: readonly LocalOutboxRecordV2[];
   readonly pendingAnswers: readonly LocalPendingAnswerIntentV2[];
@@ -2121,17 +3130,18 @@ interface LocalPersistedLearningStateV2 {
   readonly staleGenerationNamespaces: readonly LocalStaleGenerationNamespaceV2[];
   readonly feedbackCache: readonly LocalFeedbackCacheRecordV2[];
   readonly catalogCache: readonly LocalCatalogCacheRecordV2[];
-  readonly drafts: readonly LocalRevisionedEntityV2<LocalDraftValueV2>[];
-  readonly bookmarks: readonly LocalRevisionedEntityV2<LocalBookmarkValueV2>[];
-  readonly notes: readonly LocalRevisionedEntityV2<LocalNoteValueV2>[];
-  readonly issues: readonly LocalRevisionedEntityV2<LocalIssueValueV2>[];
+  readonly drafts: readonly LocalDraftRecordV2[];
+  readonly bookmarks: readonly LocalBookmarkRecordV2[];
+  readonly notes: readonly LocalNoteRecordV2[];
+  readonly issues: readonly LocalIssueRecordV2[];
   readonly issueUpdateHistory: readonly LiveIssueUpdateFactV2[];
+  readonly restoreMaterializationLinks: readonly LocalRestoreMaterializationLinkV2[];
   readonly projections: readonly LocalProjectionStateV2[];
   readonly offlineReferenceHistory: readonly (PortableOfflineExamReferenceFactV2 | PortableOfflineReferenceResultRevisionFactV2 | PortableOfflineReferenceFeedbackRevisionFactV2)[];
 }
 ```
 
-全local persisted DTOは`unknown`からstrict unionで検証し、nested余剰keyを拒否します。`LocalSessionRecordV2`はlocal optimistic値と最後に検証済みのremote status/revision/indexを別fieldにし、`localUpdatedAt`とdiscriminated `remoteSource`を保持してremote未取得をnull以外で推測しません。canonical sync/server changeの適用時は対応するsource event/command、sequence、request/canonical hash、remote revision/timeをdomain rowと同じtransactionで保存します。draft/note/bookmark/issueは`localSourceEventId/localSequence`とdiscriminated `remoteSource`を保持し、最新値だけへ縮退してsource eventを失いません。bootstrapでremoteだけから生成したentityのlocal source 2 fieldは両方null、local mutationを作成したentityは両方non-nullとし、片方だけnullを拒否します。issueの管理更新はserver-change sourceを、初回報告はsync-event sourceを保存します。
+全local persisted DTOは`unknown`からstrict unionで検証し、nested余剰keyを拒否します。旧generic revisioned-entity直積は公開schemaに存在せず、internal baseはenvelopeだけに限定する。`LocalDraftRecordV2`はmodern/legacy-sync=`draft.saved`、legacy-direct=`answer_drafts/draft`・non-null revision、`LocalNoteRecordV2`はprovenance付き`NoteFactV2`を正本とするmodern=`note.saved`だけ、`LocalBookmarkRecordV2`はmodern/legacy-sync=`bookmark.changed`、legacy-direct=`bookmarks/bookmark`・revision null、`LocalIssueRecordV2`はmodern=`issue.reported`、legacy-direct=`content_issues/issue`・revision nullだけを許可しlegacy-syncを持たない。Noteは`fact.revision=sourceRevision=canonical payload.revision=local remote revision`をgeneric literalとdecoderの双方で拘束し、question/version/body/updatedAt、canonical fact hashも`canonicalNotes`/local remote/portable/bootstrap/restoreでexact一致させる。hashを再計算してもsourceだけをswapしたrowはdeferred DB CHECKとstrict decoderで拒否する。各restore branchはtyped wrapperのtarget kind/ID/hash、source identity別のevent/fact/direct row ID・sequence・generation・hash、owner、source/target generation、restore job/link ID/hashを`LocalRestoreMaterializationLinkV2`正本とtarget factへexact再検証する。local intentのevent kind/ID/`localSequence`/request hash/update time/valueはabsentで全null、modernで全non-nullかつ3桁であり、`localSequence`とrequest hashは同じoutbox event/payloadへexact結合する。未ACK intentのserver sequenceはnullであり、ACK後のserver sequenceはremote factだけが持つ。remote factはentity固有branchのmodern 3桁またはlegacy 6桁valueとliteral sourceを持ち、absentで全nullである。local modern intentと許可remote factは独立に結合でき、legacy remoteへmodern local editを重ねてもremote value/source/hashを変更しない。ただしdirect table/aggregate/owner/generation/time、source kind/revision、value branchを跨ぐ組合せ、Noteのlegacy、Issueのlegacy-sync、偽event、片側nullを拒否する。`canonicalNotes`を含むcanonical 6 root、stale row、bootstrap、portable、restore、local projectionは同一`NoteFactV2`を用い、issue管理updateはappend-only `issueUpdateHistory`のserver-changeとして保持する。
 
 `LocalProjectionStateV2`はAPI/UI正本の`LearningProjectionSnapshotV2`と`ExamReadinessSnapshotV1`をfield名・単位・nullability・全nested hashのまま保存し、`ownerUserId/dataGeneration`、scope/acceptance、readinessの`chapterProgressSnapshotHash`とprojection nested snapshot hashをexact一致させます。readiness未取得だけnullを許し、履歴からの端末再計算、別snapshot/scope/acceptanceとの結合、旧projection field名への縮退を拒否します。
 
@@ -2164,49 +3174,203 @@ interface PortableExportManifestV2 {
   readonly signature: Base64Url64BytesV1;
 }
 
-interface SessionFactV2 {
+interface SessionFactSharedBaseV2 {
   readonly sessionId: UUID;
-  readonly createdEventId: UUID;
   readonly mode: LearningMode;
   readonly title: string;
   readonly status: SessionStatus;
-  readonly contentChannel: ContentChannel;
-  readonly contentAssurance: ContentAssurance;
-  readonly previewAcceptanceId: UUID | null;
-  readonly previewBundleId: string | null;
-  readonly previewCanonicalHash: Sha256HexV1 | null;
-  readonly previewManifestHash: Sha256HexV1 | null;
-  readonly previewSelectionRevision: number | null;
-  readonly examPolicy: ExamPolicy | null;
   readonly certificationCode: string;
   readonly syllabusVersion: string;
-  readonly selectionBasisId: UUID | null;
-  readonly selectionSpec: NormalSelectionSpecV2 | null;
-  readonly catalogRevision: number;
-  readonly examBlueprintVersion: string | null;
-  readonly examBlueprintHash: Sha256HexV1 | null;
-  readonly requestedQuestionCount: 10 | 20 | 30 | 40;
-  readonly actualQuestionCount: number;
-  readonly answerableQuestionCount: number;
-  readonly revision: number;
+  readonly revision: NonNegativeSafeIntegerV1;
   readonly currentIndex: number;
+  // fixed-baseの順序をそのまま保持する。staged item ordinal 0..n-1とdeferred exact一致する。
+  readonly questionIds: readonly QuestionId[];
+  // fixed-base text[]の値・順序をそのまま保持する。hashもraw orderを対象にし、UTF-8 sortしない。
+  // duplicate/foreign/coverage判定だけは、この配列から導出したsetを使う。
+  readonly answeredQuestionIds: readonly QuestionId[];
+}
+
+interface ModernSessionFactBaseV2 extends SessionFactSharedBaseV2 {
   readonly startedAt: IsoUtcTimestamp;
+  readonly updatedAt: IsoUtcTimestamp;
   readonly expiresAt: IsoUtcTimestamp | null;
   readonly submittedAt: IsoUtcTimestamp | null;
   readonly completedAt: IsoUtcTimestamp | null;
 }
 
-interface SessionItemFactV2 {
+interface LegacySessionFactBaseV2 extends SessionFactSharedBaseV2 {
+  readonly startedAt: LegacyStoredTimestampV1;
+  readonly updatedAt: LegacyStoredTimestampV1;
+  readonly expiresAt: null;
+  readonly submittedAt: null;
+  readonly completedAt: LegacyStoredTimestampV1 | null;
+}
+// legacy content/provenanceを保ったままpost-M1 currentが更新されたbranch。
+// startedAtはfixed-base作成instantの6桁、current timestampはmodern 3桁とし、
+// Source transport時刻とは別fieldのcanonical current snapshotとして保持する。
+type LegacyBoundPostM1SessionFactBaseV2 = Omit<LegacySessionFactBaseV2, 'updatedAt' | 'completedAt'> & {
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: IsoUtcTimestamp | null;
+};
+type LegacyBoundM1CompletedSessionFactBaseV2 = Omit<LegacySessionFactBaseV2, 'updatedAt' | 'status'> & {
+  readonly status: 'completed';
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: LegacyStoredTimestampV1;
+};
+type LegacyBoundM1InvalidatedSessionFactBaseV2 = Omit<LegacySessionFactBaseV2, 'updatedAt' | 'completedAt' | 'status'> & {
+  readonly status: 'invalidated';
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: null;
+};
+
+interface LegacyDirectRowSourceMetadataV2 {
+  readonly schemaVersion: 'legacy-direct-row-source.v1';
+  readonly sourceTable:
+    | 'learning_sessions'
+    | 'answer_drafts'
+    | 'answer_attempts'
+    | 'bookmarks'
+    | 'content_issues';
+  readonly sourceRowId: string;
+  readonly sourceOwnerUserId: UUID;
+  readonly sourceDataGeneration: DataGeneration;
+  readonly sourceAggregateKind:
+    | 'session'
+    | 'draft'
+    | 'attempt'
+    | 'bookmark'
+    | 'issue';
+  readonly sourceAggregateId: string;
+  // fixed baseにrevision列がないfactは値を捏造せずnullに固定する。
+  readonly sourceRevision: NonNegativeSafeIntegerV1 | null;
+  readonly sourceOccurredAt: LegacyStoredTimestampV1;
+}
+
+// 共通wide unionをfactへ交差させない。各FactSourceProvenanceV2は下の
+// literal event kind / revision / direct table+aggregateでのみ生成する。
+type FactEventSourceV2<K extends LearningSyncKind, R extends NonNegativeSafeIntegerV1 | null> = {
+      readonly sourceOrigin: 'sync-event';
+      readonly sourceEventId: UUID;
+      readonly sourceSequence: PositiveSafeIntegerV1;
+      readonly sourceEventKind: K;
+      readonly sourceEventHash: Sha256HexV1;
+      readonly sourceOccurredAt: IsoUtcTimestamp;
+      readonly sourceReceivedAt: IsoUtcTimestamp;
+      readonly sourceRevision: R;
+      readonly legacyDirectRowSource: null;
+      readonly legacyDirectRowHash: null;
+    };
+type FactLegacyEventSourceV2<K extends 'session.created' | 'draft.saved' | 'answer.submitted' | 'bookmark.changed', R extends NonNegativeSafeIntegerV1 | null> = {
+      readonly sourceOrigin: 'legacy-sync-event';
+      readonly sourceEventId: UUID;
+      readonly sourceSequence: PositiveSafeIntegerV1;
+      readonly sourceEventKind: K;
+      // historicalはLegacyHistoricalCanonicalSourceV1、post-M1はstored raw/canonical branchのstrict hash。
+      readonly sourceEventHash: Sha256HexV1;
+      readonly sourceOccurredAt: LegacyStoredTimestampV1;
+      readonly sourceReceivedAt: LegacyStoredTimestampV1;
+      readonly sourceRevision: R;
+      readonly legacyDirectRowSource: null;
+      readonly legacyDirectRowHash: null;
+    };
+type FactLegacyDirectSourceV2<T extends LegacyDirectRowSourceMetadataV2['sourceTable'], A extends LegacyDirectRowSourceMetadataV2['sourceAggregateKind'], R extends NonNegativeSafeIntegerV1 | null> = {
+      readonly sourceOrigin: 'legacy-direct-row';
+      readonly sourceEventId: null;
+      readonly sourceSequence: null;
+      readonly sourceEventKind: null;
+      readonly sourceEventHash: null;
+      readonly sourceOccurredAt: null;
+      readonly sourceReceivedAt: null;
+      readonly sourceRevision: null;
+      readonly legacyDirectRowSource: LegacyDirectRowSourceMetadataV2 & { readonly sourceTable: T; readonly sourceAggregateKind: A; readonly sourceRevision: R };
+      readonly legacyDirectRowHash: Sha256HexV1;
+    };
+
+type SessionFactSourceProvenanceV2 =
+  | FactEventSourceV2<'session.created', NonNegativeSafeIntegerV1>
+  | FactLegacyEventSourceV2<'session.created', NonNegativeSafeIntegerV1>
+  | FactLegacyDirectSourceV2<'learning_sessions', 'session', NonNegativeSafeIntegerV1>;
+type DraftFactSourceProvenanceV2 =
+  | FactEventSourceV2<'draft.saved', NonNegativeSafeIntegerV1>
+  | FactLegacyEventSourceV2<'draft.saved', NonNegativeSafeIntegerV1>
+  | FactLegacyDirectSourceV2<'answer_drafts', 'draft', NonNegativeSafeIntegerV1>;
+type AttemptFactSourceProvenanceV2 =
+  | FactEventSourceV2<'answer.submitted', null>
+  | FactLegacyEventSourceV2<'answer.submitted', null>
+  | FactLegacyDirectSourceV2<'answer_attempts', 'attempt', null>;
+type BookmarkFactSourceProvenanceV2 =
+  | FactEventSourceV2<'bookmark.changed', NonNegativeSafeIntegerV1>
+  | FactLegacyEventSourceV2<'bookmark.changed', null>
+  | FactLegacyDirectSourceV2<'bookmarks', 'bookmark', null>;
+type IssueFactSourceProvenanceV2 =
+  | FactEventSourceV2<'issue.reported', NonNegativeSafeIntegerV1>
+  | FactLegacyDirectSourceV2<'content_issues', 'issue', null>;
+
+type SessionFactV2 =
+  | (ModernSessionFactBaseV2 & { readonly mode: Exclude<LearningMode, 'exam'> } &
+      ModernSessionContentBindingV2 & FactEventSourceV2<'session.created', NonNegativeSafeIntegerV1> & {
+        readonly requestedQuestionCount: 10 | 20 | 30 | 40;
+        readonly actualQuestionCount: PositiveSafeIntegerV1;
+        // 作成時のimmutable値。suspend等によるcurrent値では書き換えない。
+        readonly initialAnswerableQuestionCount: NonNegativeSafeIntegerV1;
+        readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+      })
+  | (LegacySessionFactBaseV2 & LegacySessionContentBindingV2 &
+      Exclude<SessionFactSourceProvenanceV2, FactEventSourceV2<'session.created', NonNegativeSafeIntegerV1>> & {
+        readonly requestedQuestionCount: null;
+        readonly actualQuestionCount: PositiveSafeIntegerV1;
+        readonly initialAnswerableQuestionCount: NonNegativeSafeIntegerV1;
+        readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+      })
+  | (LegacyBoundPostM1SessionFactBaseV2 & LegacySessionContentBindingV2 &
+      Exclude<SessionFactSourceProvenanceV2, FactEventSourceV2<'session.created', NonNegativeSafeIntegerV1>> & {
+        readonly requestedQuestionCount: null;
+        readonly actualQuestionCount: PositiveSafeIntegerV1;
+        readonly initialAnswerableQuestionCount: NonNegativeSafeIntegerV1;
+        readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+      })
+  | (LegacyBoundM1CompletedSessionFactBaseV2 & LegacySessionContentBindingV2 &
+      Exclude<SessionFactSourceProvenanceV2, FactEventSourceV2<'session.created', NonNegativeSafeIntegerV1>> & {
+        readonly requestedQuestionCount: null;
+        readonly actualQuestionCount: PositiveSafeIntegerV1;
+        readonly initialAnswerableQuestionCount: NonNegativeSafeIntegerV1;
+        readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+      })
+  | (LegacyBoundM1InvalidatedSessionFactBaseV2 & LegacySessionContentBindingV2 &
+      Exclude<SessionFactSourceProvenanceV2, FactEventSourceV2<'session.created', NonNegativeSafeIntegerV1>> & {
+        readonly requestedQuestionCount: null;
+        readonly actualQuestionCount: PositiveSafeIntegerV1;
+        readonly initialAnswerableQuestionCount: NonNegativeSafeIntegerV1;
+        readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+      })
+  | (ModernSessionFactBaseV2 & { readonly mode: 'exam' } & ModernSessionContentBindingV2 &
+      FactEventSourceV2<'session.created', NonNegativeSafeIntegerV1> & {
+        readonly requestedQuestionCount: 40;
+        readonly actualQuestionCount: 40;
+        readonly initialAnswerableQuestionCount: NonNegativeSafeIntegerV1;
+        readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+      });
+
+// `legacyDirectRowHash`は次のstrict objectのRFC 8785 JCS SHA-256:
+// {schemaVersion,sourceTable,sourceRowId,sourceOwnerUserId,sourceDataGeneration,
+//  sourceAggregateKind,sourceAggregateId,sourceRevision,sourceOccurredAt,
+//  semanticFact /* sourceOrigin,sourceEventId,sourceSequence,sourceEventKind,sourceEventHash,
+//  sourceOccurredAt,sourceReceivedAt,sourceRevision,legacyDirectRowSource,legacyDirectRowHashを除くstrict fact */}
+// sourceTable/aggregateKindはfact型と相関し、direct rowへeventを捏造しない。
+
+interface SessionItemFactBaseV2 {
   readonly sessionItemId: UUID;
   readonly sessionId: UUID;
+  readonly userId: UUID;
+  readonly dataGeneration: DataGeneration;
   readonly questionId: QuestionId;
   readonly questionVersionId: QuestionVersionId;
   readonly ordinal: number;
   readonly choiceOrder: readonly ChoiceId[];
   readonly reviewMarked: boolean;
-  readonly status: 'active' | 'invalidated';
-  readonly invalidatedReason: 'question_suspended' | 'acceptance_revoked' | null;
 }
+
+type SessionItemFactV2 = SessionItemFactBaseV2 & SessionItemStatusV2;
 
 interface PortableSessionItemInvalidationFactV2 {
   readonly sessionItemInvalidationFactId: UUID;
@@ -2238,9 +3402,21 @@ interface RestoreSessionItemInvalidationMaterializationLinkV2 {
   readonly linkHash: Sha256HexV1;
 }
 
-interface DraftFactV2 {
-  readonly sourceEventId: UUID;
-  readonly sourceSequence: number;
+interface RestoreLegacyAttemptInvalidationMaterializationLinkV1 {
+  readonly restoreMaterializationLinkId: UUID;
+  readonly restoreJobId: UUID;
+  readonly sourceDataGeneration: DataGeneration;
+  readonly targetDataGeneration: DataGeneration;
+  readonly legacyAttemptInvalidationFactId: UUID;
+  readonly legacyAttemptInvalidationFactHash: Sha256HexV1;
+  readonly targetAttemptId: UUID;
+  readonly targetOwnerUserId: UUID;
+  readonly targetSessionId: UUID;
+  readonly materializedAt: IsoUtcTimestamp;
+  readonly linkHash: Sha256HexV1;
+}
+
+interface ModernDraftFactBodyV2 {
   readonly sessionId: UUID;
   readonly questionId: QuestionId;
   readonly questionVersionId: QuestionVersionId;
@@ -2252,9 +3428,34 @@ interface DraftFactV2 {
   readonly receivedAt: IsoUtcTimestamp;
 }
 
-interface AttemptFactV2 {
+type LegacyDraftQuestionVersionV2 =
+  | {
+      readonly questionVersionSource: 'staged-pin';
+      readonly questionVersionId: QuestionVersionId;
+    }
+  | {
+      readonly questionVersionSource: 'unknown-fixed-base';
+      readonly questionVersionId: null;
+    };
+
+type LegacyDraftFactBodyV2 = LegacyDraftQuestionVersionV2 & {
+  readonly sessionId: UUID;
+  readonly questionId: QuestionId;
+  readonly selectedChoiceIds: readonly ChoiceId[];
+  readonly scrollOffset: null;
+  // fixed-baseのdevice_idはそのまま保持し、modern received/scrollだけを補造しない。
+  readonly deviceId: string;
+  readonly revision: number;
+  readonly updatedAt: LegacyStoredTimestampV1;
+  readonly receivedAt: null;
+};
+
+type DraftFactV2 =
+  | (ModernDraftFactBodyV2 & FactEventSourceV2<'draft.saved', NonNegativeSafeIntegerV1>)
+  | (LegacyDraftFactBodyV2 & Exclude<DraftFactSourceProvenanceV2, FactEventSourceV2<'draft.saved', NonNegativeSafeIntegerV1>>);
+
+interface ModernAttemptFactV2 {
   readonly attemptId: UUID;
-  readonly sourceEventId: UUID;
   readonly sessionId: UUID;
   readonly questionId: QuestionId;
   readonly questionVersionId: QuestionVersionId;
@@ -2264,13 +3465,6 @@ interface AttemptFactV2 {
     | 'not_graded_suspended'
     | 'not_graded_acceptance_revoked';
   readonly originalOutcome: boolean | null;
-  readonly contentChannel: ContentChannel;
-  readonly contentAssurance: ContentAssurance;
-  readonly previewAcceptanceId: UUID | null;
-  readonly previewBundleId: string | null;
-  readonly previewCanonicalHash: Sha256HexV1 | null;
-  readonly previewManifestHash: Sha256HexV1 | null;
-  readonly previewSelectionRevision: number | null;
   readonly timingAssurance: 'verified';
   readonly responseMs: number | null;
   readonly answeredAt: IsoUtcTimestamp;
@@ -2278,6 +3472,29 @@ interface AttemptFactV2 {
   readonly timezoneAtReceipt: string;
   readonly localDate: string;
 }
+
+interface LegacyAttemptFactV2 {
+  readonly attemptId: UUID;
+  readonly sessionId: UUID;
+  readonly questionId: QuestionId;
+  readonly questionVersionId: QuestionVersionId;
+  readonly selectedChoiceIds: readonly ChoiceId[];
+  readonly gradingStatus: 'graded';
+  readonly originalOutcome: boolean;
+  readonly timingAssurance: 'legacy_unknown';
+  readonly responseMs: null;
+  readonly answeredAt: LegacyStoredTimestampV1;
+  readonly receivedAt: LegacyStoredTimestampV1;
+  readonly timezoneAtReceipt: null;
+  readonly localDate: null;
+}
+
+type AttemptFactV2 =
+  | (ModernAttemptFactV2 & ModernSessionContentBindingV2 & FactEventSourceV2<'answer.submitted', null>)
+  | (LegacyAttemptFactV2 & LegacySessionContentBindingV2 & Exclude<AttemptFactSourceProvenanceV2, FactEventSourceV2<'answer.submitted', null>>);
+
+// portable export、bootstrap attempt-history、effective attempt viewはこのunionを唯一の正本にする。
+// legacy branchをmodern値で補完する、または三branchを混在させるpayloadはstrict schema error。
 
 interface LiveAttemptCorrectionFactV2 {
   readonly correctionId: UUID;
@@ -2299,6 +3516,38 @@ interface LiveAttemptInvalidationFactV2 {
   readonly invalidatedAt: IsoUtcTimestamp;
 }
 
+interface LegacyAttemptInvalidationDirectSourceV1 {
+  readonly schemaVersion: 'legacy-direct-row-source.v1';
+  readonly sourceTable: 'answer_attempts';
+  readonly sourceRowId: Sha256HexV1;
+  readonly sourceOwnerUserId: UUID;
+  readonly sourceDataGeneration: DataGeneration;
+  readonly sourceAggregateKind: 'attempt';
+  readonly sourceAggregateId: UUID;
+  readonly sourceRevision: null;
+  readonly sourceOccurredAt: LegacyStoredTimestampV1;
+}
+
+interface LegacyAttemptInvalidationFactV1 {
+  readonly schemaVersion: 'legacy-attempt-invalidation.v1';
+  readonly invalidationId: UUID;
+  readonly attemptId: UUID;
+  readonly ownerUserId: UUID;
+  readonly sessionId: UUID;
+  readonly dataGeneration: DataGeneration;
+  // fixed-base textをtrim/default/enum化せず、空文字を含めbyte-for-byte保持する。
+  readonly reason: string;
+  readonly invalidatedAt: LegacyStoredTimestampV1;
+  readonly sourceOrigin: 'legacy-direct-row';
+  readonly legacyDirectRowSource: LegacyAttemptInvalidationDirectSourceV1;
+  readonly legacyDirectRowHash: Sha256HexV1;
+  readonly factHash: Sha256HexV1;
+}
+
+type AttemptInvalidationFactV2 =
+  | LiveAttemptInvalidationFactV2
+  | LegacyAttemptInvalidationFactV1;
+
 interface PortableActorMapEntryV2 {
   readonly actorExportPseudonym: Base64Url32BytesV1;
   readonly actorRole: PortableActorRoleV2;
@@ -2310,12 +3559,14 @@ interface PortableAttemptCorrectionFactV2 extends LiveAttemptCorrectionFactV2 {
   readonly actorRole: PortableActorRoleV2;
 }
 
-interface PortableAttemptInvalidationFactV2 extends LiveAttemptInvalidationFactV2 {
-  readonly actorExportPseudonym: Base64Url32BytesV1;
-  readonly actorRole: PortableActorRoleV2;
-}
+type PortableAttemptInvalidationFactV2 =
+  | (LiveAttemptInvalidationFactV2 & {
+      readonly actorExportPseudonym: Base64Url32BytesV1;
+      readonly actorRole: PortableActorRoleV2;
+    })
+  | LegacyAttemptInvalidationFactV1;
 
-interface ExamTerminalFactV2 {
+type ExamTerminalFactV2 = {
   readonly terminalEventId: UUID;
   readonly sessionId: UUID;
   readonly finalizerVersion: 'verified-v2';
@@ -2323,6 +3574,11 @@ interface ExamTerminalFactV2 {
   readonly examBlueprintVersion: string;
   readonly examBlueprintHash: Sha256HexV1;
   readonly submittedAt: IsoUtcTimestamp;
+  readonly finalizationCommandId: UUID;
+  readonly finalizationReceiptId: UUID;
+  readonly finalizationRequestHash: Sha256HexV1;
+  readonly finalizationResponseHash: Sha256HexV1;
+  readonly finalizedAt: IsoUtcTimestamp;
   readonly score: number;
   readonly denominator: number;
   readonly passingScore: 26 | null;
@@ -2338,33 +3594,44 @@ interface ExamTerminalFactV2 {
   readonly previewSelectionRevision: number | null;
   readonly timingAssurance: 'verified';
   readonly items: readonly ExamAttemptSummaryDto[];
-}
+} & ModernSessionContentBindingV2;
 
-interface BookmarkFactV2 {
-  readonly sourceEventId: UUID;
-  readonly sourceSequence: number;
+interface ModernBookmarkFactBodyV2 {
   readonly questionId: QuestionId;
   readonly enabled: boolean;
   readonly revision: number;
+  readonly createdAt: IsoUtcTimestamp;
   readonly updatedAt: IsoUtcTimestamp;
   readonly receivedAt: IsoUtcTimestamp;
 }
 
-interface NoteFactV2 {
-  readonly sourceEventId: UUID;
-  readonly sourceSequence: number;
+interface LegacyBookmarkFactV2 {
+  readonly questionId: QuestionId;
+  readonly enabled: true;
+  readonly revision: null;
+  readonly createdAt: LegacyStoredTimestampV1;
+  readonly updatedAt: LegacyStoredTimestampV1;
+  readonly receivedAt: null;
+}
+
+type BookmarkFactV2 =
+  | (ModernBookmarkFactBodyV2 & FactEventSourceV2<'bookmark.changed', NonNegativeSafeIntegerV1>)
+  | (LegacyBookmarkFactV2 & Exclude<BookmarkFactSourceProvenanceV2, FactEventSourceV2<'bookmark.changed', NonNegativeSafeIntegerV1>>);
+
+interface ModernNoteFactBodyV2<R extends NonNegativeSafeIntegerV1 = NonNegativeSafeIntegerV1> {
   readonly questionId: QuestionId;
   readonly questionVersionId: QuestionVersionId;
   readonly body: string;
-  readonly revision: number;
+  readonly revision: R;
   readonly updatedAt: IsoUtcTimestamp;
   readonly receivedAt: IsoUtcTimestamp;
 }
+// Noteはlegacy互換を持たない。event provenanceを省略した本文DTOへ縮退しない。
+type NoteFactV2<R extends NonNegativeSafeIntegerV1 = NonNegativeSafeIntegerV1> =
+  ModernNoteFactBodyV2<R> & FactEventSourceV2<'note.saved', R>;
 
-interface IssueFactV2 {
+interface ModernIssueFactBodyV2 {
   readonly issueId: UUID;
-  readonly sourceEventId: UUID;
-  readonly sourceSequence: number;
   readonly questionId: QuestionId;
   readonly questionVersionId: QuestionVersionId;
   readonly category: ContentIssueCategory;
@@ -2375,6 +3642,23 @@ interface IssueFactV2 {
   readonly resolution: null;
   readonly updatedAt: IsoUtcTimestamp;
 }
+
+interface LegacyIssueFactV2 {
+  readonly issueId: UUID;
+  readonly questionId: QuestionId;
+  readonly questionVersionId: QuestionVersionId;
+  readonly category: ContentIssueCategory;
+  readonly description: string;
+  readonly reportedAt: LegacyStoredTimestampV1;
+  readonly revision: null;
+  readonly status: 'open' | 'investigating' | 'resolved' | 'rejected';
+  readonly resolution: string | null;
+  readonly updatedAt: LegacyStoredTimestampV1;
+}
+
+type IssueFactV2 =
+  | (ModernIssueFactBodyV2 & FactEventSourceV2<'issue.reported', NonNegativeSafeIntegerV1>)
+  | (LegacyIssueFactV2 & FactLegacyDirectSourceV2<'content_issues', 'issue', null>);
 
 type ContentIssueTransitionV2 =
   | {
@@ -2441,7 +3725,7 @@ type PortableCanonicalEventFactV2 = {
 type LegacyLearningSyncKind = LegacyCanonicalSyncEventV1['kind'];
 
 interface PortableLegacyEventIdentityFactV1<K extends LegacyLearningSyncKind> {
-  readonly sourceSequence: number;
+  readonly sourceSequence: PositiveSafeIntegerV1;
   readonly contractVersion: null;
   readonly legacySchema: 'learning-sync.v1';
   readonly readOnly: true;
@@ -2449,8 +3733,8 @@ interface PortableLegacyEventIdentityFactV1<K extends LegacyLearningSyncKind> {
   readonly eventId: UUID;
   readonly kind: K;
   readonly entityId: string;
-  readonly occurredAt: IsoUtcTimestamp;
-  readonly receivedAt: IsoUtcTimestamp;
+  readonly occurredAt: LegacyStoredTimestampV1;
+  readonly receivedAt: LegacyStoredTimestampV1;
   readonly requestHash: null;
   readonly canonicalHash: null;
 }
@@ -2461,6 +3745,10 @@ type PortableLegacyCanonicalEventFactV1 = {
     readonly canonicalPayload: Extract<LegacyCanonicalSyncEventV1, { readonly kind: K }>['payload'];
   };
 }[LegacyLearningSyncKind];
+
+// portable legacy hashはidentityと上記kind-discriminated canonicalPayloadを含むstrict
+// `PortableLegacyCanonicalEventFactV1`全体のRFC 8785 JCS SHA-256である。v1に
+// request/canonical hashやgenerationを補造せず、outer/payloadの6桁timestampを3桁へ変換しない。
 
 type PortableCanonicalEventFact =
   | PortableLegacyCanonicalEventFactV1
@@ -2539,27 +3827,75 @@ interface PortableExamResultRevisionFactV2 {
   readonly items: readonly ExamAttemptSummaryDto[];
 }
 
-interface PortableSessionLifecycleFactBaseV2 {
+interface M1LegacySessionLifecycleFactBaseV2 {
+  readonly schemaVersion: 'learning-session-lifecycle-fact.v2';
   readonly lifecycleFactId: UUID;
+  readonly userId: UUID;
+  readonly dataGeneration: DataGeneration;
   readonly sessionId: UUID;
-  readonly revision: number;
+  readonly priorStatus: 'expired';
+  readonly priorRevision: PositiveSafeIntegerV1;
+  readonly resultingRevision: PositiveSafeIntegerV1;
   readonly operationId: UUID;
-  readonly terminalAt: IsoUtcTimestamp;
+  // fixed-base terminal source (`completed_at` or `updated_at`)の保存instant。
+  readonly legacyTerminalAt: LegacyStoredTimestampV1;
+  // migrationが一回だけ発行するmodern UTC millisecond時刻。
+  readonly migrationRecordedAt: IsoUtcTimestamp;
+  readonly factHash: Sha256HexV1;
 }
 
-type PortableSessionLifecycleFactV2 =
-  | (PortableSessionLifecycleFactBaseV2 & {
-      readonly status: 'completed';
+type M1LegacySessionLifecycleFactV2 =
+  M1LegacySessionLifecycleFactBaseV2 & (
+    | {
+        readonly resultingStatus: 'completed';
+        readonly reasonCode: 'all_answerable_items_completed';
+      }
+    | {
+        readonly resultingStatus: 'invalidated';
+        readonly reasonCode: 'legacy_expired_non_resumable';
+      }
+  );
+
+interface RuntimeSessionLifecycleFactBaseV2 {
+  readonly schemaVersion: 'learning-session-lifecycle-fact.v2';
+  readonly lifecycleFactId: UUID;
+  readonly userId: UUID;
+  readonly dataGeneration: DataGeneration;
+  readonly sessionId: UUID;
+  readonly priorStatus: 'active';
+  readonly priorRevision: NonNegativeSafeIntegerV1;
+  readonly resultingRevision: PositiveSafeIntegerV1;
+  readonly operationId: UUID;
+  readonly terminalAt: IsoUtcTimestamp;
+  readonly recordedAt: IsoUtcTimestamp;
+  readonly factHash: Sha256HexV1;
+}
+
+type RuntimeSessionLifecycleFactV2 =
+  | (RuntimeSessionLifecycleFactBaseV2 & {
+      readonly resultingStatus: 'completed';
       readonly reasonCode: 'all_answerable_items_completed';
     })
-  | (PortableSessionLifecycleFactBaseV2 & {
-      readonly status: 'abandoned';
+  | (RuntimeSessionLifecycleFactBaseV2 & {
+      readonly resultingStatus: 'abandoned';
       readonly reasonCode: 'user_abandoned';
     })
-  | (PortableSessionLifecycleFactBaseV2 & {
-      readonly status: 'invalidated';
+  | (RuntimeSessionLifecycleFactBaseV2 & {
+      readonly resultingStatus: 'invalidated';
       readonly reasonCode: 'question_suspended' | 'acceptance_revoked' | 'operation_invalidated';
     });
+
+type PortableSessionLifecycleFactV2 =
+  | M1LegacySessionLifecycleFactV2
+  | RuntimeSessionLifecycleFactV2;
+
+// M1LegacySessionLifecycleFactV2はM1変換factの唯一のstrict schema。
+// migrationRecordedAt=date_trunc('milliseconds',clock_timestamp())をlock後にexact一回取得し、
+// resultingRevision=priorRevision+1、migrationRecordedAtはclock値、legacyTerminalAt<=migrationRecordedAt。
+// legacyTerminalAtは自身のDB/json/API間で6桁、migrationRecordedAtは自身のDB/json/API間で3桁。
+// 両者はwire文字列でなくPostgreSQL instantとして比較する。
+// factHashは自身だけを除く全fieldのRFC 8785 JCS SHA-256。
+// migration再実行は保存済みlegacyTerminalAt/migrationRecordedAtと全field/hash exact一致だけno-op。
 
 interface PortableOfflineExamReferenceItemFactV2 extends OfflineExamReferenceItemResultV2 {
   readonly ordinal: number;
@@ -2666,6 +4002,7 @@ interface ServerPortableExportPayloadV2 {
   readonly previewSelectionEvents: readonly PortablePreviewSelectionEventFactV2[];
   readonly sessions: readonly SessionFactV2[];
   readonly sessionItems: readonly SessionItemFactV2[];
+  readonly sessionCurrentMaterializations: readonly SessionCurrentMaterializationFactV2[];
   readonly sessionItemInvalidations: readonly PortableSessionItemInvalidationFactV2[];
   readonly drafts: readonly DraftFactV2[];
   readonly attempts: readonly AttemptFactV2[];
@@ -2689,13 +4026,45 @@ interface ServerPortableExportV2 {
 }
 ```
 
+hash定義は次の一式だけを正本とする。`D=legacyDirectRowHash=SHA-256(RFC 8785 JCS(strict LegacyAttemptInvalidationFactV1からlegacyDirectRowHashとfactHashだけを除く))`であり、専用source metadataとsemantic fieldを全て含む。`F=factHash=SHA-256(RFC 8785 JCS(strict LegacyAttemptInvalidationFactV1からfactHashだけを除く))`であり、算出済み`D`を含む。したがって`D`は`D/F`を含まず、`F`は`F`だけを含まず`D`を必ず含む。別preimage定義、hash相互参照、片方だけの差替え、runtime branchとのfield混在をrejectする。
+
+literal goldenはowner=`11111111-1111-4111-8111-111111111111`、attempt=`22222222-2222-4222-8222-222222222222`、session=`33333333-3333-4333-8333-333333333333`、generation=`7`、reason=`legacy free reason`、invalidatedAt=`2025-01-02T03:04:05.123456Z`へ固定する。source-row JCSは`{"components":["22222222-2222-4222-8222-222222222222"],"domain":"legacy-direct-row-id.v1","ownerUserId":"11111111-1111-4111-8111-111111111111","sourceTable":"answer_attempts"}`、`sourceRowId=4dd2359dacc5e840a345043c570b8f67f6e140982a95bf8896e36a02f53fe26e`、deterministic `invalidationId=98961ca7-f0ec-50e4-9f1c-c714db00bfb9`、`D=c2c8b45975f190f1e48cd7ea1318dbca7f569eca2b0d69a592bd8c0c5d85dc09`、`F=964e61379adf51349cb989620786b9e96c75ac6cf5a335bd0c102acae7c40bd8`である。fixtureはこのliteral bytes/digestを独立実装から読み、実装関数でexpectedを生成しない。
+
+reason/ID name用JCSは`{"invalidatedAt":"2025-01-02T03:04:05.123456Z","reason":"legacy free reason"}`、digestは`e12b70df43c8550dcc86dfb8a5a2dfd5acb4d3645d9707692f56795eaec22922`である。D preimage UTF-8は`{"attemptId":"22222222-2222-4222-8222-222222222222","dataGeneration":7,"invalidatedAt":"2025-01-02T03:04:05.123456Z","invalidationId":"98961ca7-f0ec-50e4-9f1c-c714db00bfb9","legacyDirectRowSource":{"schemaVersion":"legacy-direct-row-source.v1","sourceAggregateId":"22222222-2222-4222-8222-222222222222","sourceAggregateKind":"attempt","sourceDataGeneration":7,"sourceOccurredAt":"2025-01-02T03:04:05.123456Z","sourceOwnerUserId":"11111111-1111-4111-8111-111111111111","sourceRevision":null,"sourceRowId":"4dd2359dacc5e840a345043c570b8f67f6e140982a95bf8896e36a02f53fe26e","sourceTable":"answer_attempts"},"ownerUserId":"11111111-1111-4111-8111-111111111111","reason":"legacy free reason","schemaVersion":"legacy-attempt-invalidation.v1","sessionId":"33333333-3333-4333-8333-333333333333","sourceOrigin":"legacy-direct-row"}`である。F preimage UTF-8は`{"attemptId":"22222222-2222-4222-8222-222222222222","dataGeneration":7,"invalidatedAt":"2025-01-02T03:04:05.123456Z","invalidationId":"98961ca7-f0ec-50e4-9f1c-c714db00bfb9","legacyDirectRowHash":"c2c8b45975f190f1e48cd7ea1318dbca7f569eca2b0d69a592bd8c0c5d85dc09","legacyDirectRowSource":{"schemaVersion":"legacy-direct-row-source.v1","sourceAggregateId":"22222222-2222-4222-8222-222222222222","sourceAggregateKind":"attempt","sourceDataGeneration":7,"sourceOccurredAt":"2025-01-02T03:04:05.123456Z","sourceOwnerUserId":"11111111-1111-4111-8111-111111111111","sourceRevision":null,"sourceRowId":"4dd2359dacc5e840a345043c570b8f67f6e140982a95bf8896e36a02f53fe26e","sourceTable":"answer_attempts"},"ownerUserId":"11111111-1111-4111-8111-111111111111","reason":"legacy free reason","schemaVersion":"legacy-attempt-invalidation.v1","sessionId":"33333333-3333-4333-8333-333333333333","sourceOrigin":"legacy-direct-row"}`であり、それ以外の差分を許可しない。
+
+fixed baseの5 factの関連event・比較projection・materialized defaultは次表だけです。aggregate keyは候補抽出のkey、`sourceRevision=null`はrevision列が無いfixed-base rowだけに許可するliteralで、`1`等を補造しません。legacy eventの`sourceOccurredAt/sourceReceivedAt`は`sync_events.occurred_at/received_at`、direct branchの`sourceOccurredAt`は表のactual columnから`LegacyStoredTimestampV1`へformatした`legacyDirectRowSource.sourceOccurredAt`（outer provenance fieldはnull）です。event候補が複数なら`sequence` primary keyの最大値は一意です。最大candidateがmaterialized rowの比較projectionとexact一致し、かつそれより後の同aggregate relevant eventが0件だけ`legacy-sync-event`にします。relevant eventが0件だけdirect、eventありでcandidate 0・最大candidate不一致・後続矛盾はrollbackです。PKゆえ「最大sequence同順位」fixtureは存在しないため登録しません。
+
+| fact | M1 relevant event kind | aggregate key | exact comparable projection | sourceRevision / direct sourceOccurredAt | no-event default |
+|---|---|---|---|---|---|
+| Session | `session.created` | UUID `learning_sessions.id` | eventは`entityId/sessionId/mode/title/questionIds/createdAt`と`occurredAt<=startedAt`、row-onlyはstatus/index/revision/updated/completed/answeredQuestionIds | row revision / direct `learning_sessions.updated_at`（initial SQLではNOT NULL） | direct |
+| Draft | `draft.saved` | `${sessionUuid}:${questionId}`。`sessionUuid`は36文字lower-case UUID、parserはbyte 0..35をUUID、byte 36のliteral `:`をseparator、byte 37以降全体をquestionIdとして一回だけsplitする。questionIdはfixed-baseのnon-empty ASCII stable-ID grammar `^[A-Za-z0-9._:-]+$`、percent encode/trim/normalizationを禁止 | eventは`sessionId/questionId/selectedChoiceIds`、row-onlyはstaged pin version/revision/updated | row revision / direct `answer_drafts.updated_at` | direct |
+| Attempt | `answer.submitted` | UUID `answer_attempts.id` | eventは`entityId/sessionId/questionId/questionVersionId/selectedChoiceIds/answeredAt`とDB再採点`isCorrect`一致、row-onlyはattempt ID/item/received | revisionなし=`null` / direct `answer_attempts.received_at` | direct |
+| Bookmark | `bookmark.changed` | `questionId` | eventは`entityId/questionId/enabled`。row存在はlatest enabled=true、latest enabled=falseならrow不存在を要求 | revisionなし=`null` / direct `bookmarks.updated_at` | direct |
+| Issue | M1なし（`issue.reported`はM2） | なし。event candidateを検索しない | row全`question/version/category/description/status/resolution/created/updated` | revisionなし=`null` / direct `content_issues.updated_at` | direct-only |
+
+composite direct rowの`sourceRowId`は曖昧連結を禁止し、`SHA-256(JCS({domain:'legacy-direct-row-id.v1',sourceTable,ownerUserId,components:[...]}))`のlowercase hexで固定する（Session/Attempt/IssueはUUID component一件、Draftは`sessionUuid,questionId`、Bookmarkは`questionId`）。event-known projectionとrow-only fieldを混在比較しない。`legacyDirectRowHash`はsource table/row/owner/generation/aggregate/revision/timeと`sourceOrigin,sourceEventId,sourceSequence,sourceEventKind,sourceEventHash,sourceOccurredAt,sourceReceivedAt,sourceRevision,legacyDirectRowSource,legacyDirectRowHash`を除くstrict factから独立再計算し、欠落・差替え・偽eventを拒否します。
+
+source hash goldenはSession/Draft/Attempt/Bookmarkのsync+direct 8件とIssue direct 1件（exact9）のstrict preimage UTF-8 bytes、digest、1-bit差替えを別fixtureに固定し、全legacy timestamp列を`.123456Z`で被覆する。Issue `legacy-sync-event`はnegativeにする。direct preimageの除外fieldは`sourceOrigin,sourceEventId,sourceSequence,sourceEventKind,sourceEventHash,sourceOccurredAt,sourceReceivedAt,sourceRevision,legacyDirectRowSource,legacyDirectRowHash`の全10 literalだけであり、field数による省略や未知fieldを許可しない。
+
+legacy adapter field sourceはliteralに固定する。Sessionは`learning_sessions.started_at/updated_at/completed_at`、Draftは`answer_drafts.updated_at`、Attemptは`answer_attempts.answered_at/received_at`、Bookmarkは`bookmarks.created_at/updated_at`、Issueは`content_issues.created_at->reportedAt/updated_at`を、いずれもDB instantから`LegacyStoredTimestampV1` 6桁wireへlosslessにformatして保持する。Draftはsession/question/selected/revision/deviceId/updatedだけがbase row、question versionはstaged pinがexact一件なら`{questionVersionSource:'staged-pin',questionVersionId:UUID}`、なければ`{questionVersionSource:'unknown-fixed-base',questionVersionId:null}`だけを許可し、scroll/receivedはnull。Attemptはbaseのoutcome/answered/receivedを保持し、timing/timezone/local date/responseは推測せず上記null。Bookmarkはbase rowのcreatedAt/updatedAtとlatest enabled=trueだけを表しrevision/receivedはnull。Issueはbaseのstatus/resolution/reported/updatedを全て保持しrevisionとlast update factを補造しない。modern fieldをlegacyへ補う、unknown branchにnon-null versionを置く、またはこの表外sourceを置くことを拒否する。
+
+portable actor coverageのinvalidation対象はactor-bearing runtime branch `LiveAttemptInvalidationFactV2 & {actorExportPseudonym,actorRole}`だけである。`LegacyAttemptInvalidationFactV1`はsource actor/operationを持たないためactor map参照数exact 0、principal snapshot digest exact 0、actor materialization link exact 0とする。legacy factからowner、direct-row metadata、migration worker、restore workerをactorとして生成しない。`actorMap`のrequired reference setとunused判定はruntime correction/runtime invalidation/acceptance revocation/issue updateのactor-bearing branchだけから導出し、legacy invalidationの存在・件数で変化しない。
+
+`SessionFactV2`、`DraftFactV2`、`AttemptFactV2`、`BookmarkFactV2`、`NoteFactV2`、`IssueFactV2`は上記のfact別strict provenance unionをDB、local、bootstrap、portable exportまでlosslessに再利用します。legacy branchの全fixed-base timestampは`LegacyStoredTimestampV1`、modern branchは`IsoUtcTimestamp`だけであり、opaque brand、DB CHECK、decoderの全てで精度直積を拒否します。canonical remote正本はこの6 fact rootだけへ保存し、optimistic local intentはoutbox/intent専用rootへ分離してcanonical factへoverlayしません。bootstrapは`drafts`を独立global partitionとして必ず返し、sectionごとにcanonical fact専用rootと表示/local projection rootを同一transactionで二重写像する。canonicalがauthoritative、projectionがderivedであり、相互overlayを禁止する。modern content bindingとlegacy provenance、またはlegacy bindingとmodern provenanceの直積を型・DB CHECK・decoderの全てで拒否します。M1の既存`mode='exam'` sessionはlegacy sync/directだけを採用します。modern active practice/exam sessionはともにonline `session.created` event provenance必須で、modern examにcreation receipt ID/table/columnは0件、exam terminalだけが別`ExamTerminalFactV2`のfinalization command/receipt/request/response/finalizedAtを持ちます。ACTIVE sessionにfinalization由来を要求・補完せず、normal provenanceをNULLにしません。
+
+`legacyAttemptInvalidationFactHash`は後述の`F`一式だけで算出する。restore linkはsource portable fact/target append-only factの同ID・同`F`、owner/session/attempt、source/target generationへexact一致する。link hashは自身だけを除くstrict linkのJCS SHA-256であり、runtime invalidation linkやsession-item linkへこのlegacy fieldを混在させない。
+
+`LegacyAttemptInvalidationFactV1.invalidationId`はUUIDv5 DNS namespaceとUTF-8 name `jstqb-study-app/m1/legacy-attempt-invalidation/v1/<lowercaseAttemptUuid>/<SHA-256(RFC 8785 JCS({reason,invalidatedAt}))>`だけから決定する。`reason`はfixed-baseの`invalidation_reason text`を空文字を含めそのまま用いる（空をpreflight failureにしない）。`invalidatedAt`はfixed-base `invalidated_at timestamptz`を`LegacyStoredTimestampV1`の6桁wireへlossless formatする。operation、actor、reason codeは過去rowに存在しないためfieldを追加・推測しない。
+
+専用direct sourceは`sourceTable='answer_attempts'`、`sourceAggregateKind='attempt'`、`sourceAggregateId=attemptId`、`sourceRevision=null`、`sourceOwnerUserId=ownerUserId`、`sourceDataGeneration=dataGeneration`、`sourceOccurredAt=invalidatedAt`へexact一致する。`sourceRowId=SHA-256(RFC 8785 JCS({domain:'legacy-direct-row-id.v1',sourceTable:'answer_attempts',ownerUserId,components:[attemptId]}))`であり、attempt UUID文字列そのものをrow IDとして使用しない。
+
 selection basis discard command、`SelectionBasisDiscardedFactV2`、そのcommand receiptはserver/localのcontrol auditだけです。`ServerPortableExportPayloadV2.selectionBases`はconsume済み`PortableSelectionBasisFactV2`だけ、`commandReceipts`は`exam.submit`、`session.abandon`、`exam.offline-reference`の三branchだけを許可し、discard fact/receiptをportable payload、`restored_command_replay_archive_v2`、restore materialization linkへ含めません。restore後にdiscard responseをsource archiveからreplayせず、current generationで必要なら新command IDの明示操作として実行します。portable validatorはdiscard kind、discard fact ID、discardedAtが一件でも含まれれば`UNSUPPORTED_SOURCE_SCHEMA`で全体を拒否します。
 
 `LocalSessionRecordV2`と`LocalPersistedLearningStateV2`は端末強制終了復旧専用で、control-plane restore入力に使用しません。旧端末snapshotはallowlist projectionでv2へ移行した同一transaction内で旧blobを破棄します。全階層の未知key、正答・解説field、owner/generation不一致を拒否します。restore後local rowの`restore-materialization` sourceはv2 source branchとlegacy sync-event branchをstrictに分離し、legacy branchだけ`sourceDataGeneration=null`を許可します。
 
 portable exportはserverだけが生成し、`payloadHash = SHA-256(RFC 8785 JCS(payload))`とします。Ed25519署名対象はmanifestから`signature`だけを除いたRFC 8785 JCS bytesで、`payloadHash`、owner、data generation、stream/projection上限、key ID/algorithmを全て拘束します。canonical event factはv2のsource sequence、全envelope field、request/canonical hash、型別canonical payloadと、初期schemaに実在したv1 read-only payloadを別unionで保持します。v1に存在しなかったhash/generationを生成せず、v2 ACK・outbox・mutationへ変換しません。command receiptはrequest/response hashとstrict保存済みresponseを保持し、過去responseを現在のdomain stateから推測しません。全schemaは全階層の未知keyをrejectします。問題本文、正答、解説、feedback本文、outbox、cursor、ACK、tokenを含めず、session/version IDからowned-session RPCで現在のsafe contentを再hydrateします。suspended/revoked版は必ずtombstoneへ置換します。
 
-`PortableActorRoleV2`をportable actor roleの唯一のregistryとし、sourceの`admin`は`content-admin`へ正規化し、未知roleを拒否します。訂正・無効化・acceptance revoke・issue updateの`actorExportPseudonym`は`base64url(SHA-256(UTF8('portable-actor-v2') || 0x00 || UUID_BYTES(exportId) || BASE64URL_DECODE(actorPseudonymSalt) || HEX_DECODE(sourcePrincipalSnapshotDigest)))`です。`actorPseudonymSalt`はexportごとの公開32 random bytesをbase64url no-paddingでmanifest署名へ拘束します。`actorRole`はsource auditの固定role registryから写し、restore worker自身をactorへ置換しません。`actorMap`はexport内で参照されるpseudonymをexact一件ずつ持ち、`sourcePrincipalSnapshotDigest=SHA-256(UTF8('portable-principal-snapshot-v2') || 0x00 || RFC8785_JCS(principalSnapshot))`を結合します。export時はsource principal、role、全portable correction/invalidation/acceptance revocation/issue update参照を再検証し、restore時はmanifest署名、pseudonym再計算、mappingの一意性、全参照のexact coverage、unused map 0を検証します。targetにはPIIを持たないpseudonymous principal snapshotを作り、`restore_actor_materialization_links(restoreJobId,actorExportPseudonym,targetPrincipalSnapshotId)`で一意に結合します。source auditにprincipal snapshotまたは許可roleが欠ける、同一pseudonymへrole不一致がある場合はexport/restoreをfail-closedにします。
+`PortableActorRoleV2`をportable actor roleの唯一のregistryとし、sourceの`admin`は`content-admin`へ正規化し、未知roleを拒否します。runtime訂正、runtime無効化、acceptance revoke、issue updateのactor-bearing branchだけが`actorExportPseudonym`を持ち、`base64url(SHA-256(UTF8('portable-actor-v2') || 0x00 || UUID_BYTES(exportId) || BASE64URL_DECODE(actorPseudonymSalt) || HEX_DECODE(sourcePrincipalSnapshotDigest)))`で算出します。`LegacyAttemptInvalidationFactV1`はactor参照を持たずcoverage exact 0です。`actorPseudonymSalt`はexportごとの公開32 random bytesをbase64url no-paddingでmanifest署名へ拘束します。`actorRole`はsource auditの固定role registryから写し、restore worker自身をactorへ置換しません。`actorMap`はexport内のactor-bearing branchが参照するpseudonymをexact一件ずつ持ち、`sourcePrincipalSnapshotDigest=SHA-256(UTF8('portable-principal-snapshot-v2') || 0x00 || RFC8785_JCS(principalSnapshot))`を結合します。export時はsource principal、role、全portable runtime correction/runtime invalidation/acceptance revocation/issue update参照を再検証し、restore時はmanifest署名、pseudonym再計算、mappingの一意性、全参照のexact coverage、unused map 0を検証します。legacy invalidationからactor map entry、pseudonymous principal snapshot、`restore_actor_materialization_links`を生成しません。targetにはactor-bearing branchだけPIIを持たないpseudonymous principal snapshotを作り、`restore_actor_materialization_links(restoreJobId,actorExportPseudonym,targetPrincipalSnapshotId)`で一意に結合します。source auditにprincipal snapshotまたは許可roleが欠ける、同一pseudonymへrole不一致がある場合はexport/restoreをfail-closedにします。
 
 P0 restoreは`empty-learning-namespace-only`です。merge、既存学習データの置換、cross-account importを実装しません。dry-run時とexclusive user lock取得後の両方で、sync/replay archive、server change、command receipt、consume済みbasis、未consumeかつ未discard basis、acceptance/revoke/selection、session/item/draft/attempt/correction/invalidation、exam terminal/revision、offline reference/revision、bookmark、note、issue/update、projection、非既定profile settingsが一件でもあれば`RESTORE_TARGET_NOT_EMPTY`で拒否します。discard済み未consume basisとappend-only discard fact、auth user、現在device、当該restore job/upload、operation audit、初期generation行だけを空判定から除外します。dry-run reportは拒否原因となったactive basis IDを列挙し、暗黙discardしません。restore stagingは署名、payload hash、owner、fact間FK、event/command IDの内部重複を検証してから単一finalize transactionへ進みます。source event/envelopeとcommand receiptはsource generationのまま`restored_event_replay_archive_v2`/`restored_command_replay_archive_v2`へ保存し、session/item/attempt/projection等のcurrent domain rowだけを新しいtarget generationへmaterializeします。`restore_materialization_links`がrestore job、source kind/ID/generation、target generation/IDを一意に結合します。fact取込、archive、link、profile設定、derived projection再構築、generation increment、job適用を一つのfinalize transactionで確定し、失敗時はlive namespace/generationを不変にします。source eventをcurrent generation streamへ再採番して混ぜず、current stream/cursorはfull bootstrap後の新規writeから開始します。read-only replayはsource archiveから元responseを返し、current streamへ再発行しません。archiveへ全値一致する既確定requestだけ保存済みresponseを返し、同ID異内容を拒否します。
 
@@ -3291,30 +4660,15 @@ type LearningServerChangeV2 =
     })
   | (LearningServerChangeBaseV2 & {
       readonly kind: 'session.completed';
-      readonly lifecycleFactId: UUID;
-      readonly sessionId: UUID;
-      readonly status: 'completed';
-      readonly revision: number;
-      readonly terminalAt: IsoUtcTimestamp;
-      readonly reasonCode: 'all_answerable_items_completed';
+      readonly fact: Extract<PortableSessionLifecycleFactV2, { readonly resultingStatus: 'completed' }>;
     })
   | (LearningServerChangeBaseV2 & {
       readonly kind: 'session.abandoned';
-      readonly lifecycleFactId: UUID;
-      readonly sessionId: UUID;
-      readonly status: 'abandoned';
-      readonly revision: number;
-      readonly terminalAt: IsoUtcTimestamp;
-      readonly reasonCode: 'user_abandoned';
+      readonly fact: Extract<PortableSessionLifecycleFactV2, { readonly resultingStatus: 'abandoned' }>;
     })
   | (LearningServerChangeBaseV2 & {
       readonly kind: 'session.invalidated';
-      readonly lifecycleFactId: UUID;
-      readonly sessionId: UUID;
-      readonly status: 'invalidated';
-      readonly revision: number;
-      readonly terminalAt: IsoUtcTimestamp;
-      readonly reasonCode: 'question_suspended' | 'acceptance_revoked' | 'operation_invalidated';
+      readonly fact: Extract<PortableSessionLifecycleFactV2, { readonly resultingStatus: 'invalidated' }>;
     })
   | (LearningServerChangeBaseV2 & {
       readonly kind: 'exam.result-revised';
@@ -3728,7 +5082,7 @@ issue管理RPCはPUBLIC/anon/authenticated/service_roleからREVOKEし、専用c
 
 stage/publish/suspend/retire共通のinternal `operationRequestHash`（job/claim列名は`internalRequestHash`）は`SHA-256(JCS({operationKind,logicalRequestWithoutExecutionClaim,operationPrincipalSnapshotId,resolvedReauthGrantId:null}))`です。lease更新可能な`executionClaim`をpreimageへ含めず、claimの`internalRequestHash`はjobへ保存した同じinternal logical request hashとexact一致させます。`operationResponseHash`は同field自身だけを除くstrict response JCSのSHA-256です。internal RPCは専用role ACLを確認した直後、operation ID/kind/principal/internal request hashでappend-only receiptを先に検索し、完全一致があれば現在のlease期限、claim freshness、fencing tokenを再検証・再消費せず、保存済みresponse bytesをbyte-for-byte返します。receiptがない初回だけjob/claim、未期限lease、最新fencing、capabilityを検証します。別hash、別principal、別kindは保存receiptの有無にかかわらず全件rollbackします。suspend responseの`fanoutStatus='pending'`は内部`ContentSuspendOperationV2.status='pending'`へ一意に対応し、`pending -> running`、`running -> retry_wait|completed|dead_lettered`、`retry_wait -> running|dead_lettered`だけを許可します。completed/dead-letteredはterminalでsame-state更新を含む他遷移を拒否します。retireはfanoutを作りません。
 
-`PortableSessionItemInvalidationFactV2.factHash=SHA-256(RFC 8785 JCS(factHashだけを除くstrict fact))`です。`session.item-invalidated` changeはこのfactをnested `fact`としてbyte-exactに持ち、outer `operationId/occurredAt`は`fact.operationId/invalidatedAt`と一致させます。local `sessionItemInvalidationHistory`、stale-generation専用row、bootstrap、portable export、restore materialization、suspend materialization linkは同じfact ID/hash、session item/session/question/version、reason、operation/timeを保持し、再発行、別memberへの再利用、ID一致hash不一致を拒否します。各lifecycle changeは同じtransactionでappendした`PortableSessionLifecycleFactV2`と同一の`lifecycleFactId/sessionId/revision/operationId/terminalAt/status/reasonCode`を持ち、completed理由をnullへ縮退しません。`exam.result-revised`は`PortableExamResultRevisionFactV2`と同一の`revisionId/sessionId/resultRevision/priorResultRevision/operationId/revisedAt/items`を含み、端末がchangeだけでappend-only revision factと実効結果を再構築できなければなりません。`content.acceptance-revoked`はportable revocationと同じ`revocationId/acceptanceId/revocationReasonCode/revokedAt/operationId`を持ちます。`offline-reference.feedback-revised`は同じtransactionのresult revision factとfeedback revision factの両ID、連続result/feedback revision、時刻、実効score/denominator/全result items、`originalItemCount/tombstonedOrdinals/affectedItems`をlosslessに持ちます。`tombstonedOrdinals`は影響ordinalだけで、result items・feedback responseはいずれも元の全ordinalを保持します。`issue.updated`は管理更新のappend-only factと同じ`issueUpdateFactId/priorUpdateFactId/revision/oldStatus/newStatus/oldResolution/newResolution/reason/updatedAt`を持ち、ownerのlocal issue current projectionと`issueUpdateHistory`へlosslessに適用します。これらのID/値がbootstrap、portable export、change feedで一つでも異なれば整合性errorとしてfail-closedにします。
+`PortableSessionItemInvalidationFactV2.factHash=SHA-256(RFC 8785 JCS(factHashだけを除くstrict fact))`です。`session.item-invalidated` changeはnested `fact`としてbyte-exactに持ち、local、bootstrap、portable、restore linkも同じfact ID/hashを保持します。各lifecycle changeは完全`PortableSessionLifecycleFactV2`をnested `fact`として保持し、runtime outer `occurredAt`は`fact.recordedAt`、M1 outer `occurredAt`は`fact.migrationRecordedAt`へ一致させます。M1の`M1LegacySessionLifecycleFactV2`は`legacyTerminalAt: LegacyStoredTimestampV1`と`migrationRecordedAt: IsoUtcTimestamp`を含む唯一のstrict型で、portable、bootstrap、change feed、local履歴で一fieldも縮退しません。`legacyTerminalSourceAt=COALESCE(old.completed_at,old.updated_at)`はDB保存instantをround/truncateせず6桁wireへformatし、`migrationRecordedAt=date_trunc('milliseconds',clock_timestamp())`はlock後一回だけ取得する3桁wireです。両者はDB instantとして`legacyTerminalAt<=migrationRecordedAt`を比較し、DB instantと6桁wireのroundtrip、JCS/hashの同wire、local/bootstrap/portable同値を検証します。legacy 3/5/7桁、offset、rounding/truncationは拒否し、`.123456Z`を含むsub-millisecond fixed-base sourceはpositiveです。expired変換の`priorRevision`は`1..9007199254740990`だけで、再実行は保存済み両時刻と全field/hash exact一致だけno-opです。`exam.result-revised`、`content.acceptance-revoked`、`offline-reference.feedback-revised`、`issue.updated`の既存完全fact契約も維持します。
 
 normal completion、abandoned、invalidated、acceptance revoke、post-terminal exam revision、issue updateを別端末へ収束させ、terminal後の全writeを拒否します。問題suspendのglobal transactionはversion exclusive lock取得後にDB `clock_timestamp()`を一度だけ`frozenAt`へ固定し、version status、catalog tombstone、append-only suspend operation、`SuspendFanoutTargetSetV2`だけを原子的に確定して複数user lockを保持しません。同transactionでproduction capabilityから`workerName='suspension-fanout'`のexact `pinnedWorkerVersion`、snapshot ID、署名検証済みsnapshot hashをoperation/target setへpinします。`executionContractHash=SHA-256(JCS({targetSetHash,pinnedWorkerVersion,runtimeCapabilitySnapshotId,runtimeCapabilitySnapshotHash}))`だけを正本preimageとし、question version、frozen time、worker nameは`targetSetHash`が既に拘束するため重複追加しません。実装別の別preimageやfield aliasを禁止し、retry/deployで変更しません。
 
@@ -3927,6 +5281,7 @@ public.get_learning_bootstrap_page_v2(
 type BootstrapSectionV2 =
   | 'profile'
   | 'selection-bases'
+  | 'drafts'
   | 'catalog'
   | 'sessions'
   | 'attempt-history'
@@ -3989,7 +5344,7 @@ type BootstrapAvailableOwnedPinnedContentV2 = Exclude<
   | { readonly visibility: 'acceptance-revoked-tombstone' }
 >;
 
-type BootstrapSessionItemV2 = Omit<OwnedSessionItemDto, 'content'> & (
+type BootstrapSessionItemV2 = Omit<OwnedSessionItemBaseDto, 'content'> & SessionItemStatusV2 & (
   | {
       readonly contentAvailability: 'available';
       readonly content: BootstrapAvailableOwnedPinnedContentV2;
@@ -4007,18 +5362,705 @@ type BootstrapSessionItemV2 = Omit<OwnedSessionItemDto, 'content'> & (
     }
 );
 
-interface BootstrapOwnedLearningSessionV2
-  extends Omit<OwnedLearningSessionResponseV2, 'items'> {
-  readonly items: readonly BootstrapSessionItemV2[];
-}
+type DistributiveReplaceItemsV2<T, TItem> = T extends { readonly items: readonly unknown[] }
+  ? Omit<T, 'items'> & { readonly items: readonly TItem[] }
+  : never;
 
-interface BootstrapSessionRecordV2 {
-  readonly session: BootstrapOwnedLearningSessionV2;
-  readonly canonicalRevision: NonNegativeSafeIntegerV1;
-  readonly canonicalUpdatedAt: IsoUtcTimestamp;
-  readonly snapshotReceivedAt: IsoUtcTimestamp;
-  readonly remoteSource: LocalRemoteSourceMetadataV2;
+type BootstrapOwnedLearningSessionV2 = DistributiveReplaceItemsV2<
+  OwnedLearningSessionResponseV2,
+  BootstrapSessionItemV2
+>;
+
+type B1IsNeverFixtureV2<T> = [T] extends [never] ? true : false;
+type B1IsAssignableFixtureV2<T, U> = [T] extends [U] ? true : false;
+type B1ExpectTrueFixtureV2<T extends true> = T;
+type B1ExpectFalseFixtureV2<T extends false> = T;
+type B1ModernTimestampIsNotLegacyFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsAssignableFixtureV2<IsoUtcTimestamp, LegacyStoredTimestampV1>
+>;
+type B1LegacyTimestampIsNotModernFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsAssignableFixtureV2<LegacyStoredTimestampV1, IsoUtcTimestamp>
+>;
+type B1ModernHydrationNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: 'public' | 'personal_preview' }>>
+>;
+type B1LegacyHydrationNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null }>>
+>;
+type B1LegacyFixedHydrationNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly updatedAt: LegacyStoredTimestampV1 }>>
+>;
+type B1LegacyPostM1HydrationNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly updatedAt: IsoUtcTimestamp }>>
+>;
+type B1ModernLegacyCrossProductRejectedFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<
+    Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null }> &
+    Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: 'public' | 'personal_preview' }>
+  >
+>;
+
+// Sessionのcreation/current sourceはlocalとbootstrapで同じstrict型を再利用する。
+// creationSourceはSessionFactの作成provenanceそのもの、currentは現在値を最後に確定した根拠である。
+type ModernSessionCreationSourceV2 = FactEventSourceV2<'session.created', NonNegativeSafeIntegerV1>;
+type LegacySessionSyncCreationSourceV2 = FactLegacyEventSourceV2<'session.created', NonNegativeSafeIntegerV1>;
+type LegacySessionDirectCreationSourceV2 = FactLegacyDirectSourceV2<'learning_sessions', 'session', NonNegativeSafeIntegerV1>;
+type LegacySessionCreationSourceV2 = LegacySessionSyncCreationSourceV2 | LegacySessionDirectCreationSourceV2;
+type LocalSessionCreationSourceV2 = ModernSessionCreationSourceV2 | LegacySessionCreationSourceV2;
+
+// Kをunionで一度に与えず、literalごとのobject unionに分配する。これにより
+// Extract<..., {eventKind: 'draft.saved'}> が実際にneverとなる。
+type LocalSessionModernMutationSourceV2 =
+  | LocalClientSyncRemoteSourceMetadataV2<'session.advanced'>
+  | LocalClientSyncRemoteSourceMetadataV2<'session.review-marked'>
+  | LocalClientSyncRemoteSourceMetadataV2<'answer.submitted'>;
+type LocalSessionLegacyMutationSourceV2 =
+  | LocalLegacySyncRemoteSourceMetadataV2<'session.advanced'>
+  | LocalLegacySyncRemoteSourceMetadataV2<'answer.submitted'>;
+type LocalSessionLegacyCurrentRowSourceV2 = LocalLegacyDirectRemoteSourceMetadataV2<
+  'learning_sessions',
+  'session',
+  NonNegativeSafeIntegerV1
+>;
+// Session currentのrestore primary sourceはevent/lifecycle/changeではなく、必ずportable
+// `session-current-materialization` factである。cause payloadはfact内の二段FK/hashで追跡する。
+// したがってrestore wrapperがevent kindとportable fact kindをcross-productにできない。
+type LocalSessionMaterializationFactRestoreSourceV2<
+  P extends SessionCurrentProjectionV2,
+  C extends SessionCurrentMaterializationCauseV2['causeKind'] = SessionCurrentMaterializationCauseV2['causeKind'],
+> = P extends SessionCurrentProjectionV2 ? Extract<
+  LocalTypedModernRestoreSourceMetadataV2<'session', 'session-current-materialization', NonNegativeSafeIntegerV1, UUID>,
+  { readonly sourceIdentityKind: 'portable-fact' }
+> & {
+  readonly sourcePortableFactIdentity: Extract<RestorePortableFactIdentityV2, { readonly factKind: 'session-current-materialization' }>;
+  readonly sourceMaterializationFact: SessionCurrentMaterializationFactV2<P> & {
+    readonly cause: Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: C }>;
+  };
+  readonly sourceCurrentProjection: P;
+  readonly sourceCurrentProjectionHash: Sha256HexV1;
+} : never;
+type LocalSessionModernCreationRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<ModernActiveSessionCurrentProjectionV2, 'session.created'>;
+type LocalSessionModernProgressRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<ModernActiveSessionCurrentProjectionV2, 'session.advanced' | 'session.review-marked' | 'answer.submitted'>;
+type LocalSessionModernTerminalRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<ModernCompletedSessionCurrentProjectionV2, 'session.submitted'>;
+type LocalSessionModernCompletedLifecycleRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<ModernCompletedSessionCurrentProjectionV2, 'session-lifecycle'>;
+type LocalSessionModernAbandonedLifecycleRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<ModernSessionCurrentProjectionV2 & { readonly status: 'abandoned'; readonly completedAt: null }, 'session-lifecycle'>;
+type LocalSessionModernInvalidatedLifecycleRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<ModernSessionCurrentProjectionV2 & { readonly status: 'invalidated'; readonly completedAt: null }, 'session-lifecycle'>;
+type LocalSessionModernLifecycleRestoreSourceV2 = LocalSessionModernCompletedLifecycleRestoreSourceV2 | LocalSessionModernAbandonedLifecycleRestoreSourceV2 | LocalSessionModernInvalidatedLifecycleRestoreSourceV2;
+type LocalSessionModernServerChangeRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<ModernActiveSessionCurrentProjectionV2, 'session.item-invalidated'>;
+type LocalSessionModernRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<ModernSessionCurrentProjectionV2>;
+type LocalSessionLegacySyncFixedRowRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<LegacyFixedRowSessionCurrentProjectionV2, 'legacy-fixed-row-snapshot'>;
+type LocalSessionLegacyDirectFixedRowRestoreSourceV2 = LocalSessionMaterializationFactRestoreSourceV2<LegacyFixedRowSessionCurrentProjectionV2, 'legacy-fixed-row-snapshot'>;
+type LocalSessionLegacySyncRestoreSourceV2 = LocalSessionLegacySyncFixedRowRestoreSourceV2;
+type LocalSessionLegacyDirectRestoreSourceV2 = LocalSessionLegacyDirectFixedRowRestoreSourceV2;
+
+interface SessionCurrentProjectionV2 {
+  readonly status: SessionStatus;
+  readonly currentIndex: number;
+  readonly revision: NonNegativeSafeIntegerV1;
+  readonly answeredQuestionIds: readonly QuestionId[];
+  readonly answerableQuestionCount: NonNegativeSafeIntegerV1;
+  readonly updatedAt: IsoUtcTimestamp | LegacyStoredTimestampV1;
+  readonly completedAt: IsoUtcTimestamp | LegacyStoredTimestampV1 | null;
 }
+type ModernSessionCurrentProjectionV2 = SessionCurrentProjectionV2 & {
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: IsoUtcTimestamp | null;
+};
+type LegacySessionCurrentProjectionV2 = SessionCurrentProjectionV2 & {
+  readonly updatedAt: LegacyStoredTimestampV1;
+  readonly completedAt: LegacyStoredTimestampV1 | null;
+};
+type ModernActiveSessionCurrentProjectionV2 = ModernSessionCurrentProjectionV2 & {
+  readonly status: 'active';
+  readonly completedAt: null;
+};
+type ModernCompletedSessionCurrentProjectionV2 = ModernSessionCurrentProjectionV2 & {
+  readonly status: 'completed';
+  readonly completedAt: IsoUtcTimestamp;
+};
+type LegacyActiveSessionCurrentProjectionV2 = LegacySessionCurrentProjectionV2 & {
+  readonly status: 'active';
+  readonly completedAt: null;
+};
+type LegacyCompletedSessionCurrentProjectionV2 = LegacySessionCurrentProjectionV2 & {
+  readonly status: 'completed';
+  readonly completedAt: LegacyStoredTimestampV1;
+};
+// M1 expired→completedはmixed epochである。updatedAtだけはmigration clockの3桁、
+// completedAtだけはfixed-base terminal instantの6桁をlosslessに保持する。
+type M1PostMigrationCompletedSessionCurrentProjectionV2 = SessionCurrentProjectionV2 & {
+  readonly status: 'completed';
+  readonly updatedAt: IsoUtcTimestamp;
+  readonly completedAt: LegacyStoredTimestampV1;
+};
+type M1PostMigrationInvalidatedSessionCurrentProjectionV2 = ModernSessionCurrentProjectionV2 & {
+  readonly status: 'invalidated';
+  readonly completedAt: null;
+};
+type LegacyFixedRowSessionCurrentProjectionV2 =
+  | LegacyActiveSessionCurrentProjectionV2
+  | LegacyCompletedSessionCurrentProjectionV2;
+type LocalSessionServerChangeCurrentSourceV2<
+  P extends ModernActiveSessionCurrentProjectionV2 | LegacyActiveSessionCurrentProjectionV2 = ModernActiveSessionCurrentProjectionV2,
+> = LocalServerChangeRemoteSourceMetadataV2 & {
+  // LearningServerChangeV2に存在するkindだけを許可する。lifecycle 3種はlifecycle branch専用。
+  readonly sourceChangeKind: 'session.item-invalidated';
+  readonly nestedFactKind: 'session-item-invalidation';
+  // payloadの縮退を禁止し、owner/generation/required sequence/assurance/preview/
+  // projection revision/operation/sequence/occurredAt/payload hashをfull changeで保持する。
+  readonly change: Extract<LearningServerChangeV2, { readonly kind: 'session.item-invalidated' }>;
+  readonly sessionItemInvalidationFactId: UUID;
+  readonly sessionItemInvalidationFactHash: Sha256HexV1;
+  readonly nestedFact: PortableSessionItemInvalidationFactV2 & { readonly resultingSessionStatus: 'active' };
+  readonly resultingProjection: P;
+  readonly resultingProjectionHash: Sha256HexV1;
+};
+
+type SessionCurrentMaterializationCauseV2 =
+  | { readonly causeKind: 'session.created'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'session.advanced'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'session.review-marked'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'answer.submitted'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'session.submitted'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'session-lifecycle'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'session.item-invalidated'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'restore-materialization'; readonly restorePhase: 'initial'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'restore-materialization'; readonly restorePhase: 'mutation'; readonly causeId: UUID; readonly causeHash: Sha256HexV1 }
+  | { readonly causeKind: 'legacy-fixed-row-snapshot'; readonly causeId: string; readonly causeHash: Sha256HexV1 };
+
+// currentを更新する各transactionがexact一件appendする正本。source eventだけから
+// current projectionを補造しない。factHashは自身を除くstrict factのJCS SHA-256である。
+interface SessionCurrentMaterializationFactBaseV2<P extends SessionCurrentProjectionV2 = SessionCurrentProjectionV2> {
+  readonly sessionCurrentMaterializationFactId: UUID;
+  readonly sessionId: UUID;
+  readonly resultingRevision: NonNegativeSafeIntegerV1;
+  readonly projection: P;
+  readonly projectionHash: Sha256HexV1;
+  readonly occurredAt: P['updatedAt'];
+  readonly factHash: Sha256HexV1;
+}
+type SessionCurrentMaterializationInitialCauseV2 =
+  | Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'session.created' }>
+  | Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'legacy-fixed-row-snapshot' }>
+  | Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'restore-materialization'; readonly restorePhase: 'initial' }>;
+type SessionCurrentMaterializationMutationCauseV2 =
+  | Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'session.advanced' | 'session.review-marked' | 'answer.submitted' | 'session.submitted' | 'session-lifecycle' | 'session.item-invalidated' }>
+  | Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'restore-materialization'; readonly restorePhase: 'mutation' }>;
+// initial はcreation/current migrationの最初の一件だけ、mutation は直前factを必ず参照する。
+// `resultingRevision=priorRevision+1` はdecoderとdeferred CHECKで検証し、整数の型丸めで代替しない。
+type SessionCurrentMaterializationFactV2<P extends SessionCurrentProjectionV2 = SessionCurrentProjectionV2> =
+  | (SessionCurrentMaterializationFactBaseV2<P> & {
+      readonly materializationPhase: 'initial';
+      readonly priorRevision: null;
+      readonly priorMaterializationFactId: null;
+      readonly cause: SessionCurrentMaterializationInitialCauseV2;
+    })
+  | (SessionCurrentMaterializationFactBaseV2<P> & {
+      readonly materializationPhase: 'mutation';
+      readonly priorRevision: NonNegativeSafeIntegerV1;
+      readonly priorMaterializationFactId: UUID;
+      readonly resultingRevision: PositiveSafeIntegerV1;
+      readonly cause: SessionCurrentMaterializationMutationCauseV2;
+    });
+
+interface SessionCurrentMaterializationBaseV2<
+  P extends SessionCurrentProjectionV2,
+  C extends SessionCurrentMaterializationCauseV2['causeKind'] = SessionCurrentMaterializationCauseV2['causeKind'],
+  Q extends SessionCurrentMaterializationFactV2<P>['materializationPhase'] = SessionCurrentMaterializationFactV2<P>['materializationPhase'],
+> {
+  readonly currentStatus: P['status'];
+  readonly sourceRevision: NonNegativeSafeIntegerV1;
+  readonly updatedAt: P['updatedAt'];
+  readonly aggregateKind: 'session';
+  readonly aggregateId: UUID;
+  readonly sourceHash: Sha256HexV1;
+  readonly projection: P;
+  readonly projectionHash: Sha256HexV1;
+  readonly materializationFact: Extract<SessionCurrentMaterializationFactV2<P>, { readonly materializationPhase: Q }> & {
+    readonly cause: Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: C }>;
+  };
+  readonly materializationFactHash: Sha256HexV1;
+}
+type ModernSessionEventCurrentMaterializationSourceV2 =
+  | (SessionCurrentMaterializationBaseV2<ModernActiveSessionCurrentProjectionV2, 'session.advanced', 'mutation'> & {
+      readonly materializationKind: 'session-event';
+      readonly source: LocalClientSyncRemoteSourceMetadataV2<'session.advanced'>;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernActiveSessionCurrentProjectionV2, 'session.review-marked', 'mutation'> & {
+      readonly materializationKind: 'session-event';
+      readonly source: LocalClientSyncRemoteSourceMetadataV2<'session.review-marked'>;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernActiveSessionCurrentProjectionV2, 'answer.submitted', 'mutation'> & {
+      readonly materializationKind: 'session-event';
+      readonly source: LocalClientSyncRemoteSourceMetadataV2<'answer.submitted'>;
+    });
+type ModernSessionCurrentMaterializationSourceV2 =
+  | (SessionCurrentMaterializationBaseV2<ModernActiveSessionCurrentProjectionV2, 'session.created', 'initial'> & {
+      readonly materializationKind: 'creation';
+      readonly source: ModernSessionCreationSourceV2;
+    })
+  | ModernSessionEventCurrentMaterializationSourceV2
+  | (SessionCurrentMaterializationBaseV2<ModernCompletedSessionCurrentProjectionV2, 'session.submitted', 'mutation'> & {
+      readonly materializationKind: 'terminal';
+      readonly source: LocalServerSubmittedRemoteSourceMetadataV2;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernCompletedSessionCurrentProjectionV2, 'session-lifecycle', 'mutation'> & {
+      readonly materializationKind: 'lifecycle';
+      readonly source: Extract<RuntimeSessionLifecycleFactV2, { readonly resultingStatus: 'completed' }>;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernSessionCurrentProjectionV2 & { readonly status: 'abandoned'; readonly completedAt: null }, 'session-lifecycle', 'mutation'> & {
+      readonly materializationKind: 'lifecycle';
+      readonly source: Extract<RuntimeSessionLifecycleFactV2, { readonly resultingStatus: 'abandoned' }>;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernSessionCurrentProjectionV2 & { readonly status: 'invalidated'; readonly completedAt: null }, 'session-lifecycle', 'mutation'> & {
+      readonly materializationKind: 'lifecycle';
+      readonly source: Extract<RuntimeSessionLifecycleFactV2, { readonly resultingStatus: 'invalidated' }>;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernActiveSessionCurrentProjectionV2, 'session.item-invalidated', 'mutation'> & {
+      readonly materializationKind: 'server-change';
+      readonly source: LocalSessionServerChangeCurrentSourceV2<ModernActiveSessionCurrentProjectionV2>;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernActiveSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'creation';
+      readonly source: LocalSessionModernCreationRestoreSourceV2;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernActiveSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'session-event';
+      readonly source: LocalSessionModernProgressRestoreSourceV2;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernCompletedSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'terminal';
+      readonly source: LocalSessionModernTerminalRestoreSourceV2;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernCompletedSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'lifecycle';
+      readonly source: LocalSessionModernCompletedLifecycleRestoreSourceV2;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernSessionCurrentProjectionV2 & { readonly status: 'abandoned'; readonly completedAt: null }, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'lifecycle';
+      readonly source: LocalSessionModernAbandonedLifecycleRestoreSourceV2;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernSessionCurrentProjectionV2 & { readonly status: 'invalidated'; readonly completedAt: null }, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'lifecycle';
+      readonly source: LocalSessionModernInvalidatedLifecycleRestoreSourceV2;
+    })
+  | (SessionCurrentMaterializationBaseV2<ModernActiveSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'server-change';
+      readonly source: LocalSessionModernServerChangeRestoreSourceV2;
+    });
+type ModernLifecycleSessionCurrentProjectionV2 =
+  | ModernCompletedSessionCurrentProjectionV2
+  | (ModernSessionCurrentProjectionV2 & { readonly status: 'abandoned' | 'invalidated'; readonly completedAt: null });
+type M1ExpiredCompletedSessionCurrentMaterializationSourceV2 =
+  SessionCurrentMaterializationBaseV2<M1PostMigrationCompletedSessionCurrentProjectionV2, 'session-lifecycle', 'mutation'> & {
+    readonly materializationKind: 'lifecycle';
+    readonly source: Extract<M1LegacySessionLifecycleFactV2, { readonly resultingStatus: 'completed' }>;
+  };
+type M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2 =
+  SessionCurrentMaterializationBaseV2<M1PostMigrationInvalidatedSessionCurrentProjectionV2, 'session-lifecycle', 'mutation'> & {
+    readonly materializationKind: 'lifecycle';
+    readonly source: Extract<M1LegacySessionLifecycleFactV2, { readonly resultingStatus: 'invalidated' }>;
+  };
+type M1ExpiredSessionCurrentMaterializationSourceV2 =
+  | M1ExpiredCompletedSessionCurrentMaterializationSourceV2
+  | M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2;
+type LocalSessionM1ExpiredCompletedLifecycleRestoreSourceV2 =
+  LocalSessionMaterializationFactRestoreSourceV2<M1PostMigrationCompletedSessionCurrentProjectionV2, 'session-lifecycle'> & {
+    readonly sourcePortableFact: Extract<M1LegacySessionLifecycleFactV2, { readonly resultingStatus: 'completed' }>;
+  };
+type LocalSessionM1ExpiredInvalidatedLifecycleRestoreSourceV2 =
+  LocalSessionMaterializationFactRestoreSourceV2<M1PostMigrationInvalidatedSessionCurrentProjectionV2, 'session-lifecycle'> & {
+    readonly sourcePortableFact: Extract<M1LegacySessionLifecycleFactV2, { readonly resultingStatus: 'invalidated' }>;
+  };
+type M1ExpiredCompletedRestoreCurrentMaterializationSourceV2 =
+  SessionCurrentMaterializationBaseV2<M1PostMigrationCompletedSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+    readonly materializationKind: 'restore';
+    readonly restoredMaterializationKind: 'lifecycle';
+    readonly source: LocalSessionM1ExpiredCompletedLifecycleRestoreSourceV2;
+  };
+type M1ExpiredInvalidatedRestoreCurrentMaterializationSourceV2 =
+  SessionCurrentMaterializationBaseV2<M1PostMigrationInvalidatedSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+    readonly materializationKind: 'restore';
+    readonly restoredMaterializationKind: 'lifecycle';
+    readonly source: LocalSessionM1ExpiredInvalidatedLifecycleRestoreSourceV2;
+  };
+type M1ExpiredRestoreCurrentMaterializationSourceV2 =
+  | M1ExpiredCompletedRestoreCurrentMaterializationSourceV2
+  | M1ExpiredInvalidatedRestoreCurrentMaterializationSourceV2;
+type LegacySessionCurrentMaterializationSourceV2 =
+  | (SessionCurrentMaterializationBaseV2<LegacyActiveSessionCurrentProjectionV2, 'legacy-fixed-row-snapshot', 'initial'> & {
+      readonly materializationKind: 'legacy-fixed-row-snapshot';
+      readonly source: LocalSessionLegacyCurrentRowSourceV2;
+    })
+  | (SessionCurrentMaterializationBaseV2<LegacyCompletedSessionCurrentProjectionV2, 'legacy-fixed-row-snapshot', 'initial'> & {
+      readonly materializationKind: 'legacy-fixed-row-snapshot';
+      readonly source: LocalSessionLegacyCurrentRowSourceV2;
+    });
+// creation/contentがlegacyでもpost-M1 source/current epochはmodernである。legacy 6桁は
+// fixed-base snapshotだけに閉じ、post-M1 currentは明示SessionFact/Owned branchの3桁値へ移す。
+type LegacyBoundPostM1CurrentMaterializationSourceV2 = Exclude<
+  ModernSessionCurrentMaterializationSourceV2,
+  { readonly materializationKind: 'creation' }
+> | M1ExpiredSessionCurrentMaterializationSourceV2 | M1ExpiredRestoreCurrentMaterializationSourceV2;
+type LegacyBoundSessionCurrentMaterializationSourceV2 =
+  | LegacySessionCurrentMaterializationSourceV2
+  | LegacyBoundPostM1CurrentMaterializationSourceV2
+  | (SessionCurrentMaterializationBaseV2<LegacyActiveSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'legacy-fixed-row-snapshot';
+      readonly source: LocalSessionLegacySyncFixedRowRestoreSourceV2 & {
+        readonly sourceCurrentProjection: LegacyActiveSessionCurrentProjectionV2;
+      };
+    })
+  | (SessionCurrentMaterializationBaseV2<LegacyCompletedSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'legacy-fixed-row-snapshot';
+      readonly source: LocalSessionLegacySyncFixedRowRestoreSourceV2 & {
+        readonly sourceCurrentProjection: LegacyCompletedSessionCurrentProjectionV2;
+      };
+    })
+  | (SessionCurrentMaterializationBaseV2<LegacyActiveSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'legacy-fixed-row-snapshot';
+      readonly source: LocalSessionLegacyDirectFixedRowRestoreSourceV2 & { readonly sourceCurrentProjection: LegacyActiveSessionCurrentProjectionV2 };
+    })
+  | (SessionCurrentMaterializationBaseV2<LegacyCompletedSessionCurrentProjectionV2, 'restore-materialization', 'initial'> & {
+      readonly materializationKind: 'restore';
+      readonly restoredMaterializationKind: 'legacy-fixed-row-snapshot';
+      readonly source: LocalSessionLegacyDirectFixedRowRestoreSourceV2 & { readonly sourceCurrentProjection: LegacyCompletedSessionCurrentProjectionV2 };
+    })
+  ;
+type LocalSessionCurrentMaterializationSourceV2 =
+  | ModernSessionCurrentMaterializationSourceV2
+  | LegacyBoundSessionCurrentMaterializationSourceV2;
+
+type LocalRestoreMaterializationLinkV2 =
+  | {
+      readonly ownerUserId: UUID;
+      readonly targetKind: 'session';
+      readonly targetId: UUID;
+      readonly targetHash: Sha256HexV1;
+      readonly source:
+        | LocalSessionModernRestoreSourceV2
+        | LocalSessionLegacySyncRestoreSourceV2
+        | LocalSessionLegacyDirectRestoreSourceV2
+        | LocalSessionM1ExpiredCompletedLifecycleRestoreSourceV2
+        | LocalSessionM1ExpiredInvalidatedLifecycleRestoreSourceV2;
+    }
+  | {
+      readonly ownerUserId: UUID;
+      readonly targetKind: 'draft';
+      readonly targetId: string;
+      readonly targetHash: Sha256HexV1;
+      readonly source: LocalDraftModernRestoreSourceV2 | LocalDraftLegacySyncRestoreSourceV2 | LocalDraftLegacyDirectRestoreSourceV2;
+    }
+  | {
+      readonly ownerUserId: UUID;
+      readonly targetKind: 'note';
+      readonly targetId: QuestionId;
+      readonly targetHash: Sha256HexV1;
+      readonly source: LocalNoteModernRestoreSourceV2;
+    }
+  | {
+      readonly ownerUserId: UUID;
+      readonly targetKind: 'bookmark';
+      readonly targetId: QuestionId;
+      readonly targetHash: Sha256HexV1;
+      readonly source: LocalBookmarkModernRestoreSourceV2 | LocalBookmarkLegacySyncRestoreSourceV2 | LocalBookmarkLegacyDirectRestoreSourceV2;
+    }
+  | {
+      readonly ownerUserId: UUID;
+      readonly targetKind: 'issue';
+      readonly targetId: UUID;
+      readonly targetHash: Sha256HexV1;
+      readonly source: LocalIssueModernRestoreSourceV2 | LocalIssueLegacyDirectRestoreSourceV2;
+    };
+
+type BootstrapSessionCreationSourceV2 = LocalSessionCreationSourceV2;
+type BootstrapSessionCurrentMaterializationSourceV2 = LocalSessionCurrentMaterializationSourceV2;
+type LegacyBoundNonM1CurrentMaterializationSourceV2 = Exclude<
+  LegacyBoundPostM1CurrentMaterializationSourceV2,
+  M1ExpiredSessionCurrentMaterializationSourceV2 | M1ExpiredRestoreCurrentMaterializationSourceV2
+>;
+type Round16SessionModernMutationSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalSessionModernMutationSourceV2>>;
+type Round16SessionLegacyMutationSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalSessionLegacyMutationSourceV2>>;
+type Round16SessionDirectSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<B1IsNeverFixtureV2<LocalSessionLegacyCurrentRowSourceV2>>;
+// literal neverを渡すのではなく、実際の分配済みsession sourceから不正entity kindを抽出して検証する。
+type Round16SessionDraftSourceNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalSessionModernMutationSourceV2, { readonly eventKind: 'draft.saved' }>>
+>;
+type Round16SessionBookmarkSourceNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalSessionModernMutationSourceV2, { readonly eventKind: 'bookmark.changed' }>>
+>;
+type Round17M1ExpiredCompletedCurrentNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<M1ExpiredCompletedSessionCurrentMaterializationSourceV2>
+>;
+type Round17M1ExpiredInvalidatedCurrentNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2>
+>;
+type Round17M1ExpiredStatusSourceSwapNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<M1ExpiredSessionCurrentMaterializationSourceV2, {
+    readonly projection: { readonly status: 'completed' };
+    readonly source: { readonly resultingStatus: 'invalidated' };
+  }>>
+>;
+// Extract<..., never>の恒真検査ではなく、実在causeを持つ候補objectがphase規則に
+// 代入不能であることをコンパイラで固定する。
+type Round18IllegalInitialAdvancedMaterializationCandidateV2 =
+  SessionCurrentMaterializationFactBaseV2<ModernActiveSessionCurrentProjectionV2> & {
+    readonly materializationPhase: 'initial';
+    readonly priorRevision: null;
+    readonly priorMaterializationFactId: null;
+    readonly cause: Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'session.advanced' }>;
+  };
+type Round18IllegalMutationCreatedMaterializationCandidateV2 =
+  SessionCurrentMaterializationFactBaseV2<ModernActiveSessionCurrentProjectionV2> & {
+    readonly materializationPhase: 'mutation';
+    readonly priorRevision: NonNegativeSafeIntegerV1;
+    readonly priorMaterializationFactId: UUID;
+    readonly resultingRevision: PositiveSafeIntegerV1;
+    readonly cause: Extract<SessionCurrentMaterializationCauseV2, { readonly causeKind: 'session.created' }>;
+  };
+type Round18InitialAdvancedNotAssignableFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsAssignableFixtureV2<Round18IllegalInitialAdvancedMaterializationCandidateV2, SessionCurrentMaterializationFactV2<ModernActiveSessionCurrentProjectionV2>>
+>;
+type Round18MutationCreatedNotAssignableFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsAssignableFixtureV2<Round18IllegalMutationCreatedMaterializationCandidateV2, SessionCurrentMaterializationFactV2<ModernActiveSessionCurrentProjectionV2>>
+>;
+type Round18M1CompletedPortableRestoreNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<LegacyBoundPostM1CurrentMaterializationSourceV2, {
+    readonly materializationKind: 'restore';
+    readonly projection: M1PostMigrationCompletedSessionCurrentProjectionV2;
+    readonly source: { readonly sourcePortableFact: { readonly resultingStatus: 'completed' } };
+  }>>
+>;
+type Round18M1InvalidatedPortableRestoreNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<LegacyBoundPostM1CurrentMaterializationSourceV2, {
+    readonly materializationKind: 'restore';
+    readonly projection: M1PostMigrationInvalidatedSessionCurrentProjectionV2;
+    readonly source: { readonly sourcePortableFact: { readonly resultingStatus: 'invalidated' } };
+  }>>
+>;
+type Round18M1PortableRestoreStatusSwapNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LegacyBoundPostM1CurrentMaterializationSourceV2, {
+    readonly materializationKind: 'restore';
+    readonly projection: M1PostMigrationCompletedSessionCurrentProjectionV2;
+    readonly source: { readonly sourcePortableFact: { readonly resultingStatus: 'invalidated' } };
+  }>>
+>;
+type Round19SessionRestoreLinkM1CompletedNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<
+    Extract<LocalRestoreMaterializationLinkV2, { readonly targetKind: 'session' }>['source'],
+    LocalSessionM1ExpiredCompletedLifecycleRestoreSourceV2
+  >>
+>;
+type Round19SessionRestoreLinkM1InvalidatedNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<
+    Extract<LocalRestoreMaterializationLinkV2, { readonly targetKind: 'session' }>['source'],
+    LocalSessionM1ExpiredInvalidatedLifecycleRestoreSourceV2
+  >>
+>;
+type Round19SessionRestoreLinkM1StatusSwapNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<
+    Extract<LocalRestoreMaterializationLinkV2, { readonly targetKind: 'session' }>['source'],
+    LocalSessionM1ExpiredCompletedLifecycleRestoreSourceV2 & {
+      readonly sourcePortableFact: { readonly resultingStatus: 'invalidated' };
+    }
+  >>
+>;
+type Round19OwnedSessionSummaryM1CompletedNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<OwnedSessionSummaryDto, {
+    readonly contentChannel: null;
+    readonly status: 'completed';
+    readonly updatedAt: IsoUtcTimestamp;
+    readonly completedAt: LegacyStoredTimestampV1;
+  }>>
+>;
+type Round19OwnedSessionDetailM1CompletedNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<OwnedLearningSessionResponseV2, {
+    readonly contentChannel: null;
+    readonly status: 'completed';
+    readonly startedAt: LegacyStoredTimestampV1;
+    readonly updatedAt: IsoUtcTimestamp;
+    readonly completedAt: LegacyStoredTimestampV1;
+    readonly requestedQuestionCount: null;
+  }>>
+>;
+type Round19BootstrapM1InvalidatedSyncSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<
+    Extract<BootstrapSessionRecordV2, { readonly branch: 'legacy-sync' }>['currentMaterializationSource'],
+    M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2 | M1ExpiredInvalidatedRestoreCurrentMaterializationSourceV2
+  >>
+>;
+type Round19BootstrapM1InvalidatedDirectSourceNotNeverFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsNeverFixtureV2<Extract<
+    Extract<BootstrapSessionRecordV2, { readonly branch: 'legacy-direct' }>['currentMaterializationSource'],
+    M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2 | M1ExpiredInvalidatedRestoreCurrentMaterializationSourceV2
+  >>
+>;
+type Round19BootstrapM1SourceNotAssignableToNormalFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsAssignableFixtureV2<
+    M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2,
+    LegacyBoundNonM1CurrentMaterializationSourceV2
+  >
+>;
+type Round19BootstrapM1CompletedSourceNotAssignableToNormalFixtureV2 = B1ExpectFalseFixtureV2<
+  B1IsAssignableFixtureV2<
+    M1ExpiredCompletedSessionCurrentMaterializationSourceV2,
+    LegacyBoundNonM1CurrentMaterializationSourceV2
+  >
+>;
+type Round17DraftLegacyDirectBookmarkTableNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalDraftLegacyDirectRestoreSourceV2, {
+    readonly legacyDirectRowSource: { readonly sourceTable: 'bookmarks' };
+  }>>
+>;
+type Round17BookmarkLegacyDirectDraftAggregateNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalBookmarkLegacyDirectRestoreSourceV2, {
+    readonly legacyDirectRowSource: { readonly sourceAggregateKind: 'draft' };
+  }>>
+>;
+type Round17IssueLegacyDirectSessionTableNeverFixtureV2 = B1ExpectTrueFixtureV2<
+  B1IsNeverFixtureV2<Extract<LocalIssueLegacyDirectRestoreSourceV2, {
+    readonly legacyDirectRowSource: { readonly sourceTable: 'learning_sessions' };
+  }>>
+>;
+
+type BootstrapSessionRecordV2 =
+  // canonical factが正本。derived hydrationはfactのbinding・時刻精度・countを変更も補完もしない。
+  | {
+      readonly branch: 'modern';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: 'public' | 'personal_preview' }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: 'public' | 'personal_preview' }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: IsoUtcTimestamp;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: ModernSessionCreationSourceV2;
+      readonly currentMaterializationSource: ModernSessionCurrentMaterializationSourceV2;
+    }
+  | {
+      readonly branch: 'legacy-sync';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: null; readonly sourceOrigin: 'legacy-sync-event'; readonly updatedAt: LegacyStoredTimestampV1 }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly updatedAt: LegacyStoredTimestampV1 }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: LegacyStoredTimestampV1;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: LegacySessionSyncCreationSourceV2;
+      readonly currentMaterializationSource: LegacySessionCurrentMaterializationSourceV2;
+    }
+  | {
+      readonly branch: 'legacy-direct';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: null; readonly sourceOrigin: 'legacy-direct-row'; readonly updatedAt: LegacyStoredTimestampV1 }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly updatedAt: LegacyStoredTimestampV1 }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: LegacyStoredTimestampV1;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: LegacySessionDirectCreationSourceV2;
+      readonly currentMaterializationSource: LegacySessionCurrentMaterializationSourceV2;
+    }
+  | {
+      readonly branch: 'legacy-sync';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: null; readonly sourceOrigin: 'legacy-sync-event'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: IsoUtcTimestamp | null }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: IsoUtcTimestamp | null }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: IsoUtcTimestamp;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: LegacySessionSyncCreationSourceV2;
+      readonly currentMaterializationSource: LegacyBoundNonM1CurrentMaterializationSourceV2;
+    }
+  | {
+      readonly branch: 'legacy-direct';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: null; readonly sourceOrigin: 'legacy-direct-row'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: IsoUtcTimestamp | null }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: IsoUtcTimestamp | null }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: IsoUtcTimestamp;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: LegacySessionDirectCreationSourceV2;
+      readonly currentMaterializationSource: LegacyBoundNonM1CurrentMaterializationSourceV2;
+    }
+  | {
+      readonly branch: 'legacy-sync';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: null; readonly sourceOrigin: 'legacy-sync-event'; readonly status: 'completed'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: LegacyStoredTimestampV1 }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly status: 'completed'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: LegacyStoredTimestampV1 }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: IsoUtcTimestamp;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: LegacySessionSyncCreationSourceV2;
+      readonly currentMaterializationSource: M1ExpiredCompletedSessionCurrentMaterializationSourceV2 | M1ExpiredCompletedRestoreCurrentMaterializationSourceV2;
+    }
+  | {
+      readonly branch: 'legacy-direct';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: null; readonly sourceOrigin: 'legacy-direct-row'; readonly status: 'completed'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: LegacyStoredTimestampV1 }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly status: 'completed'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: LegacyStoredTimestampV1 }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: IsoUtcTimestamp;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: LegacySessionDirectCreationSourceV2;
+      readonly currentMaterializationSource: M1ExpiredCompletedSessionCurrentMaterializationSourceV2 | M1ExpiredCompletedRestoreCurrentMaterializationSourceV2;
+    }
+  | {
+      readonly branch: 'legacy-sync';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: null; readonly sourceOrigin: 'legacy-sync-event'; readonly status: 'invalidated'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: null }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly status: 'invalidated'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: null }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: IsoUtcTimestamp;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: LegacySessionSyncCreationSourceV2;
+      readonly currentMaterializationSource: M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2 | M1ExpiredInvalidatedRestoreCurrentMaterializationSourceV2;
+    }
+  | {
+      readonly branch: 'legacy-direct';
+      readonly fact: Extract<SessionFactV2, { readonly contentChannel: null; readonly sourceOrigin: 'legacy-direct-row'; readonly status: 'invalidated'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: null }>;
+      readonly session: Extract<BootstrapOwnedLearningSessionV2, { readonly contentChannel: null; readonly status: 'invalidated'; readonly updatedAt: IsoUtcTimestamp; readonly completedAt: null }>;
+      readonly canonicalFactHash: Sha256HexV1;
+      readonly sessionHydrationHash: Sha256HexV1;
+      readonly creationSourceHash: Sha256HexV1;
+      readonly currentMaterializationSourceHash: Sha256HexV1;
+      readonly canonicalRevision: NonNegativeSafeIntegerV1;
+      readonly canonicalUpdatedAt: IsoUtcTimestamp;
+      readonly snapshotReceivedAt: IsoUtcTimestamp;
+      readonly creationSource: LegacySessionDirectCreationSourceV2;
+      readonly currentMaterializationSource: M1ExpiredInvalidatedSessionCurrentMaterializationSourceV2 | M1ExpiredInvalidatedRestoreCurrentMaterializationSourceV2;
+    };
 
 interface LearningBootstrapPageBaseV2 {
   readonly contractVersion: 2;
@@ -4032,14 +6074,17 @@ interface LearningBootstrapPageBaseV2 {
   readonly partitionRowsHash: Sha256HexV1;
 }
 
+// API enum、page union、registry、DB partition PK、hash preimageのsection集合は次の同一集合だけを使う。
+// `drafts/global`はcanonicalDraftsの必須partitionで、存在するdata sectionをAPI enum外readへ逃がさない。
 type LearningBootstrapPageV2 =
   | (LearningBootstrapPageBaseV2 & { readonly section: 'profile'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<PortableProfileFactV2>[] })
   | (LearningBootstrapPageBaseV2 & { readonly section: 'selection-bases'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<BootstrapSelectionBasisRowV2>[] })
+  | (LearningBootstrapPageBaseV2 & { readonly section: 'drafts'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<DraftFactV2>[] })
   | (LearningBootstrapPageBaseV2 & { readonly section: 'catalog'; readonly rows: readonly BootstrapRowV2<PreAnswerQuestionDto | CatalogTombstoneDto | AcceptanceRevokedContentTombstoneV2>[] })
   | (LearningBootstrapPageBaseV2 & { readonly section: 'sessions'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<BootstrapSessionRecordV2>[] })
-  | (LearningBootstrapPageBaseV2 & { readonly section: 'attempt-history'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<AttemptFactV2 | LiveAttemptCorrectionFactV2 | LiveAttemptInvalidationFactV2>[] })
+  | (LearningBootstrapPageBaseV2 & { readonly section: 'attempt-history'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<AttemptFactV2 | LiveAttemptCorrectionFactV2 | AttemptInvalidationFactV2>[] })
   | (LearningBootstrapPageBaseV2 & { readonly section: 'exam-history'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<ExamTerminalFactV2 | PortableExamResultRevisionFactV2>[] })
-  | (LearningBootstrapPageBaseV2 & { readonly section: 'session-lifecycle'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<PortableSessionLifecycleFactV2 | PortableSessionItemInvalidationFactV2>[] })
+  | (LearningBootstrapPageBaseV2 & { readonly section: 'session-lifecycle'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<PortableSessionLifecycleFactV2 | PortableSessionItemInvalidationFactV2 | SessionCurrentMaterializationFactV2>[] })
   | (LearningBootstrapPageBaseV2 & { readonly section: 'offline-reference-history'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<PortableOfflineExamReferenceFactV2 | PortableOfflineReferenceResultRevisionFactV2 | PortableOfflineReferenceFeedbackRevisionFactV2>[] })
   | (LearningBootstrapPageBaseV2 & { readonly section: 'bookmarks'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<BookmarkFactV2>[] })
   | (LearningBootstrapPageBaseV2 & { readonly section: 'notes'; readonly scopeKey: 'global'; readonly rows: readonly BootstrapRowV2<NoteFactV2>[] })
@@ -4048,15 +6093,23 @@ type LearningBootstrapPageV2 =
   | (LearningBootstrapPageBaseV2 & { readonly section: 'daily-projection'; readonly rows: readonly BootstrapRowV2<DailyActivityProjectionDtoV2>[] });
 ```
 
-generation discovery RPCはactive JWTのowner本人へ現在整数だけを返し、他の本人dataを返しません。beginはそのgenerationをshared user lock下で再検証します。profile/selection-bases/session/history/bookmark/note/issueのscope keyはliteral `global`だけ、catalog/projectionはheader登録済みscope keyだけを許可します。`selection-bases/global`はsnapshot上限時点でserverに存在する本人の全basisを、未consume・consume済み・discard済みの別なくstrict `BootstrapSelectionBasisRowV2`で返します。各itemはfreeze時点で配信可能なら`contentAvailability='available'`と回答前safe content、global statusがsuspendedなら`suspended-tombstone`、personal acceptanceがrevokedなら`acceptance-revoked-tombstone`とし、両tombstone branchは`content=null`です。acceptance-revoked branchのacceptance ID、revocation ID/timeはbasisがpinしたacceptanceとappend-only revocation factにexact一致させます。`BootstrapSessionRecordV2.session.items`も同じavailable、suspended tombstone、acceptance-revoked tombstoneのstrict unionとし、両tombstone branchは`content=null`です。正答、総合解説、choice解説、feedbackは全branchで禁止します。portable exportは別の`PortableSelectionBasisFactV2`だけを使用し、bootstrap rowやsafe contentを流用しません。各sessionの`selectionBasisId`はこのpartitionのexact一件かnullへ結合し、別generation・別owner・欠損basisを拒否します。historyはselected choiceと実効結果・訂正/無効化・result revisionを含みますが、正答集合・解説を含めずfeedback RPCで後取得します。`BootstrapSessionRecordV2`はowned pre-answer sessionにcanonical revision/update time、snapshot受信時刻とstrict `LocalRemoteSourceMetadataV2`をlosslessに付与します。通常`sync-event/server-change` branchの`sourceDataGeneration`はpage/sessionのcurrent generationとexact一致します。restore直後でsource event/factを旧generation archiveからmaterializeしたrowだけは`restore-materialization` branchとし、source/target generation、source event-or-fact ID/hash、restore job、materialization link ID/hashをexact保持し、`targetDataGeneration=page.dataGeneration=session.dataGeneration`、source identity/linkはrestore archive・link行と一致させます。`canonicalRevision=session.revision`、`snapshotReceivedAt=remoteSource.receivedAt`をexact一致させ、restore branchでは`receivedAt=materializedAt`です。command sourceは`LocalRemoteSourceMetadataV2`へ偽装せず、対応する`LocalCommandReceiptV2`として別rootへ保存します。
+`BootstrapSectionV2`のregistry ordinalは上の宣言順（`drafts`は`selection-bases`の直後）である。`profile,selection-bases,drafts,catalog,sessions,attempt-history,exam-history,session-lifecycle,offline-reference-history,bookmarks,notes,issues,question-projection,daily-projection`以外はAPI、DB registry、page、hashのいずれにも存在しない。同じ集合の`drafts/global` partitionはcanonical draft factだけを格納する。
+
+`BootstrapSessionRecordV2`は同一owner/generation/sessionのcanonical fact・derived hydration・immutable creation sourceを三hashで一組として検証する。`canonicalFactHash=SHA-256(RFC 8785 JCS(strict fact))`、`sessionHydrationHash=SHA-256(RFC 8785 JCS(strict session))`、`creationSourceHash=SHA-256(RFC 8785 JCS(strict creationSource))`であり、各hash field自身はpreimage外である。`creationSource`は`fact`の`sourceOrigin/sourceEventId/sourceSequence/sourceEventKind/sourceEventHash/sourceOccurredAt/sourceReceivedAt/sourceRevision/legacyDirectRowSource/legacyDirectRowHash`と一fieldずつexact一致する。top-level modern、legacy-sync、legacy-directを分け、legacy-sync fact/creation sourceへのdirect行、legacy-direct fact/creation sourceへのsync eventの差替えを型・decoder・DB CHECKで拒否する。legacy outer branchはさらにfixed-base current（updated/completed=6桁）とlegacy creationを保つpost-M1 current（started=6桁、updated/completed=3桁）へ分配し、fact/session/source/canonicalUpdatedAtのepochをcross-productにしない。`fact.sessionId=session.sessionId`、mode/title/status/certification/syllabus、revision/current index、question IDs/answered IDsの値とraw順序、全session timestamp、content/operation binding、requested/actual/current answerable countをexact一致させる。`initialAnswerableQuestionCount`はSessionFactのcreation canonical/direct snapshotからのみ読み、suspend item invalidation後のcurrent answerable（例: 10→9）で書き換えない。`currentMaterializationSource.projection`は上記current fieldへexact一致し、別のcurrent正本を作らない。`canonicalRevision=fact.revision=session.revision`、`canonicalUpdatedAt=fact.updatedAt=session.updatedAt`である。session itemsはfactのquestion ID順序・actual countとexact one-to-oneで、各question/version/ordinal/choice order/content bindingをcanonical item factおよびpinへ一致させる。
+
+`currentMaterializationSourceHash=SHA-256(RFC 8785 JCS(strict currentMaterializationSource))`は前記三hashとは別に検証する。currentを更新するtransactionは`SessionCurrentMaterializationFactV2`をexact一件appendし、sourceはそのfact ID/hash、prior/resulting revision、full `SessionCurrentProjectionV2`/hash、cause kind/ID/hashへ参照する。これにより`answer.submitted`単体やserver change payloadからcurrent projectionを補造しない。`currentStatus=projection.status`、`sourceRevision=projection.revision`、`updatedAt=projection.updatedAt`、`aggregateKind='session'/aggregateId/sourceHash`、materialization factとprojectionの各fieldをcurrent fact/sessionへexact一致させる。causeはinitial=`session.created|legacy-fixed-row-snapshot|restore初回`、mutation=`session.advanced|session.review-marked|answer.submitted|session.submitted|session-lifecycle|session.item-invalidated|restore更新`のphase×cause strict unionだけで、cause payload/fact/linkへFK/hash相関する。terminal化するanswerは同transaction lifecycle cause、historic legacy event単独はcurrent causeに使わずfixed row snapshotだけを使う。M1 expired→completed|invalidatedは完全`M1LegacySessionLifecycleFactV2`をcauseにする。completedのcurrent projection/materialization/portable restoreは`updatedAt=migrationRecordedAt`の`IsoUtcTimestamp` 3桁と`completedAt=legacyTerminalAt`の`LegacyStoredTimestampV1` 6桁を同時に持つmixed branch、invalidatedはupdated 3桁/completed null branchである。legacy creation provenanceを保つ通常post-M1 currentは明示modern temporal branchで3桁current snapshotを持つ。lifecycleは`PortableSessionLifecycleFactV2`、server-changeは実在`LearningServerChangeV2.kind='session.item-invalidated'`の完全payload/nested factだけをcauseにでき、三lifecycle種をserver-changeに偽装しない。materialization factはlocal、bootstrap `session-lifecycle` partition、portable export、restore source identity `session-current-materialization`へlosslessに含め、M1 completed/invalidated restoreは`LegacyBoundPostM1CurrentMaterializationSourceV2`のportable fact cause chainへexactに再結合する。`snapshotReceivedAt`はsource受信時刻ではなくbootstrap snapshot取得時のDB clockを一度だけmillisecondへ切り詰めた全branch共通`IsoUtcTimestamp`である。transport受信時刻はlegacy sync=6桁、legacy direct=null、restore=3桁を保持し、`snapshotReceivedAt`との同値化・精度変換を禁止する。別sessionのfact/session/creation source/current source/materialization factを同数swapする、binding/count/time/hashだけを差し替えるrowをstrict decoder、DB staging CHECK、partition hash検証でrejectし、canonical factからderived session/sourceをexact再構築できない場合はbootstrap全体をcommitしない。
+
+generation discovery RPCはactive JWTのowner本人へ現在整数だけを返し、他の本人dataを返しません。beginはそのgenerationをshared user lock下で再検証します。profile/selection-bases/drafts/session/history/bookmark/note/issueのscope keyはliteral `global`だけ、catalog/projectionはheader登録済みscope keyだけを許可します。`selection-bases/global`はsnapshot上限時点でserverに存在する本人の全basisを、未consume・consume済み・discard済みの別なくstrict `BootstrapSelectionBasisRowV2`で返します。各itemはfreeze時点で配信可能なら`contentAvailability='available'`と回答前safe content、global statusがsuspendedなら`suspended-tombstone`、personal acceptanceがrevokedなら`acceptance-revoked-tombstone`とし、両tombstone branchは`content=null`です。acceptance-revoked branchのacceptance ID、revocation ID/timeはbasisがpinしたacceptanceとappend-only revocation factにexact一致させます。`BootstrapSessionRecordV2.session.items`も同じavailable、suspended tombstone、acceptance-revoked tombstoneのstrict unionとし、両tombstone branchは`content=null`です。正答、総合解説、choice解説、feedbackは全branchで禁止します。portable exportは別の`PortableSelectionBasisFactV2`だけを使用し、bootstrap rowやsafe contentを流用しません。各sessionの`selectionBasisId`はこのpartitionのexact一件かnullへ結合し、別generation・別owner・欠損basisを拒否します。historyはselected choiceと実効結果・訂正/無効化・result revisionを含みますが、正答集合・解説を含めずfeedback RPCで後取得します。`BootstrapSessionRecordV2`はowned pre-answer sessionにcanonical revision/update time、snapshot受信時刻、immutable `creationSource`と`SessionCurrentProjectionV2`付き`currentMaterializationSource`をlosslessに付与します。通常`sync-event/server-change` branchの`sourceDataGeneration`はpage/sessionのcurrent generationとexact一致します。restore直後でsource event/factを旧generation archiveからmaterializeしたrowだけは`restore-materialization` branchとし、source/target generation、source event-or-fact ID/hash、restore job、materialization link ID/hashをexact保持し、`targetDataGeneration=page.dataGeneration=session.dataGeneration`、source identity/linkはrestore archive・link行と一致させます。`canonicalRevision=session.revision`である。`snapshotReceivedAt`はbootstrap snapshot取得DB clockの3桁値で全branch共通とし、sourceの`receivedAt`から独立させる。source receivedはmodern sync/server-change=3桁、legacy sync=6桁、legacy direct=null、restore=3桁で、restore branchだけ`receivedAt=materializedAt`です。command sourceはtransport parserの`LocalRemoteSourceMetadataV2`へ偽装せず、対応する`LocalCommandReceiptV2`として別rootへ保存します。
+
+Round 16の`BootstrapSessionRecordV2`に単一の`remoteSource`/`remoteSourceHash` fieldは存在しない。前段のsource metadata記述はtransport parserの時刻・generation規則だけを表す。session DTO/local remoteはimmutable `creationSource`（SessionFact provenanceとexact一致）と`SessionCurrentProjectionV2`+hashを持つ`currentMaterializationSource`を同じstrict unionで分離し、entity sourceへwide unionを流用しない。fact/session/creation sourceの三hashは同じcreation provenanceを拘束する。current materialization branchはcreation/session-event/terminal/legacy-fixed-row-snapshot/lifecycle/server-change/restoreをliteralに識別するが、projectionの唯一正本は常に内包する`SessionCurrentMaterializationFactV2`のfact ID/hash、initial/mutation prior fields、full projection/hash、cause ID/hashである。terminal `session.submitted`は`sourceRevision`とcompleted projectionを必須とし、creation/current source/materialization factの交換、status/revision/projection不一致、legacy direct/sync/restore branch混在を拒否する。
 
 restore sourceのv2 branchが`canonical-event`なら`sourceHash`は署名済みportable eventの`canonicalHash`、`sourceSequence`はsource generationの保存sequenceです。`portable-fact`なら`sourceHash=SHA-256(RFC 8785 JCS(strict portable fact))`、自己hash fieldを持つfactではその契約値とexact一致、`sourceSequence=null`です。legacy branchは`sourceKind='legacy-sync-event'`、`sourceDataGeneration=null`、`legacySchema='learning-sync.v1'`、元のevent ID/source sequence、`sourceLegacyFactHash=SHA-256(RFC 8785 JCS(strict PortableLegacyCanonicalEventFactV1))`だけを持ちます。legacy eventには存在しないdata generation、request hash、canonical hashを生成・代入せず、v2 source branchとのfield混在を拒否します。materialization link hashは自身だけを除くstrict linkのJCS SHA-256で、restore job、branch、source/target generation、source ID/hash、target domain IDを拘束します。DB `restore_materialization_links`のlegacy branchはsource generation null、source ID=original event ID、source hash=source legacy fact hash、source sequence=original sequenceへexact一致させます。`RestoreSessionItemInvalidationMaterializationLinkV2`の物理子row/branch列はsource/targetのfact ID/hashを変更せず、`targetSessionItemId`もfactの`sessionItemId`とexact一致させたままcurrent generationへ結合します。restore直後bootstrap、legacy/v2両branchのkill/restart、同ID異hash、link欠落、legacy canonical hash捏造、source generationをcurrentへ偽装するfixtureをgoldenにします。
 
 beginはuser shared lockの後、selection basis/session itemが参照するpersonal acceptanceと全question versionを、acceptance UUID bytes、version UUID bytesの順にshared lockし、owner、pin、revocation、global statusを再検証してrepeatable-read stagingを作ります。page取得も同じ順でlock・再検証し、staging後に一件でもsuspendedまたはacceptance-revokedへ遷移していればrowを返さず`BOOTSTRAP_SNAPSHOT_EXPIRED`としてsnapshot全体を失効させます。新snapshotではfanoutが`pending/running/retry_wait/dead_lettered`でもglobal suspended statusまたはacceptance revocationだけでcatalog、basis、sessionの本文、choices、feedbackを0件にし、fanout完了を待ちません。clientはsuspend/revoke changeまたはこの失効を観測した時点で該当version/acceptanceのcatalog、basis/session本文、feedback cacheを一local transactionでpurgeし、新snapshotを取得します。これによりimmutable page/hashを動的変換せず、停止・取消後のpageから本文を返しません。
 
-beginはrepeatable-read transactionで全sectionをserver stagingへ固定し、owner限定・15分期限・page上限200です。`contentScopes`は`scopeKey`のUTF-8 byte昇順です。section registry順は`profile,selection-bases,catalog,sessions,attempt-history,exam-history,session-lifecycle,offline-reference-history,bookmarks,notes,issues,question-projection,daily-projection`で固定し、`partitions`は`(section registry ordinal, scopeKey UTF-8 byte)`順、rowはordinal昇順へ固定します。ordinalは1始まり・欠番なし・重複なしです。`afterOrdinal`はexclusiveで、最初は0、responseは`ordinal > afterOrdinal`だけを返します。pageごとの`pageRowsHash=SHA-256(RFC 8785 JCS(returnedRows ordinal昇順))`、partition manifestの`rowsHash=SHA-256(RFC 8785 JCS(partition全rows ordinal昇順))`です。`snapshotHash`のpreimageは`{contractVersion:2,snapshotId,dataGeneration,syncUpperBound,serverChangeUpperBound,contentScopes,partitions,expiresAt}`で、各配列を上記順にしたRFC 8785 JCS bytesです。page hash、partition hash、件数をheaderと照合し、section/scope/ordinal差替え、期限切れ、page欠落・重複を拒否します。clientは全pageをlocal stagingへ保存し、検証後にdomain rowsとscope別cursorを一local transactionで交換します。一件でも不正なら現local stateを不変にします。完了cursorはheader上限へ固定し、その後の新規writeだけをpullします。
+beginはrepeatable-read transactionで全sectionをserver stagingへ固定し、owner限定・15分期限・page上限200です。`contentScopes`は`scopeKey`のUTF-8 byte昇順です。section registry順は`profile,selection-bases,drafts,catalog,sessions,attempt-history,exam-history,session-lifecycle,offline-reference-history,bookmarks,notes,issues,question-projection,daily-projection`で固定し、`partitions`は`(section registry ordinal, scopeKey UTF-8 byte)`順、rowはordinal昇順へ固定します。ordinalは1始まり・欠番なし・重複なしです。`afterOrdinal`はexclusiveで、最初は0、responseは`ordinal > afterOrdinal`だけを返します。pageごとの`pageRowsHash=SHA-256(RFC 8785 JCS(returnedRows ordinal昇順))`、partition manifestの`rowsHash=SHA-256(RFC 8785 JCS(partition全rows ordinal昇順))`です。`snapshotHash`のpreimageは`{contractVersion:2,snapshotId,dataGeneration,syncUpperBound,serverChangeUpperBound,contentScopes,partitions,expiresAt}`で、各配列を上記順にしたRFC 8785 JCS bytesです。page hash、partition hash、件数をheaderと照合し、section/scope/ordinal差替え、期限切れ、page欠落・重複を拒否します。clientは全pageをlocal stagingへ保存し、検証後にdomain rowsとscope別cursorを一local transactionで交換します。一件でも不正なら現local stateを不変にします。完了cursorはheader上限へ固定し、その後の新規writeだけをpullします。
 
-bootstrapのlocal格納先は固定します。`profile`→profile CAS state、`selection-bases`→safe basisとconsume/discard lifecycleを一体で持つglobal basis store、`catalog`→catalog cache、`sessions`→source/revision/time付きpre-answer session snapshot、`attempt-history`→attempt/correction/invalidation、`exam-history`→exam terminal/result revision、`session-lifecycle`→session lifecycleとsession-item invalidation fact history、`offline-reference-history`→offline reference history、`bookmarks/notes/issues`→local/remote両値を持つrevision entity、`question-projection/daily-projection`→scope別projectionです。全section・全scopeは0件でもmanifestへexact一件を含め、APIの`BootstrapSectionV2` literalをDB CHECK、PK、RPC引数、hash preimageの唯一の値集合にします。
+bootstrapのlocal格納先は固定します。`profile`→profile CAS state、`selection-bases`→safe basisとconsume/discard lifecycleを一体で持つglobal basis store、`drafts`→canonical drafts store + derived local draft、`catalog`→catalog cache、`sessions`→canonical session fact + creation/current source/revision/time付きderived pre-answer session snapshot、`attempt-history`→canonical attempt fact + derived attempt/correction/invalidation、`exam-history`→exam terminal/result revision、`session-lifecycle`→session lifecycle、session-item invalidation、append-only `SessionCurrentMaterializationFactV2` history、`offline-reference-history`→offline reference history、`bookmarks`→canonical bookmark fact + derived local/remote revision entity、`notes`→canonical note fact + derived local/remote revision entity、`issues`→canonical issue fact + derived local/remote revision entity、`question-projection/daily-projection`→scope別projectionです。Session materializationはinitial/mutation branch、full projection/hash、cause ID/hashをlosslessに持ち、restore primary sourceのportable identityもこのfact ID/hashへexact一致させる。canonical 6とderived projection、typed restore materialization linkは同一transactionで二重写像し、canonical/linkがauthoritative、projectionがderivedでoverlayを禁止する。全section・全scopeは0件でもmanifestへexact一件を含め、APIの`BootstrapSectionV2` literalをDB CHECK、PK、RPC引数、hash preimageの唯一の値集合にします。
 
 `masteredAt`はstage 3期限後の有効正解で初めてstage 4へ到達したserver採点時刻です。stage 4/5の追加正解では保持し、誤答、breaking改訂、根拠attemptの訂正・無効化で履歴から再計算して条件を失えばnullにします。定着条件は`needsRevalidation=false AND reviewStage>=4 AND latestOutcome='correct'`です。breaking改訂では即時nullとし、新版の有効正解後にstage 0/+1日から再構築します。
 
@@ -4067,6 +6120,8 @@ bootstrapのlocal格納先は固定します。`profile`→profile CAS state、`
 ### 11.2 Attempt訂正・無効化
 
 `answer_attempts`へ無条件`UNIQUE(user_id, session_id, question_id)`を置き、無効化後も同sessionの回答枠を再利用しません。correctionは`correction_no`、`prior_correction_id`、`operation_id UNIQUE`を持ちます。attempt ID advisory lock下で`oldOutcome`が直前の実効値と一致する時だけ追記し、invalidation済みattemptへの訂正を拒否します。`corrected_at`だけで最新を決めません。
+
+M1 initial shapeの`answer_attempts.invalidation_reason text`と`invalidated_at timestamptz`はbase attemptを更新せず読むだけにし、両方nullならlegacy invalidation fact 0件、両方non-nullなら上記deterministic IDの`LegacyAttemptInvalidationFactV1` exactly 1件、片方だけnon-nullならpreflight rollbackである。effective view/local/bootstrap/portable/restoreはruntime `LiveAttemptInvalidationFactV2`とlegacy factのstrict unionだけを読み、legacy reasonをruntime reason code・actor・operationへ変換しない。
 
 attemptは`grading_status`とnullable `is_correct`を持ちます。DB CHECKは`graded`なら`is_correct IS NOT NULL`、`not_graded_suspended|not_graded_acceptance_revoked`なら`is_correct IS NULL`を強制します。無採点attemptは同transactionでinvalidationを追記し、feedback正答、訂正、SRS、分析から除外します。offlineの未確定回答はserver attemptではなくlocal pending intentとして保存します。
 
@@ -5765,6 +7820,7 @@ interface RestoreDryRunCountsV2 {
   readonly acceptanceRevocations: NonNegativeSafeIntegerV1;
   readonly previewSelectionEvents: NonNegativeSafeIntegerV1;
   readonly sessions: NonNegativeSafeIntegerV1;
+  readonly sessionCurrentMaterializations: NonNegativeSafeIntegerV1;
   readonly sessionItems: NonNegativeSafeIntegerV1;
   readonly sessionItemInvalidations: NonNegativeSafeIntegerV1;
   readonly drafts: NonNegativeSafeIntegerV1;
@@ -5813,6 +7869,7 @@ type PortableFactIdentityKindV2 =
   | 'acceptance-revocation'
   | 'preview-selection'
   | 'session'
+  | 'session-current-materialization'
   | 'session-item'
   | 'session-item-invalidation'
   | 'draft'
@@ -5830,13 +7887,40 @@ type PortableFactIdentityKindV2 =
   | 'issue'
   | 'issue-update';
 
-interface RestorePortableFactIdentitySetV2 extends RestoreSourceIdentitySetV2<UUID> {
-  readonly factKind: PortableFactIdentityKindV2;
-}
+// portable factには一律UUIDを新設しない。固定IDを持たないDraft/Bookmark/Note等も、
+// 元のdomain keyとstrict canonical value hashで復元元を一意にする。
+type RestorePortableFactIdentityV2 =
+  | { readonly factKind: 'personal-content-acceptance'; readonly acceptanceId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'acceptance-revocation'; readonly revocationId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'preview-selection'; readonly eventId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'session'; readonly sessionId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'session-current-materialization'; readonly sessionCurrentMaterializationFactId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'session-item'; readonly sessionItemId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'session-item-invalidation'; readonly sessionItemInvalidationFactId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'draft'; readonly sessionId: UUID; readonly questionId: QuestionId; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'attempt'; readonly attemptId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'attempt-correction'; readonly correctionId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'attempt-invalidation'; readonly invalidationId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'exam-terminal'; readonly terminalEventId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'exam-result-revision'; readonly revisionId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'session-lifecycle'; readonly lifecycleFactId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'offline-reference'; readonly referenceResultId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'offline-result-revision'; readonly resultRevisionId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'offline-feedback-revision'; readonly feedbackRevisionId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'bookmark'; readonly questionId: QuestionId; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'note'; readonly questionId: QuestionId; readonly questionVersionId: QuestionVersionId; readonly revision: NonNegativeSafeIntegerV1; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'issue'; readonly issueId: UUID; readonly canonicalValueHash: Sha256HexV1 }
+  | { readonly factKind: 'issue-update'; readonly issueUpdateFactId: UUID; readonly canonicalValueHash: Sha256HexV1 };
 
-interface RestorePortableFactIdentitySetSummaryV2 extends RestoreSourceIdentitySetSummaryV2 {
-  readonly factKind: PortableFactIdentityKindV2;
-}
+type RestorePortableFactIdentitySetV2<K extends PortableFactIdentityKindV2 = PortableFactIdentityKindV2> =
+  K extends PortableFactIdentityKindV2
+    ? RestoreSourceIdentitySetV2<Extract<RestorePortableFactIdentityV2, { readonly factKind: K }>> & { readonly factKind: K }
+    : never;
+
+type RestorePortableFactIdentitySetSummaryV2<K extends PortableFactIdentityKindV2 = PortableFactIdentityKindV2> =
+  K extends PortableFactIdentityKindV2
+    ? RestoreSourceIdentitySetSummaryV2 & { readonly factKind: K }
+    : never;
 
 interface RestoreSourceIdentityArtifactV2 {
   readonly schemaVersion: 'restore-source-identity-artifact.v2';
@@ -5848,7 +7932,7 @@ interface RestoreSourceIdentityArtifactV2 {
   readonly ownerUserIds: RestoreSourceIdentitySetV2<UUID>;
   readonly actorPrincipalSnapshotDigests: RestoreSourceIdentitySetV2<Sha256HexV1>;
   readonly actorExportPseudonyms: RestoreSourceIdentitySetV2<Base64Url32BytesV1>;
-  readonly portableFactIdsByKind: readonly RestorePortableFactIdentitySetV2[];
+  readonly portableFactIdentitiesByKind: readonly RestorePortableFactIdentitySetV2[];
   readonly contentReferences: RestoreSourceIdentitySetV2<RestoreContentReferenceIdentityV2>;
   readonly sessionIds: RestoreSourceIdentitySetV2<UUID>;
   readonly canonicalEventIds: RestoreSourceIdentitySetV2<UUID>;
@@ -6186,9 +8270,13 @@ interface DisasterRecoveryBackupManifestV2 extends DeletionPolicyBindingV2 {
  * DB/Auth/Storageの一時失敗は同じdeletion job/operation IDで再試行し、全scope完了後だけappendする。 */
 ```
 
+`RestoreDryRunCountsV2.sessionCurrentMaterializations`はportable payloadの`sessionCurrentMaterializations.length`と、`sourceIdentitySets.portableFactIdentitiesByKind`中の`factKind='session-current-materialization'`のcountへexact一致する。dry-runとfinalizeは三者を別々に再計算し、同数のfact ID/hash、kind、causeを差し替えても拒否する。
+
+`RestoreSourceIdentityArtifactV2.actorPrincipalSnapshotDigests`と`actorExportPseudonyms`はactor-bearing portable branchの参照集合だけから導出する。payload内にlegacy invalidationだけが存在しruntime actor-bearing factが0件なら両集合は`values=[]`, `count=0`, `setHash=SHA-256(JCS([]))`であり、actor map、actor child row、actor materialization linkもexact 0でなければならない。legacy invalidation件数をportable fact kindのcountへは含めるがactor countへは加えない。
+
 `RestoreDryRunReportV2.activeUnconsumedSelectionBasisIds`はlowercase canonical UUID bytes昇順・重複なしで、dry-run shared user lock下に存在する未consumeかつ未discard basisのexact集合です。配列長は`counts.activeUnconsumedTargetSelectionBases`とexact一致させ、一件以上なら`conflicts`へ各IDの`TARGET_NOT_EMPTY`をexact一件ずつ含めて`canApply=false`とします。`canApply=true`ではこの配列、同count、全conflictが空/0です。clientはIDを暗黙discard予定集合へ変換せず、各IDへ`reasonCode='restore_empty_namespace_cleanup'`の専用commandを明示送信してcanonical ACKを得た後、新しいdry-run/report hashとfresh reauth grantを取得します。
 
-`RestoreSourceIdentityArtifactV2`はserver-side create-onlyで、署名検証済みportable manifest/payloadからowner user ID、actor principal snapshot digest、actor export pseudonym、kind別全portable fact ID、全content ref、session ID、canonical event ID、command ID、consume済みselection basis IDを独立再計算します。主rowはartifact/job/export/source generation/payload hash/artifact hashを物理列へ持ち、各集合はartifact FK、set kind、fact kind nullable、ordinal、strict value/value hashを持つchild rowへ物理化します。strict artifactの集合値・count・set hashの正本はこのchild row集合からだけ導出し、JSONを独立正本にしません。owner、actor principal digest、actor export pseudonym、content/session/event/command/basisは別set kind、principal digestとpseudonymは別型列です。ownerはlowercase UUID bytes、principal digestはhex decode bytes、pseudonymはbase64url decode bytes、各ID集合はlowercase UUID bytes、content refは`(questionId UTF-8 bytes,questionVersionId UUID bytes)`、fact集合はregistry ordinalと各UUID bytesの順でsortし、全配列を重複なしにします。`portableFactIdsByKind`はregistry全kindを0件でもexact summary一行持ち、未知・欠落kindを拒否します。各`count=values.length`、`setHash=SHA-256(JCS(values))`をchild rowsから生成し、dry-run rowのstrict `sourceIdentitySets` JSON/hashへexact一致させます。`actorPrincipalSnapshotDigests`はportable actor mapの`sourcePrincipalSnapshotDigest`、`actorExportPseudonyms`は同mapと全参照factのexact coverageから導出し、raw source principal IDをportable payloadへ追加しません。
+`RestoreSourceIdentityArtifactV2`はserver-side create-onlyで、署名検証済みportable manifest/payloadからowner user ID、actor principal snapshot digest、actor export pseudonym、kind別全portable fact identity、全content ref、session ID、canonical event ID、command ID、consume済みselection basis IDを独立再計算します。portable identityはすべてのfactへ新UUIDを加えず、kind別strict domain key（Draft=`sessionId+questionId`、Bookmark=`questionId`、Note=`questionId+questionVersionId+revision`を含む）とcanonical value hashを使う。主rowはartifact/job/export/source generation/payload hash/artifact hashを物理列へ持ち、各集合はartifact FK、set kind、fact kind nullable、ordinal、strict value/value hashを持つchild rowへ物理化します。strict artifactの集合値・count・set hashの正本はこのchild row集合からだけ導出し、JSONを独立正本にしません。owner、actor principal digest、actor export pseudonym、content/session/event/command/basisは別set kind、principal digestとpseudonymは別型列です。ownerはlowercase UUID bytes、principal digestはhex decode bytes、pseudonymはbase64url decode bytes、IDを持つidentityはlowercase UUID bytes、composite identityはfact kind registry ordinal、各keyのUTF-8/UUID bytes、canonical value hashの順でsortし、全配列を重複なしにします。`portableFactIdentitiesByKind`はregistry全kindを0件でもexact summary一行持ち、未知・欠落kindを拒否します。各`count=values.length`、`setHash=SHA-256(JCS(values))`をchild rowsから生成し、dry-run rowのstrict `sourceIdentitySets` JSON/hashへexact一致させます。`actorPrincipalSnapshotDigests`はportable actor mapの`sourcePrincipalSnapshotDigest`、`actorExportPseudonyms`は同mapと全参照factのexact coverageから導出し、raw source principal IDをportable payloadへ追加しません。
 
 `artifactHash=SHA-256(JCS(artifactHashだけを除くstrict artifact))`、`setsHash=SHA-256(JCS(setsHashだけを除くRestoreSourceIdentitySetsV2))`とし、dry-run reportはartifact ID/hash、全summary、sets hashを`reportHash`へ含めます。finalizeはuser exclusive lock取得後に同じsource portable payloadから全集合を再計算し、source export ID/generation/payload hash、保存artifact、dry-run report、fresh reauth grant targetのreport hash、全counts、`activeUnconsumedSelectionBasisIds=[]`を再検証します。一ID/ref/digest/pseudonymの追加・欠落・同数差替え、kind移動、artifact/sets/report hash不一致、target active basis一件以上ではlive row、generation、job phaseを変更しません。selection basis discard request/fact/command receiptはportable payload、全identity集合、restore replay archive、restore materialization linkのいずれにも含めず、一件でも検出したportable inputを`UNSUPPORTED_SOURCE_SCHEMA`で拒否します。
 

@@ -8,7 +8,7 @@
 
 ### 1.1 基線
 
-- Git基線: `origin/main` のPR #6統合後
+- Git基線: main merge SHA `00411ef12777fdda151a66833598f6805fdfdf63`。そのsourceはPR #9 head `31c87247dcf36e6df036912a07318f3cd68f448b`であり、moving `origin/main`を基線へ使用しない
 - 既存main migrationは変更禁止
 - PR #2、#3、#5、#7は設計資料としてのみ参照し、そのままmergeまたはcherry-pickしない
 - 未コミットのcore、DB、content差分は採用品ではない
@@ -104,7 +104,7 @@ DomainはReact、Expo、Supabaseへ依存させません。
 - Webの送信workerはWeb Locksが利用可能なら同lockを使用し、未対応環境ではIndexedDB lease `{ownerTabId, expiresAt, fencingToken}` とBroadcastChannelで1 tabだけ動作
 - fencing tokenが失効したworkerのACKは拒否する
 
-ローカルにはsessions、items、drafts、attempts、question states、bookmarks、notes、issues、outbox、ACK、command receipt、sync/server-change cursor、server change apply record、quarantine、lifecycle/exam/offline-reference revision履歴、全selection basis/lifecycle、safe catalog、feedbackを保存します。`LocalSessionRecordV2`はlocal/remoteのstatus・revision・current index、`localUpdatedAt`、remote sync-event/server-changeのbranch固有sequence/hash/timeを別fieldにし、command responseは`LocalCommandReceiptV2`、draft/note/bookmark/issueはlocal source event/sequenceとremote metadataを保持します。最新値だけへ縮退せず、strict DTO不正pageはsafe hash/理由だけをquarantineへ移し、domain/ACK/cursorを不変にします。active local rootは`namespaceId`とrequired `staleGenerationNamespaces`を持ち、generation交換時は旧namespace全rowをowner/source generation/source namespace/kind/key/typed非再帰rowと、`sync-request/client-sync-event/server-sync-event/server-change/command-request/command-receipt/bootstrap-snapshot/catalog-projection-read/local-migration`のstrict source branch固有ID・sequence/revision/time/request/canonical/response/payload hash付き`LocalStaleGenerationNamespaceV2`へ一transactionで隔離します。client eventだけrequest hash必須、server-origin `session.submitted`だけrequest hash nullで、後者はserver canonical payload/hashとsequence/revisionをlosslessに保持します。未送信request branchはsequence/received/canonical/response hashをnullに固定します。namespace headerはquarantine reason、source snapshot ID、root別count/hash、全row count/hash、full namespace hashを持ち、rootとrowの再計算一致を必須にします。各branchは規定した必須値/nullだけを許可し、branch外fieldを拒否します。stale rowを新generationへoverlayせず、quarantine前/全row後/swap前/commit後のkill/restartで旧または新＋完全staleの二状態だけを許可し、server terminalを含む旧write再送0、暗黙ACK 0、current overlay 0を検証します。namespace単位の監査export/atomic discard以外の利用・削除を禁止します。
+ローカルにはsessions、items、drafts、attempts、question states、bookmarks、notes、issues、outbox、ACK、command receipt、sync/server-change cursor、server change apply record、quarantine、lifecycle/exam/offline-reference revision履歴、全selection basis/lifecycle、safe catalog、feedbackを保存します。`LocalSessionRecordV2`とrevisioned entityはlocal intentとremote factを別discriminator/別valueへ保存し、local absent/modern 3桁とremote absent/modern 3桁/legacy-sync 6桁/legacy-direct 6桁を独立に保持します。remote sourceはtransport固有sequence/hash/received precisionを持ち、command responseは`LocalCommandReceiptV2`へ分離します。最新値だけへ縮退せず、strict DTO不正pageはsafe hash/理由だけをquarantineへ移し、domain/ACK/cursorを不変にします。active local rootは`namespaceId`とrequired `staleGenerationNamespaces`を持ち、generation交換時は旧namespace全rowをowner/source generation/source namespace/kind/key/typed非再帰rowと、`sync-request/client-sync-event/server-sync-event/server-change/command-request/command-receipt/bootstrap-snapshot/catalog-projection-read/local-migration`のstrict source branch固有ID・sequence/revision/time/request/canonical/response/payload hash付き`LocalStaleGenerationNamespaceV2`へ一transactionで隔離します。client eventだけrequest hash必須、server-origin `session.submitted`だけrequest hash nullで、後者はserver canonical payload/hashとsequence/revisionをlosslessに保持します。未送信request branchはsequence/received/canonical/response hashをnullに固定します。namespace headerはquarantine reason、source snapshot ID、root別count/hash、全row count/hash、full namespace hashを持ち、rootとrowの再計算一致を必須にします。各branchは規定した必須値/nullだけを許可し、branch外fieldを拒否します。stale rowを新generationへoverlayせず、quarantine前/全row後/swap前/commit後のkill/restartで旧または新＋完全staleの二状態だけを許可し、server terminalを含む旧write再送0、暗黙ACK 0、current overlay 0を検証します。namespace単位の監査export/atomic discard以外の利用・削除を禁止します。
 
 ### 3.3 本番bundle境界
 
@@ -119,7 +119,7 @@ local UI状態とremote永続状態を分離します。
 - local: `LOCAL_CREATING | ACTIVE | SUBMITTING | COMPLETION_PENDING | SYNC_CONFLICT | COMPLETED | ABANDONED | INVALIDATED`
 - remote: `active | completed | abandoned | invalidated`
 - `SUBMITTING`はlocal transientであり、DBへ保存しない
-- 既存remote `expired`はM1で、確定済み結果があれば`completed`、継続不能なら理由付き`invalidated`へ明示変換する
+- 既存remote `expired`はM1で、§7.3の固定predicateにより`completed`または理由付き`invalidated`へ明示変換する
 
 ```text
 LOCAL_CREATING
@@ -243,6 +243,8 @@ Pullは`pull_learning_sync_events_v2(dataGeneration, afterSequence, limit, snaps
 
 新端末、local破損、restore後はowner限定`get_current_learning_generation_v2`でgenerationだけを取得し、`begin_learning_bootstrap_v2`でuser shared lock下の期限付きimmutable snapshotを発行します。profile、全selection basis/lifecycleのglobal partition、safe catalog、source/revision/time付きowned session/item、確定回答履歴、模試履歴、session lifecycle/item invalidation、offline参考履歴、bookmark、note、本人issue、public/acceptance別projectionをsection/scope別pageで取得します。`selection-bases/global`とsession itemはいずれも`available`、`suspended-tombstone`、`acceptance-revoked-tombstone`のstrict unionです。acceptance-revoked basis tombstoneは`content=null`とpin済みacceptance ID、append-only revocation ID/timeを持ち、tombstone branchでは本文、choices、feedbackを0件にします。basis発行source、consume eventまたはdiscard command/factのsource revision/hashはlosslessに保持します。portable exportは本文・choicesを除く別の`PortableSelectionBasisFactV2`だけを使用します。sessionのbasis IDをexact FK検証します。`BootstrapSessionRecordV2`はowned pre-answer sessionにcanonical revision/update time、snapshot received time、strict remote sourceを付与します。通常sync/change sourceはpageと同じgenerationです。restore sourceはv2 event/fact branchとlegacy sync-event branchを分離し、v2だけsource generation/hash、legacyだけ`sourceDataGeneration=null`、schema v1、元event ID/sequence、strict legacy fact JCSの`sourceLegacyFactHash`を持ち、両方がrestore job、materialization link ID/hash、target generationへ結合します。legacyに存在しないcanonical hash/generationを捏造しません。command responseはsession sourceへ混ぜず別の`LocalCommandReceiptV2`として保存します。
 
+`snapshotReceivedAt`はbootstrap snapshot取得時のDB clockを一度だけmillisecondへ切り詰める全branch共通3桁時刻であり、source受信時刻から分離します。remote sourceのtransport値はmodern sync/server-change=3桁、legacy sync=6桁、legacy direct=null、restore=3桁だけです。legacy source時刻をsnapshot時刻へコピーする、directへreceivedを補造する、restore時刻を6桁化するpageは全体をrejectします。bootstrap hydrationのunion置換は分配型`DistributiveReplaceItemsV2`を使い、modern/legacy各branchが`never`でないこととcross-productが`never`であることをcompiler fixtureで固定します。
+
 bootstrap beginは参照personal acceptanceとquestion versionをacceptance UUID、version UUIDのbytes昇順にshared lockしてowner/pin/revocation/statusを検証し、page取得も同順で再検証します。staging作成後に一件でもsuspendedまたはacceptance-revokedへ遷移したsnapshotは本文を動的に書換えず`BOOTSTRAP_SNAPSHOT_EXPIRED`として全体を失効させ、新snapshotでcatalog/session/basisを同じtombstoneへ揃えます。fanout pending中も本文・choices・feedbackを返しません。clientはsuspend/revoke changeまたはsnapshot失効時に該当catalog、basis/session safe content、feedback cacheを一local transactionでpurgeします。同generationでもserver snapshotのbasis lifecycle/content/tombstoneが常に優先し、local保持は未ACK `session.created` creation intent、pending answer、明示local mutation/conflictのallowlistだけです。local basis ID/row hashがserverのunconsumed basis exact一件と一致しなければ依存intentごとquarantineし、terminal lifecycleやtombstoneをunconsumed/availableへ復活させません。headerは`partitions[{section,scopeKey,rowCount,rowsHash}]`を持ち、global sectionのscope keyは`global`へ固定します。全pageをlocal stagingへ保存してpartition件数/hash、snapshot hash、generationを検証後、domain rowsとscope別cursorを一transactionで交換します。一pageでも欠損・重複・不正なら既存local stateを不変にし、正答・解説・他利用者情報をbootstrapへ含めません。`get_exam_state_v2`、`get_learning_projection_v2`、catalog、owned session、feedbackを含む本人状態readはすべて入力とresponseに`dataGeneration`を持ち、user shared lock下で現在generation不一致を拒否します。
 
 portable selection basisはconsume済みのbasis ID/version/ordinal/choice orderだけを`PortableSelectionBasisFactV2`に保存します。selection basis discardのfact/receiptはserver/local control auditにだけ保持し、portable payload、restore replay archive、restore materialization linkへ含めません。bootstrap/sessionのsourceはclient eventとserver-origin terminalを別branchにし、clientだけrequest hashを必須、server `session.submitted`だけrequest hash nullとserver canonical hash/sequence/revisionを必須にします。通常branchのsource generationはrow/page generationと一致させます。restore-materialization v2 branchだけsource/target generation差を許し、legacy branchだけsource generation nullを要求します。全branchをsource archiveとmaterialization linkのbranch列、ID/hashへ拘束します。
@@ -261,7 +263,7 @@ semantic/CAS conflict本文はowner scoped `learning_sync_conflicts`だけに保
 | `session.review-marked` | session、question、marked、expectedRevision | revision、updatedAt |
 | `bookmark.changed` | question、enabled | 最終状態、revision、updatedAt |
 | `note.saved` | question、version、body、expectedRevision | revision、updatedAt |
-| `issue.reported` | issueId、question、version、category、description | createdAt、revision=1、status=open、resolution=null |
+| `issue.reported` | issueId、question、version、category、description | createdAt、revision=1、status=open、resolution=null（M2の9-kind processor以後。M1 fixed-base issueはdirect-onlyでこのeventを生成・照合しない） |
 
 全payloadはkind別のstrict schemaで、必須key、許可key、型、配列一意性、文字長、最大64KiBを検証します。完全なrequest/canonical interface、entity ID式、server-owned field、semantic invariantは[API契約v2](./api-contract-v2.md)を単一の実装契約とします。
 
@@ -291,12 +293,12 @@ offlineで新規通常演習を開始できるのは、online時に`issue_offlin
 
 | Migration | 目的 |
 |---|---|
-| `20260813000100_learning_foundation_v2.sql` | 18問互換catalog、session item固定、preflight/backfill |
-| `20260813000200_sync_integrity_v2.sql` | 9-kind RPC、legacy bridge、冪等、ACL |
-| `20260813000300_control_plane_foundation_v2.sql` | reauth grant、worker/finalizer role・lease、operation audit |
-| `20260813000400_content_release_v2.sql` | stage、本人承認、publish、suspend、retire |
-| `20260813000500_catalog_feedback_v2.sql` | safe catalog、owned pin、feedback、revision |
-| `20260813000600_user_data_ops_v2.sql` | export、restore、account deletion job |
+| `20260814000200_learning_foundation_v2.sql` | 18問互換content隔離、UUID移行、session item固定、preflight/backfill、exact base ACL hardening、旧5-kind request fingerprint |
+| `20260814000300_sync_integrity_v2.sql` | 9-kind RPC、policy/materialization、legacy bridge、冪等。cutover条件成立時の最後の旧sync allowlist撤回は別の加算migration |
+| `20260814000400_control_plane_foundation_v2.sql` | reauth grant、worker/finalizer role・lease、operation audit |
+| `20260814000500_content_release_v2.sql` | stage、本人承認、publish、suspend、retire |
+| `20260814000600_catalog_feedback_v2.sql` | safe catalog、owned pin、feedback、revision |
+| `20260814000700_user_data_ops_v2.sql` | export、restore、account deletion job |
 
 ### 7.1 DB-first手順
 
@@ -325,13 +327,126 @@ DB成功前に新RPC依存clientを配布しません。適用後は破壊的dow
 - current index、answered setの範囲外
 - 旧attemptの採点値がDB正答と矛盾し、owner/pin/selected choices/answer keyを一意に解決できない
 
+`answer_attempts`のinitial actual列`invalidation_reason text`/`invalidated_at timestamptz`はM1前のfree-text invalidation sourceであり、base rowを更新せずに読む。both nullは`LegacyAttemptInvalidationFactV1` 0件、both non-nullはattempt/owner/session/generation/free-text reason/6桁時刻/`answer_attempts/attempt` direct provenance/hashを持つdeterministic UUIDv5 fact exactly 1件、片方だけnon-nullはpreflight rollbackである。reasonは空文字を含めlosslessに保持し、actor、operation、runtime reason codeを捏造しない。append-only factから`effective_answer_attempts`を構成し、local/bootstrap/portable/restoreは同一strict unionとID/hashを使用する。
+
+legacy invalidationのsourceは汎用direct型へ縮退させず`LegacyAttemptInvalidationDirectSourceV1`を使います。table=`answer_attempts`、kind=`attempt`、aggregate ID=`attemptId`、revision=null、owner/generation/time=`ownerUserId/dataGeneration/invalidatedAt`へexact一致させ、row IDはdomain/table/owner/attempt UUID componentのliteral JCS SHA-256です。attempt UUIDそのものをrow IDにしません。`D=legacyDirectRowHash`はstrict factからD/Fだけを除くmetadata+semantic、`F=factHash`はFだけを除いてDを含むstrict factのJCS SHA-256です。API literal goldenのsource row ID、UUIDv5、D、Fを独立runnerで照合し、preimage別名・相互参照・片hash差替えを拒否します。
+
 owner、pin版、selected choices、answer keyを一意に解決でき、DB再採点が決定的な採点値差分はpreflight failureにしません。staging read-only preflightはrehearsal証拠に限定し、本番expected値へ流用しません。M1 transactionは最初にmigration advisory lockと対象table lock/write gateを固定順序で取得し、そのlock下でpreflight snapshot、correction件数/hashを再計算します。M1内でpreflight後・backfill前にcorrection/invalidation tableとeffective viewを作成し、correctionをappendして全値を再照合します。構造不整合、pin不能、answer key不能、choice所属不正はmigrationを中止します。旧attempt原行は更新せず、`effective_answer_attempts`から`user_question_states`を再構築します。別接続のlegacy writeは待機またはmigration全体abortとなり、失敗時はdata、DDL、migration history、correction/audit件数が全て0増加であることを証明します。
 
-M1は18問互換contentのstaging、衝突行の完全比較、preflight、backfill、DDLを一つのtransactionで行います。18問は`compatibility_only`かつ`content_assurance='legacy_compatibility'`、非published、非exam eligible、新規global/personal catalog候補外とし、旧session hydration/backfillだけに使います。互換attemptは専用projectionへ隔離し、`effective_published_attempts`、正式SRS・分析、500問count、owner preview、模試候補へ一件も混入させません。新規basis/sessionは`legacy_compatibility`を拒否します。`ON CONFLICT`はcertification、syllabus、objective、version、prompt、choices、answer key、content hashの全一致後だけno-opとし、不一致は明示的に停止します。失敗時にdata、DDL、migration history、correction/auditが0件増加であることを実DBで証明します。
+M1は18問互換contentのstaging、衝突行の完全比較、preflight、backfill、DDLを一つのtransactionで行います。18問は`status='compatibility_only'`かつ`distribution_scope='legacy_compatibility'`、非published、modern `exam_eligibility=NULL`、新規global/personal catalog候補外とし、旧session hydration/backfillだけに使います。互換attemptは専用projectionへ隔離し、`effective_published_attempts`、正式SRS・分析、500問count、owner preview、模試候補へ一件も混入させません。新規basis/sessionは`legacy_compatibility`を拒否します。`ON CONFLICT`はcertification/syllabus binding、question/version stable key、version number、prompt、choices、answer key、sidecarのlegacy source chapter/title/objective、source bundle/content/mapping hashの全一致後だけno-opとし、不一致は明示的に停止します。失敗時にdata、DDL、migration history、correction/auditが0件増加であることを実DBで証明します。
 
-M2は同じtransactionで`anon/authenticated`からquestions、question_versions、choices、question_answer_keysの直接SELECTと旧published read policyを撤回します。さらに初期schemaの`own_sessions_all`、`own_drafts_all`、`own_attempts_insert`、`own_states_insert/update`、`own_bookmarks_all`、`own_issues_insert`を削除し、学習基礎tableとprofile設定のauthenticated直接INSERT/UPDATE/DELETEをREVOKEします。legacy互換は本人`sync_events` INSERT/SELECTと新しい検証・materialize triggerだけを残します。profile設定はgeneration、expected revision、shared user lockを持つ`update_profile_settings_v2`だけで更新します。learner roleから`choices.is_correct`、choice explanation、answer keyへ到達できるview/function/grantを0にし、M2直後の旧client smoke、RPC外DML全拒否、正答非開示pgTAPを必須にします。旧clientはbundle済みsample contentだけで互換動作し、DB直接content SELECT依存が検出された場合はM2適用を停止します。M4 publish RPCは`content_acl_schema_version >= 2`でなければ`FEATURE_NOT_AVAILABLE`、M5だけがauthenticatedへsafe catalog/owned-session/feedback RPCをgrantします。
+M1は同じtransactionで`anon/authenticated`からquestions、question_versions、choices、question_answer_keysの直接SELECTと旧published read policyを撤回します。さらに初期schemaの`own_sessions_all`、`own_drafts_all`、`own_attempts_insert`、`own_states_insert/update`、`own_bookmarks_all`、`own_issues_insert`を削除し、学習基礎tableとprofile設定のauthenticated直接INSERT/UPDATE/DELETEをREVOKEします。例外は本人`sync_events` INSERT/SELECTとidentity sequence USAGE、および新しい検証・materialize triggerだけで、これはcutoverまでのtemporary allowlistです。learner roleから`choices.is_correct`、choice explanation、answer keyへ到達できるview/function/grantを0にし、M1直後の旧client smoke、RPC外DML全拒否、正答非開示pgTAPを必須にします。旧clientはbundle済みsample contentだけで互換動作し、DB直接content SELECT依存が検出された場合はM1適用を停止します。M2は9-kind processor、policy/materialization、profile safe update等を実装し、最低対応version・30日観測・rollback window・portable restore・旧outbox 0のcutover条件が全て成立した最後の加算migrationでtemporary allowlistを撤回します。M4 publish RPCは`content_acl_schema_version >= 2`でなければ`FEATURE_NOT_AVAILABLE`、M5だけがauthenticatedへsafe catalog/owned-session/feedback RPCをgrantします。
 
-初期schemaの物理`choices.is_correct`はauthoring/canonical入力ではなくlegacy read-only派生mirrorです。`question_answer_keys.correct_choice_stable_ids`だけを正答の論理正本とし、M1のdeferred constraint triggerがtransaction終端の完全一致を強制します。M2で全直接更新を撤回し、stage/publish内部関数だけがanswer keyとmirrorを同transactionで生成します。release candidateは物理booleanを受け付けず、将来cutoverでmirror列を削除します。
+初期schemaの物理`choices.is_correct`はauthoring/canonical入力ではなくlegacy read-only派生mirrorです。`question_answer_keys.correct_choice_stable_ids`だけを正答の論理正本とし、M1のdeferred constraint triggerがtransaction終端の完全一致を強制します。M1で全直接更新を撤回し、stage/publish内部関数だけがanswer keyとmirrorを同transactionで生成します。release candidateは物理booleanを受け付けず、将来cutoverでmirror列を削除します。
+
+### 7.3 M1実装固定補遺
+
+M1の実装対象は`20260814000200_learning_foundation_v2.sql`だけです。これは既存
+`202608140001_function_execute_security.sql`の後に適用します。既存migrationを変更せず、以後の番号は
+`20260814000300`以上だけを使用します。M1はexact base ACL hardeningを実装し、authenticatedの旧`sync_events SELECT,INSERT`とidentity sequence `USAGE`だけをtemporary allowlistとして残します。M1は9-kind RPC、worker、safe catalogを実装しません。M2以後がpolicy/materializationを実装し、cutover条件成立後の最後の加算migrationだけがtemporary allowlistを撤回します。
+
+ID移行では、legacy text stable keyを業務上のstable keyとしてbyte-exactに保持し、`questions.id`と
+`choices.id`はtext stable IDのまま、`question_versions.id`と全version FKだけをlowercase UUIDへ移します。question versionのUUIDは
+RFC 4122 UUIDv5、DNS namespace `6ba7b810-9dad-11d1-80b4-00c04fd430c8`、UTF-8 name
+`jstqb-study-app/question-version/v1/<certificationCode>/<syllabusVersion>/<questionStableId>/<versionStableKey>`で一意に生成します。
+4可変segmentの各々を独立に`^[A-Za-z0-9._:-]+$`でfull-matchし、空、`/`、`\`、空白、非ASCII、trim前後差、case fold、Unicode正規化を拒否します。separatorを含む値を先に連結してから検査してはいけません。
+goldenは`JSTQB-FL/2023V4.0.J02/fl-001/fl-001-v1 -> 5d34f6e0-fa36-523a-8f68-0fc254997316`および
+`JSTQB-FL/2023V4.0.J02/fl-018/fl-018-v1 -> 40792f0d-bf60-52eb-b4bf-83be7de03592`です。session item、attempt correction、
+attempt invalidation、session lifecycle factの新規IDも、次の固定domain separatorと全stable inputから
+UUIDv5で生成し、同じsourceを二度移行しても同じID以外を生成しません。旧payloadを読むadapterだけは
+legacy text `questionVersionId`を受け、`(questionId, versionStableKey)`がexact一件の時だけUUIDを返します。0件または複数件は拒否します。新v2 API、lock sort、FK、hashは
+UUIDだけを受理します。
+
+- session item: `jstqb-study-app/m1/session-item/v1/<sessionUuid>/<ordinal>/<questionStableId>/<versionStableKey>`
+- correction: `jstqb-study-app/m1/attempt-correction/v1/<attemptUuid>/<correctionNo>`
+- runtime invalidation: `jstqb-study-app/m1/attempt-invalidation/v1/<attemptUuid>`
+- legacy invalidation: `jstqb-study-app/m1/legacy-attempt-invalidation/v1/<attemptUuid>/<SHA-256(RFC 8785 JCS({reason,invalidatedAt}))>`（free-text reasonは空文字を含め保持し、6桁stored instantを使う）
+- lifecycle fact: `jstqb-study-app/m1/session-lifecycle-fact/v1/<sessionUuid>/<priorRevision>/<resultStatus>`
+
+UUID negative goldenは4 segmentそれぞれの`''`、`'x/y'`、`'x\y'`、`' x'`、`'x '`、`'ｘ'`を
+`INVALID_LEGACY_ID_SEGMENT`で拒否します。`fl-001`と`FL-001`はいずれもregex上は有効ですが別byte列・別UUIDであり、case foldして同一化する実装を失敗させます。namespace 1-bit差、segment順swap、UTF-8 name末尾改行、UUIDv4、uppercase UUID表示もgolden mismatchです。
+
+M1では`question_version_status`を`draft|reviewing|published|suspended|retired|compatibility_only`で新設し、
+`syllabus_versions`の既存`content_status`は維持します。`question_versions.status`はtext cast経由で新enumへ
+置換します。旧`session_status`は`session_status_legacy_v1`へrenameし、新`session_status`を
+`active|completed|abandoned|invalidated`で作成します。`ALTER TYPE ... ADD VALUE`を同一transactionで
+使用せず、lock下でprecomputed target markerを作成してから、全依存default/constraint/policy/functionを
+解除・cast・再作成し、旧typeをdropします。M1後に`expired`は残しません。
+
+M1は対象table lock取得後に`migrationRecordedAt=date_trunc('milliseconds',clock_timestamp())`をexact一回だけ取得します。lock下でlegacy配列を直接terminal判定へ使わず、question/version/pin/choiceを解決したstaged session itemを作ります。判定順は次のdecision table以外を許可しません。
+
+| pre-M1 status | 構造検査 | effective coverage | M1結果 |
+|---|---|---|---|
+| `active` | 合格 | 任意 | `active`のまま。revision・lifecycle factを変更しない |
+| `completed` | 合格 | 全item exact | `completed`のまま。既存terminal値を保持し、M1変換factを作らない |
+| `completed` | 合格 | 未回答または有効attempt不足 | migration全体rollback |
+| `expired` | 合格 | 全item exact | `completed`、reason=`all_answerable_items_completed` |
+| `expired` | 合格 | 未回答または有効attempt不足 | `invalidated`、reason=`legacy_expired_non_resumable` |
+| 任意 | 不合格 | 任意 | migration全体rollback。`invalidated`へ矮小化しない |
+
+構造検査は、session owner、非空かつ重複なしの`question_ids`、範囲内`current_index`、`answered_question_ids`の重複0・全要素がsession所属、ordinal `0..n-1` exact、各itemのquestion/version pin exact一件、choice order重複0・同版choice exact被覆、attemptのowner/session/question/version所属、selected choiceの同版所属・重複0、legacy invalidationのtimestamp/reason両方NULLまたは両方non-NULL、有効attemptの同item重複0、各pin版のanswer key exact一件・同版choice・correct件数・DB再採点可能、bookmarkの`updated_at >= created_at`、全session revisionのsafe integerを全statusへ適用します。fixed-base `legacyTerminalSourceAt=COALESCE(old.completed_at,old.updated_at)`はnon-nullのPostgreSQL instantをround/truncateせず`LegacyStoredTimestampV1`へformatする。`.123456Z`はpositiveで、legacy 3/5/7桁、offset、rounding/truncation wireをrejectする。状態別の物理時刻順序はactive/expired=`updated_at >= started_at`、completed=`updated_at >= completed_at`である。expired変換だけ`priorRevision=1..9007199254740990`かつ`priorRevision+1<=9007199254740991`を要求する。effective coverageの意味と他の既存構造rollback契約は維持する。
+
+`m1-current-version-question-mismatch`は、`questions.current_version_id`が存在する別questionの`question_versions.id`を参照する、外部キーだけでは検出できないsame-question相関違反である。preflightはcurrent versionの候補をstatus・時刻・UUID順で選び直さず、次のpredicateだけをexactに評価する。
+
+```sql
+SELECT count(*)
+FROM questions AS q
+LEFT JOIN question_versions AS qv ON qv.id = q.current_version_id
+WHERE q.current_version_id IS NULL
+   OR qv.question_id <> q.id;
+```
+
+count=0だけが成功で、一件以上なら`M1_CURRENT_VERSION_QUESTION_MISMATCH`として全migrationをrollbackする。fixture `m1-current-version-question-mismatch`はbase-valid controlの既存行を追加・複製せず、literalに`fl-001.current_version_id = fl-002-v1.id`（`fl-002-v1.question_id <> fl-001.id`）へ更新する。これはfixture名であり架空のstable列ではない。他のquestion/version、session item、choice、answer key、attempt、時刻、owner条件はcontrolの正値を保持するため、同fixtureはsame-question相関だけを注入する。ID/causeCodeはrelease runbookの51件registry、UTF-8順、hashへexactに従う。
+
+required failure registryの正本は[release runbook §3](./release-runbook.md#3-database-ci)のUTF-8順51 ID/causeCode pairです。この段落のrequired causeを省略・統合せず、空`question_ids`、selected choice重複、attempt owner/session/question/version不一致、activeの`completed_at` non-null、completedの`completed_at` null、fixed-base draft owner不一致・session外question・revision負/unsafe・single pinの選択数超過・pin版外selected choice、bookmark `updated_at < created_at`、completed answered-set-incomplete、completed effective-attempt-missing、`started_at > legacyTerminalAt`、`legacyTerminalAt > migrationRecordedAt`、状態別`updated_at`順序を含む各causeへ一ID/一fixtureだけを対応させます。fixture basename=ID、manifest `causeCode`と`expectedError`は対応pairのcauseCodeにexact一致し、対象cause以外を正に保ちます。registry ID/pair set/count/hashと1:1でなければM1を失敗させます。
+
+`expired`の`legacyTerminalAt=legacyTerminalSourceAt`とし、`started_at <= legacyTerminalAt <= migrationRecordedAt`をDB instant比較で必須とします。`legacyTerminalAt`はDB列、strict JSON、API wireの全てでUTC 6桁、`migrationRecordedAt`はUTC millisecond（三桁）です。変換branchだけsession revisionをexact `+1`とし、answer/attempt原行を更新しません。両branchで`learning_sessions.updated_at=migrationRecordedAt`（3桁）をexactに保存する。completed branchだけ`completed_at=legacyTerminalAt`（6桁）であり、M1 completed current projection/materialization/portable restoreは`updatedAt=migrationRecordedAt`（3桁）と`completedAt=legacyTerminalAt`（6桁）のmixed branchへ固定する。invalidated branchは`completed_at=NULL`かつ`invalidated_at=legacyTerminalAt`、`invalidation_reason='legacy_expired_non_resumable'`で、current projection/materialization/portable restoreは`updatedAt=migrationRecordedAt`（3桁）・`completedAt=NULL`である。
+
+M1 lifecycle operation IDは同じDNS namespaceとname `jstqb-study-app/m1/session-lifecycle-operation/v1/<lowercaseSessionUuid>/<priorRevision>/<resultStatus>`、fact IDはname `jstqb-study-app/m1/session-lifecycle-fact/v1/<lowercaseSessionUuid>/<priorRevision>/<resultStatus>`のUUIDv5です。`learning_session_lifecycle_facts`は次の列をexactに持ちます。
+
+```text
+id UUID PK
+schema_version = 'learning-session-lifecycle-fact.v2'
+user_id UUID
+data_generation BIGINT
+session_id UUID
+prior_status = 'expired'
+resulting_status IN ('completed','invalidated')
+prior_revision BIGINT
+resulting_revision BIGINT CHECK(resulting_revision=prior_revision+1)
+reason_code IN ('all_answerable_items_completed','legacy_expired_non_resumable')
+operation_id UUID UNIQUE
+terminal_at TIMESTAMPTZ
+recorded_at TIMESTAMPTZ
+fact_json JSONB
+fact_hash TEXT UNIQUE
+UNIQUE(session_id,resulting_revision)
+```
+
+completedとinvalidatedのstatus/reason組合せを双方向CHECKし、全列とAPI `M1LegacySessionLifecycleFactV2`のstrict `fact_json`をdeferred exact一致させます。`migrationRecordedAt`はclockの3桁値、`legacyTerminalAt`はfixed-base保存instantの6桁値で、`startedAt<=legacyTerminalAt<=migrationRecordedAt`をinstant比較します。`factHash=SHA-256(RFC 8785 JCS(factHashだけを除くstrict fact))`で、preimageは`schemaVersion,lifecycleFactId,userId,dataGeneration,sessionId,priorStatus,resultingStatus,priorRevision,resultingRevision,reasonCode,operationId,legacyTerminalAt,migrationRecordedAt`の全fieldです。portable、bootstrap、change feedはこの同じ完全factをnestedで保持し、ID/reason/revision/timeだけへ縮退しません。同migration再実行は保存済み`legacyTerminalAt/migrationRecordedAt`を再利用し、ID・全列・JSON・hash完全一致だけno-opとします。再実行時に時計を再取得する、または一fieldでも異なる場合はrollbackします。
+
+初期18問は`compatibility_only`である時だけ`learning_objective_id`をNULLにできます。さらに`blueprint_registry_id`、`allocation_version`、`cognitive_operation`、`pattern_family_id`、`question_form`、`exam_eligibility`、`takeaway`、`common_trap`を全てNULLへ固定し、legacy rowにmodern defaultを補って正式contentへ見せることを禁止します。choiceの`claim`、`relevant_premise_keys`、`relevant_claim_keys`、`addressed_premise_keys`、`addressed_claim_keys`、`misconception_code`、`error_type`も全てNULLであり、legacy専用schema以外のcanonicalizerは入力で拒否します。別途
+`legacy_compatibility_source_bundles`と`legacy_compatibility_manifests`はAPI strict source bundle/sanitized manifest JSON、そのJCS hash、固定bindingをappend-only正本として保存します。`legacy_compatibility_manifest_members`はmanifestへordinal `0..17`、question/version stable key、question version UUID、legacy content hashをexact 18件で結び、余剰・欠落・重複を拒否します。`legacy_compatibility_question_metadata`がquestion versionへ1:1で、legacy source chapter/title/objective、optional semantic candidate、`mapping_status IN ('source_only','semantic_candidate')`、source bundle/manifest FK、legacy content hashを保持します。
+偽のLOを作成して64 LO registryを汚染してはいけません。18問のcontent hashは
+`LegacyCompatibilityQuestionV1`のRFC 8785 JCS SHA-256であり、binding `JSTQB-FL/2023V4.0.J02`、stable
+question/version key、versionNo、source chapter/title/objective、prompt、overall explanation、difficulty、
+source reference、single/1/shuffle=false、sort済みchoices（explanation含む）、sort済みcorrect choice IDs、
+compatibility status/scope/assuranceを含めます。DB UUID、created_at、物理`is_correct`は除外し、Unicode正規化を
+行いません。LO mapping hashと回答前safe hashは別hashです。runtime hydrationは保存済みmanifestのexact 18 members、sidecar FK、question content hashを再検証してからowned existing sessionのpinだけを返し、compiled seed、public catalog、件数だけを正本にしません。
+
+API共通`ContentBindingV2`はexact三branchだけです。(1)`public+published+preview全NULL`、(2)`personal_preview+owner_preview+preview全non-NULL`、(3)`content_channel=NULL+owned_existing_session_only+legacy_compatibility+preview全NULL`。Session、`AttemptFactV2`、local session/attempt、DB CHECK、portable、bootstrap、effective viewはこの一unionを再利用し、独自unionの直積やfield混在を拒否します。legacy attemptはbranch 3だけで、modernへ偽装しません。owned一覧/詳細、local session、portable session fact、bootstrap sessionは全て同じ`SessionContentAndQuestionCountsV2`を使い、`questionCount` aliasを持ちません。
+
+portable `SessionFactV2`、`DraftFactV2`、`AttemptFactV2`、`BookmarkFactV2`、`NoteFactV2`、`IssueFactV2`はAPIのfact別strict unionをDB/local/bootstrap/portableへlosslessに持ち、canonical remote正本はlocalの`canonicalSessions/canonicalDrafts/canonicalAttempts/canonicalBookmarks/canonicalNotes/canonicalIssues` root、optimistic値はintent/outbox/local-value rootへ完全分離します。stale namespaceもcanonical 6 rootとtyped restore linkを独立row kindで全件隔離します。bootstrapはglobal `drafts`/`notes` partitionを必須にし、session rowは`fact:SessionFactV2`とcreation/current source+projectionを、Noteはprovenance付き`NoteFactV2`を同時に持ち、6 unionの欠落を拒否します。Attemptを含むcontent factはmodern binding+対応modern provenanceまたはlegacy binding+対応legacy provenanceだけで、共通wide unionや直積を拒否します。modern practice/examはともにonline `session.created` canonical event provenanceだけを必須にする。terminal確定は別`ExamTerminalFactV2 & ModernSessionContentBindingV2`のfinalization command/receipt/request/response/finalizedAtだけです。legacy syncはevent ID/sequence/kind/hash/occurred/received/revisionをlossless保存しdirect metadata/hash NULL、legacy directはevent ID/sequence等NULLかつliteral table+aggregateの`LegacyDirectRowSourceMetadataV2`/hash non-nullです。対応kindはSession=`session.created`、Draft=`draft.saved`、Attempt=`answer.submitted`、Bookmark=`bookmark.changed`、Note=`note.saved` modern-only、Issue=M1 eventなしdirect-onlyです。entity persisted sourceはkind literal generic、direct table/aggregate/revision、target kind/ID/hash・source identity kind/fact-or-event kind/revision/hash・owner/source+target generation/job/linkを持つtyped restoreだけで、wide `Extract` unionを使いません。aggregate key、event-known projection、row-only field、revision/time defaultはAPI §7のliteral列tableだけを使用します。event候補は同owner/generation・対応kind・aggregateから作り、最大sequenceはPKにより一意です。最大candidateがevent-known projectionとexact一致し後続同aggregate event 0の場合だけlegacy-sync-event、relevant event 0だけdirectです。eventありcandidate 0、後続矛盾、意味field/revision/time不一致はrollbackします。revision列が無いfixed-base Attempt/Bookmark/Issueは`sourceRevision=null`を保持し補造しません。Draft legacyはstaged pin一意ならversion、なければ`unknown-fixed-base/null`、scroll/receivedはnullだがfixed-base `device_id:string`を保持します。Attempt legacyはbase値を保持しunknown timing/response/timezone/local-date null、invalidationは別fact、Bookmark legacyはcreatedAt/updatedAtを保持しrevision/received null、Issue legacyはbase status/resolution/created/updatedを全保持しrevision/update fact nullだけを許可します。direct hash preimageは`schemaVersion,sourceTable,sourceRowId,sourceOwnerUserId,sourceDataGeneration,sourceAggregateKind,sourceAggregateId,sourceRevision,sourceOccurredAt,semanticFact`（除外fieldは`sourceOrigin,sourceEventId,sourceSequence,sourceEventKind,sourceEventHash,sourceOccurredAt,sourceReceivedAt,sourceRevision,legacyDirectRowSource,legacyDirectRowHash`の10 field名）だけをRFC 8785 JCS化し、source hash goldenで独立検証する。偽event生成、metadata/hash差、独自unionへの縮退を拒否します。
+
+M1のexact base ACL hardeningは例外を一つだけ持ちます。`authenticated`へ`public.sync_events`の`SELECT,INSERT`と、そのidentity sequenceの`USAGE`だけをcutoverまでtemporary grantします。`UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER`、sequence `SELECT,UPDATE`、他の全base table/sequence権限は0件です。`PUBLIC`、`anon`、`service_role`は`sync_events`とidentity sequenceを含む全base table/sequence権限0件です。authenticated insertは署名検証済みJWTの`auth.uid()=user_id`をRLS `WITH CHECK`し、selectも同ownerだけです。旧5-kind以外、別owner、未知/曖昧/non-legacy version、foreign/duplicate selected choiceを拒否します。`answer.submitted`はpayloadの`isCorrect`を信用せず、`(questionId,versionStableKey)`とanswer keyからDBで再採点してcanonical payloadを保存します。
+
+M1旧event fingerprintはAPI `M1LegacySyncEventFingerprintV1`のstrict discriminatorです。M1以前rowは`historical_reconstructed`としてfixed-base actual stored `event_id,user_id,kind,entity_id,occurred_at,received_at,payload`から再構成する`LegacyHistoricalCanonicalSourceV1`と`legacySourceFactHash`を保存します。answer submittedのsource payloadは初期trigger後のDB採点済み`isCorrect`を必須とし、別`LegacyHistoricalReplayIdentityV1`/hashは`eventId,userId,kind,entityId,occurredAt,recoverablePayload`だけでreceivedAtを比較外にします。元raw/client `isCorrect`は復元不能なので保存・比較可能と主張しません。incoming replayは同じDB answer keyで再採点し、保存sourceのoutcomeへexact一致した後にreplay identity exactだけをno-opとし、保存済みreceivedAt/source factを変更しません。M1以後rowは`post_m1_raw`として再採点前raw request/hashとphysical v2 `canonical_hash`を保存し、client `isCorrect`を含む全raw field exactだけをno-opにします。両branchともevent advisory lock、global `UNIQUE(event_id)`、cross-user存在非開示拒否を共通にし、旧clientの`onConflict:'event_id',ignoreDuplicates:true`で迂回できません。global uniqueのcutover後変更はM2の別設計/migration/前後試験対象で、M1はdropしません。新trigger関数のEXECUTEは全runtime roleへ0件です。
+
+既存`supabase/tests/database_harness_security.test.sql`は固定base `00411ef12777fdda151a66833598f6805fdfdf63`専用です。47,709 byte、SHA-256 `3e1e8c886238909f5e042cbecdba3b64fa020f656e5098b6218bcbf1e831c0aa`、path/blob/bytesを不変にし、`origin-main-upgrade`のtarget migration適用前base checkpointでだけ実行します。pre-M1 runner profileは`m1ScenarioState='not-registered'`、target/scenario/failure/race/M1 v2 phase entry 0で、manifest v1の旧suite entryをbase phaseへ移設し、固定base・旧base suite・generic全件・fixture-free boundaryだけを検証します。M1 PRはそのbase entryを維持してmanifestを`registered`へatomic更新し、新規`supabase/tests/database_harness_security_v2.test.sql`をfresh、normal post、clean再適用後race post、upgrade post、atomic clean-reapply post、production boundaryの6 contextへ追加します。generic registryはsecurity二fileを除くpgTAP全件、registered phase registryはrelease runbookのUTF-8順exact 7 entryだけを管理し、同一contextの二重実行・誤phase実行を拒否します。既存test blobとfixture READMEはpre-M1 runner PRで変更しません。M1実装開始条件はSol最終監査のBlocking/Highが0、not-registered runner PRがmerge済みかつCI成功済みであること、M1 merge条件はregistered profileの全phase成功です。
+
+`m1-race-post`はrollbackした競合DB上で実行しません。まず競合fixtureで実M1 migration全体がrollbackし、schema/data/migration history/ACL/sequence/auditがbeforeとexact一致することを検証します。その後clean fixed baseを新規構築するか同stackを証跡付きclean resetし、競合なしでM1を再適用して成功を確認したDBだけへgeneric pgTAP全件＋v2 suiteを実行します。rollback確認、clean rebuild/reset、非競合M1成功、generic全件、v2 suiteのいずれもskipできません。
+
+Session factは既存fixed-base `questionIds`/`answeredQuestionIds`の値・順序と`updatedAt`をDB/JSON/local/bootstrap/portable/hashへlosslessに持つ。二配列をJSONBへ置換せず、direct hashはraw orderを含むstrict factから計算し、UTF-8 sortを禁止する。duplicate/foreign/coverage判定だけはraw arrayから導出したsetを用いる。effective attemptの全被覆はcompleted/expired decisionだけに使い、activeのcoverage不足は許可する。legacy branchの`expiresAt`/`submittedAt`はliteral nullだけを許可する。`SessionItemFactV2`、`SessionCreatedCanonical.items`、owned/bootstrap itemは共通`active + invalidatedReason=null`または`invalidated + non-null reason` unionを再利用し、local itemは既存`unanswered|pending|answered`でreason null、`invalidated`だけnon-null reasonとする。legacy `session.created` decoderは`mode='exam'`を受理するがoperation binding全fieldをliteral legacy値へ固定し、modern `session.created`/content/provenanceの偽装を拒否する。positive fixtureはlegacy examのsync/direct各一件、post-M1 session item owner/generation mismatchはM1 fixed-base registryへ入れずv2 pgTAPで検査する。
 
 ## 8. DB主要テーブル
 
@@ -339,11 +454,11 @@ M2は同じtransactionで`anon/authenticated`からquestions、question_versions
 - `learning_session_items`: session、question、version、ordinal、choice order、status
 - `learning_session_item_invalidation_facts`: fact ID、session item/session/question/version/ordinal、reason、operation/target member、prior/resulting session revision、answerable count/result status、invalidated at、strict fact hash。append-onlyでchange、local history、bootstrap、portable、restore、suspend materialization linkが同じfact ID/hashを参照する結果identity
 - `answer_drafts`: owner、session、question、selected、revision、device
-- `answer_attempts`: event ID、owner、session、question/version、selected、grading status、nullable DB採点。INSERT後のUPDATE/DELETE禁止
-- `answer_attempt_invalidations`: attempt ID unique、reason、operation ID、actor、invalidated at。append-only
+- `answer_attempts`: event ID、owner、session、question/version、selected、grading status、nullable DB採点、initial actual `invalidation_reason text NULL`/`invalidated_at timestamptz NULL`。INSERT後のUPDATE/DELETE禁止
+- `answer_attempt_invalidations`: runtimeはattempt ID unique、reason code、operation ID、actor、3桁invalidated at。M1 legacyはbase両列からdeterministic ID/free reason/6桁/direct provenance hashを持つ`LegacyAttemptInvalidationFactV1` exactly一件。全branch append-only
 - `answer_attempt_corrections`: attempt ID、correction no、prior correction ID、old/new outcome、reason、operation ID unique、actor、corrected at。append-only
 - `effective_answer_attempts`: attempt、最新無効化、最新訂正を合成するread model
-- `sync_events`: sequence、event、owner、data generation、kind、origin、contract、request/canonical hash、canonical payload。client-originはrequest hash必須、server-origin terminalはrequest hash null
+- `sync_events`: sequence、event、owner、data generation、kind、origin、contract、request hash、physical `canonical_hash`、canonical payload。client-originはrequest hash必須、server-origin terminalはrequest hash null
 - `user_question_states`: wrong/recovered/SRSの再構築可能なmaterialized state
 - `daily_activities`: 現地日付単位の再構築可能な集計
 - `learning_sync_conflicts`: owner/data generation、aggregate、strict `draft/note/answer` kind、local/remote strict body、各version hash、adopted hash、pending/resolved、DB created/updated/expires atを期限付き保存する唯一の本文正本。owner本人RLSとstrict get/resolve RPCだけを許可する。通常UPDATE/DELETEを拒否し、規定expiry/account deletion cleanupだけがaudit appendと同じDB transactionで本文を削除できる
@@ -595,17 +710,29 @@ invalidated、suspended emergency attemptは全指標から除外し、訂正・
 - 正答、解説、token、他利用者情報は含めない。
 - signed URLは短期で失効する。
 - restoreは通常9-kind syncと分離した公開`enqueue_user_restore_v2`→内部`finalize_user_restore_v2` control-plane jobで実施する。
-- export manifestはexport ID、schemaVersion、owner、source data generation、発行時刻、sync/change上限、projection revision、RFC 8785 payload hash、signing key ID、Ed25519署名を持つ。全canonical eventのsource sequence/envelope/request・canonical hash/strict canonical payload、exam submit・abandon・offline referenceのcommand receipt、consume済みselection basis/spec/catalog/blueprint provenance、acceptance/revoke/selection、session/item/session-item invalidation/draft/attempt/correction/invalidation/exam terminal/result revision/offline reference result revision・feedback revision/bookmark/note/issue update factを含め、問題本文・正答・解説・feedback本文・outbox/cursor/ACK/token、selection-basis discard request/fact/receiptは含めない。portable actor mapはcorrection/invalidation/acceptance revocation/issue updateの全pseudonymをexact coverageし、unused 0とする。salt/pseudonym/public key/signatureはAPIの固定長base64url型、識別子・object metadataはtrim後non-empty型を用いる。
+- export manifestはexport ID、schemaVersion、owner、source data generation、発行時刻、sync/change上限、projection revision、RFC 8785 payload hash、signing key ID、Ed25519署名を持つ。全canonical eventのsource sequence/envelope/request・canonical hash/strict canonical payload、exam submit・abandon・offline referenceのcommand receipt、consume済みselection basis/spec/catalog/blueprint provenance、acceptance/revoke/selection、session/item/session-item invalidation/draft/attempt/correction/invalidation/exam terminal/result revision/offline reference result revision・feedback revision/bookmark/note/issue update factを含め、問題本文・正答・解説・feedback本文・outbox/cursor/ACK/token、selection-basis discard request/fact/receiptは含めない。portable actor mapはactor-bearing runtime correction/runtime invalidation/acceptance revocation/issue updateの全pseudonymだけをexact coverageし、unused 0とする。`LegacyAttemptInvalidationFactV1`はactor map entry、principal snapshot digest、pseudonym、restore actor materialization linkをexact 0とする。salt/pseudonym/public key/signatureはAPIの固定長base64url型、識別子・object metadataはtrim後non-empty型を用いる。
 - `LocalSessionRecordV2`は端末強制終了復旧専用でrestore入力にしない。復元後の本文はsession/version IDからowned-session safe RPCで再hydrateし、suspended版はtombstoneへ置換する。
 - manifest signature、payload hash、schemaVersion、owner、fact間FK、既存event全値同一性を検証し、event IDを保持してversion別adapterからappend-only domain factを再取込する。canonical eventをclient requestとして再送しない。
 - P0 restore uploadは独自暗号envelopeでなくserver署名済みportable JSONを使い、TLS、private Storage、provider at-rest encryptionで保護する。server発行upload IDと固定bucket/object keyだけを使い、client URLをworkerへ渡さない。初期化ではowner、max size、`application/json`、expected object SHA-256、create-onlyを固定し、upload後にworkerがHEAD/stream検証してactual version/etag/size/hashを保存します。dry-run/apply直前に同一性を再検証し、未使用objectは24時間以内に削除します。利用者へdownload fileの保管責任を表示します。
 - 状態は`UPLOADED -> VALIDATED -> DRY_RUN_READY -> APPLYING -> APPLIED`です。dry-runは件数、未知version、owner不一致、event/command conflictを返し、report hashとfresh one-time reauthを伴う明示confirmだけapplyへ進める。chunk uploadはrestore staging tableだけに行い、live domain tableへ部分適用しない。
 - P0 restoreは本人の空の学習namespaceだけを対象とし、merge、置換、cross-account importを実装しない。dry-runとfinalize lock取得後の両方で、学習event/archive、session、attempt、note、bookmark、issue、projection、consume済みbasis、未consume未discard basis、非既定profile settings等が一件でもあれば`RESTORE_TARGET_NOT_EMPTY`です。discard済み未consume basisとserver/local discard auditだけは空判定から除外しますが、selection-basis discard request/fact/command receiptをportable payload、restore replay archive、source identity artifact、restore materialization linkへ含めることは禁止し、入力で検出すれば`UNSUPPORTED_SOURCE_SCHEMA`です。
 
-- dry-runは署名検証済みportable payloadからowner user ID、actor principal snapshot digest、actor export pseudonym、kind別全portable fact ID、全content ref、session/event/command/consume済みselection basis IDをcreate-only `RestoreSourceIdentityArtifactV2`へ固定します。artifact主行はartifact/job/export/source generation/payload hash/artifact hashを物理列、集合は`restore_source_identity_set_rows`へset kind、fact kind、ordinal、strict value/value hashで物理化し、owner、actor principal digest、actor pseudonym、content/session/event/command/basisを別set kindにします。kind別fact registryは0件を含め全kindのsummary rowを必須にし、未知・欠落・重複kindを拒否します。各集合の正規順、count、set hashはchild rowから生成し、dry-run rowのstrict `source_identity_sets_json`、`source_identity_sets_hash`、artifact ID/hash、全summary、source export ID/generation/payload hash、active target basis exact集合をreport hashへ結合します。actor principal digest集合とpseudonym集合を同じ列/配列へ縮退させません。`canApply=true`ではactive basis集合が空です。finalizeはuser exclusive lock後に同じportable payloadから全physical row、count/set/artifact/report hashを再計算し、一ID/ref/digest/pseudonymの追加・欠落・同数差替え、kind移動を拒否します。
+- dry-runは署名検証済みportable payloadからowner user ID、actor principal snapshot digest、actor export pseudonym、kind別全portable fact identity、全content ref、session/event/command/consume済みselection basis IDをcreate-only `RestoreSourceIdentityArtifactV2`へ固定します。portable fact identityは一律の新UUIDを捏造せず、Session/Attempt/Issue等は既存ID、Draftは`(sessionId,questionId)`、Bookmarkは`questionId`、Noteは`(questionId,questionVersionId,revision)`、その他もkind別domain keyとstrict canonical value hashのunionで表します。artifact主行はartifact/job/export/source generation/payload hash/artifact hashを物理列、集合は`restore_source_identity_set_rows`へset kind、fact kind、ordinal、strict value/value hashで物理化し、owner、actor principal digest、actor pseudonym、content/session/event/command/basisを別set kindにします。kind別fact registryは0件を含め全kindのsummary rowを必須にし、未知・欠落・重複kindを拒否します。各集合の正規順、count、set hashはchild rowから生成し、dry-run rowのstrict `source_identity_sets_json`、`source_identity_sets_hash`、artifact ID/hash、全summary、source export ID/generation/payload hash、active target basis exact集合をreport hashへ結合します。actor principal digest集合とpseudonym集合を同じ列/配列へ縮退させません。`canApply=true`ではactive basis集合が空です。finalizeはuser exclusive lock後に同じportable payloadから全physical row、count/set/artifact/report hashを再計算し、一identity/ref/digest/pseudonymの追加・欠落・同数差替え、kind移動を拒否します。
 
 - legacy bridge、sync、session/exam、selection basis、profile設定、personal acceptance/selection/revoke、問題報告、訂正・無効化を含む全user mutationは同一user advisory keyのshared lockを取得します。restore finalizeとaccount deletionは同keyのexclusive lockを取り相互排他とします。管理issue更新も対象userのshared lockを先に取得します。全経路は§9.1の唯一lock順を使い、restoreはuser exclusive後にportable payloadの全question version shared lockをUUID bytes昇順に取得します。lock取得後に全chunk、manifest、payload hash、Ed25519署名、schema、owner、generation、空target、version status、deletion ledger、source identity artifact/count/set hash、dry-run report hash、fresh reauth targetを再検証します。active basisまたは一不一致で全件拒否します。v2 source event/envelopeと許可されたcommand receiptはsource generationのまま`restored_event_replay_archive_v2`/`restored_command_replay_archive_v2`へ保存します。v1 legacy eventは専用legacy archiveへschema、元event ID/sequence、strict portable legacy fact JSONとそのJCS SHA-256だけを保存し、存在しないgeneration/canonical hashを生成しません。current domain rowはincrement後のtarget generationへmaterializeします。`restore_materialization_links`はbranch別物理列でv2 source kind/ID/hash/generationまたはlegacy event ID/sequence/legacy fact hash/null generationとtarget generation/IDを一意に結合します。一つのfinalize transactionでarchive、link、append-only domain fact、suspended/revoked tombstone変換、profile設定、projection再構築、`data_generation` increment、job `APPLIED`を確定します。session item invalidation linkのfact ID/hash/session item IDも専用子row/branch列から導出し、strict JSONだけを正本にしません。source sequenceはcurrent generation streamへ再採番せず、read-only replayだけarchiveから元responseを返します。current cursorはfull bootstrap後の新規writeから開始し、失敗時はlive stateを完全不変にします。旧generationの端末writeは隔離し、restore featureはlegacy bridge cutover後だけ有効化します。
 - restore IDを冪等化し、table直接上書きを禁止する。
+
+bootstrap session rowはcanonical factを唯一のauthoritative rootとし、derived owned-session hydrationとimmutable `creationSource`を同じowner/generation/sessionへexact結合します。fact/session/creation sourceのstrict JCS hashを別々に保存し、creation sourceはfact provenance全fieldへexact一致させ、legacy syncは`session.created` event、legacy directは`learning_sessions/session` direct rowだけを許可します。現在表示を確定した`currentMaterializationSource`は`SessionCurrentProjectionV2={status,currentIndex,revision,answeredQuestionIds,answerableQuestionCount,updatedAt,completedAt}`とprojection hashを必須にするcreation/session-event/terminal/legacy-fixed-row-snapshot/lifecycle/server-change/typed restore strict unionで、`currentStatus=projection.status`、`sourceRevision=projection.revision`、`updatedAt=projection.updatedAt`およびaggregate/source hashをcurrent sessionへexact相関する。creation/session-eventはactive、terminal `session.submitted`はsource revision+completed projectionを必須にし、terminal化するmodern answerは同transaction lifecycleをcurrent sourceにする。legacy event単独をcurrent sourceにせず、fixed row snapshotはactive/completed currentだけ、abandon/invalidateはlifecycle、server changeは許可kind+nested resulting projectionだけへ固定してcreation sourceを置換しない。mode/title/status/certification/syllabus、revision/current index、question/answered ID raw順序、全timestamp、content/operation binding、requested/actual/current answerable count、itemのquestion/version/ordinal/choice order/contentを全値相関させ、immutable targetの`initialAnswerableQuestionCount`をsuspend 10→9のcurrent値で書き換えない。legacy sync/direct/restoreはcreation/current各sourceをevent/direct/linkのID/sequence/revision/time/hashへexact一致させ、restoreはsource projection/hashを精度込みで保持しmaterialized timeへ置換しない。fact、session、creation/current source/projectionのいずれかを別rowとswapした同数page、binding/count/time/hashだけのswapはpartition hash照合前のsemantic validatorでrejectし、snapshot全体をcommitしません。
+
+SessionFactはcreation recordではなくcanonical current snapshotである。初期bindingと`initialAnswerableQuestionCount`、creation provenanceだけはimmutableとし、fact/owned hydration/current projectionのstatus/index/revision/answered IDs/current answerable/updated/completedを常にexact一致させる。fixed-base currentは6桁、legacy creation provenanceを保ったpost-M1 currentは明示branchで3桁へ分配する。post-M1 branchはmodern progress/terminal/runtime lifecycle/実在`session.item-invalidated`/restoreをsourceにでき、source transport 3桁とlegacy creation instant 6桁を混在させない。`initial=10,current=9`はcold bootstrap・local target・resumeで保存する。server-changeはfull existing changeとnested invalidation factへ、restoreはidentity別source key/hashへ相関し、全current source/projection/creation sourceのswapを拒否する。
+
+current projectionを確定するtransactionは、append-only `SessionCurrentMaterializationFactV2`をexact一件だけ作る。initialは`session.created|legacy-fixed-row-snapshot|restore初回`だけをcauseにして`priorRevision/priorMaterializationFactId=NULL`、mutationは`session.advanced|session.review-marked|answer.submitted|session.submitted|session-lifecycle|session.item-invalidated|restore更新`だけをcauseにして直前same-session factをnon-NULLで参照し`resultingRevision=priorRevision+1`とする。full projection/hash、cause kind/ID/hash、fact hashをSessionFact/owned/local/bootstrap/portableへ同じ値で結合し、eventだけからcurrent値を再推定しない。M1 `expired→completed|invalidated`のcauseは完全`M1LegacySessionLifecycleFactV2`（`legacyTerminalAt`、`migrationRecordedAt`、result status/revision）だけである。completedのM1後current projection/materialization/portable restoreは`updatedAt=migrationRecordedAt`の`IsoUtcTimestamp` 3桁と`completedAt=legacyTerminalAt`の`LegacyStoredTimestampV1` 6桁を同時に持つmixed branch、invalidatedは`updatedAt=migrationRecordedAt`の3桁・`completedAt=NULL` branchへstrict分配する。fixed-base currentだけがactive/completed row snapshotの6桁である。restore primary sourceはportable `session-current-materialization` fact ID/hashであり、cause event/fact/linkはそのfact内部の二段FK/hashで再結合する。local/stale、bootstrap `session-lifecycle` partition、portable identity registry、restore dry-run/finalizeはこのfactの全件/順序/hashをlosslessに保持し、source/cause/initial-mutationの同数swapをrejectする。
+
+Round 19ではowned一覧summary/detail、local sync/direct、typed restore link、bootstrap sync/directを同じM1枝へ配線する。通常post-M1 sourceはM1 completed/invalidatedを除くunionだけ、completedはupdated 3桁/completed 6桁、invalidatedはupdated 3桁/completed nullを各direct/restore sourceとexact結合する。summary/list decoder、local decoder、bootstrap decoderはcompleted/invalidated positiveと通常×M1 source・M1 status swap negativeを持つ。
+
+local表示正本はcanonical remote factとoptimistic intentを一つのmodern/legacy discriminatorへ畳みません。Session local intentは3桁delta（current answerableを含む）と`modern-target|legacy-target` immutable targetへ分け、targetのbinding、question raw order、creation time、requested/actual/initial answerable countを編集・補造しません。modern targetはremote absent/modernだけ、legacy targetはlegacy sync/direct（typed restoreを含む）だけへ分配結合し、legacy targetはremote legacyへ、modern targetはremote modernまたは未ACK creation canonical/basisへexact一致します。session remoteはcreation sourceと`SessionCurrentProjectionV2`付きcurrent materialization sourceを別fieldにし、Draft/Bookmark sourceを流用しません。revision entityのgeneric直積は廃止し、Draft=`draft.saved`/`answer_drafts`、Note=provenance付き`NoteFactV2`の`note.saved` only、Bookmark=`bookmark.changed`/`bookmarks`、Issue=`issue.reported`/`content_issues`だけのkind固定source/typed restore unionを用いる。Note legacyとIssue legacy-sync、table/aggregate/owner/generation/time/source kind/revisionのbranch混在をrejectする。optimistic entity intentの`localSequence`とrequest hashは同outbox event/payloadへexact結合し、未ACKにserver sequenceを補造しない。legacy remote+modern local editは同一owner/generation/aggregateの正当な組合せであり、remote value/source/hashを保持したままconflict/rebase対象にします。Draft legacy remote valueは`staged-pin+UUID|unknown-fixed-base+null`、scroll/received null、updated 6桁だけ、modern local/remoteはUUID version・scroll・3桁時刻だけです。
+
+portable actor mapはactor-bearing runtime correction/runtime invalidation/acceptance revocation/issue updateだけをexact被覆します。`LegacyAttemptInvalidationFactV1`はactor/operationを持たないためactor map entry、principal snapshot digest、pseudonym、restore actor materialization linkを全てexact 0とし、portable fact registry/countだけへ含めます。owner、legacy direct source、migration/restore workerからactorを捏造しません。
 
 ### 13.4 Account deletion
 
@@ -851,7 +978,7 @@ main rulesetは次を必須にします。
 - DB jobは共通repository lock、project label ownership、残留container 0を保証
 - deployはexact main SHAの5 checks成功をAPI再確認
 - Pages、DB migration、content publish、EAS mobileを別authorityへ分離
-- 今回はSol xhighを独立reviewerに使用する。独立reviewerは固定head SHAに対するBlocking/High 0と証拠をPR commentへ記録し、root orchestratorがhead一致・未解決thread 0を確認した後だけGitHub auto-mergeをenableする。PR本文の自己申告だけではenableしない。恒久的にGitHubで機械強制するには別主体GitHub reviewまたは専用trusted checkが必要であり、導入前はこのroot確認を運用gateとする
+- 今回はSol xhighを独立reviewerに使用する。独立reviewerは固定head SHAに対するBlocking/High 0と証拠をPR commentへ記録し、root orchestratorがhead一致・未解決thread 0を確認した後だけGitHub auto-mergeをenableする。PR本文の自己申告だけではenableしない。恒久的な機械強制は別主体GitHub reviewまたは既存required job `quality`内のtrusted artifact検証step `independent-review`で行い、その失敗はqualityを失敗にする。Ruleset required contextsと`apply-main-ruleset.sh`は`quality`、`database`、`e2e`、`pages`、`security`のexact 5から増やさず、`independent-review`を第6 context/checkにしない。導入前はこのroot確認を運用gateとする
 
 1 commitを1目的、1 PRを1境界とします。migration、client feature、private contentを混在させません。
 
@@ -928,10 +1055,10 @@ feature registryへ`content-release-v2`、worker registryへ`content-control`を
 
 DB runnerはspawn、clockなどをDIしても、repository共通lock、main stack停止確認、upgrade harness、project label ownershipを省略しません。同projectの並行実行をfail-closedで拒否し、未知containerを停止せず、logをredactし、終了時に対象labelの残留0を検査します。
 
-synthetic DB fixtureは`supabase/tests/fixtures`だけに置き、test/upgrade harnessだけが投入します。production migration artifactは`supabase/migrations` allowlist manifestから構築し、fixture stable ID/canaryがmigration、seed、artifact、本番DBに0件であることをCIとproduction preflightで検査します。fresh/upgrade/combinedのfixture投入phaseとproduction migration適用phaseは別logで証明します。
+synthetic DB fixtureは`supabase/test-fixtures/database-harness`だけに置き、test/upgrade harnessだけが投入します。production migration artifactは`supabase/migrations` allowlist manifestから構築し、fixture stable ID/canaryがmigration、seed、artifact、本番DBに0件であることをCIとproduction preflightで検査します。fresh/upgrade/combinedのfixture投入phaseとproduction migration適用phaseは別logで証明します。
 
 - fresh reset
-- main-shaped upgrade正常系
+- fixed base `00411ef12777fdda151a66833598f6805fdfdf63` / PR #9 head `31c87247dcf36e6df036912a07318f3cd68f448b` upgrade正常系
 - 異常fixtureごとのatomic failure
 - 9 kindのeventとmaterialized state
 - RPC/legacy triggerのmaterialize一回
@@ -948,7 +1075,7 @@ synthetic DB fixtureは`supabase/tests/fixtures`だけに置き、test/upgrade h
 - late exam draft ACKと`serverSideEvents` terminalの同時適用、invalidated draft rowなし`0/null`
 - selection basis明示discard、discard後consume拒否、restore empty判定、confirm暗黙discard 0
 - suspend target member全status・全attempt・exam/offline-reference coverage、user receipt set hash/count、retry後未処理0
-- portable actor mapのcorrection/invalidation/acceptance revoke/issue update exact coverage、unused/role不一致拒否
+- portable actor mapのactor-bearing runtime correction/runtime invalidation/acceptance revoke/issue update exact coverage、unused/role不一致拒否、legacy invalidationのactor map/principal snapshot/pseudonym/materialization link exact 0
 - issuer+subject v2 external deletion tombstoneと旧backupだけからDB/Auth/Storage再削除、ledger/tombstone両hashのcombined receipt、両hash検証済みmax contiguous upper bound、HMAC key/issuer/storage rule/sequence欠落時昇格拒否。literal preimage/signature/receipt/upper-bound goldenを`acceptance-evidence-v2.md`のaccount deletion/restore drillへ登録
 - internal job status/public mappingの全直積と不可能状態DB CHECK
 - M1失敗時data、DDL、migration history増加0

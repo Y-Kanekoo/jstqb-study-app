@@ -34,6 +34,18 @@ jobs:
           cache: pnpm
       - name: 依存関係を固定してインストール
         run: pnpm install --frozen-lockfile
+      - name: docs-contract
+        run: pnpm contract:check-api-ts-fences
+        env:
+          DOCS_CONTRACT_ARTIFACT_PATH: ${{ runner.temp }}/docs-contract/api-contract-v2-fences.json
+      - name: docs-contract成果物を保存
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: docs-contract
+          path: ${{ runner.temp }}/docs-contract/api-contract-v2-fences.json
+          retention-days: 7
+          if-no-files-found: error
       - name: 静的検査・単体テスト・契約テスト・Webビルド
         run: pnpm check
       - name: Webビルド成果物を保存

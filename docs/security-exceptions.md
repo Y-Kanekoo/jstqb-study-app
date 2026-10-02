@@ -8,6 +8,8 @@
 
 2026-10-02のMetro修正後は25 high / 10 moderate（固有GHSA 22件）、[互換範囲内の追加修正](tdr/002-residual-dependency-security.md)後は1 high / 2 moderate（固有GHSA 3件）が残っています。残存advisory、対応条件、既存PRとの重複確認は[Issue #29](https://github.com/Y-Kanekoo/jstqb-study-app/issues/29)で追跡します。
 
+続く[xcode経路限定のuuid修正](tdr/003-xcode-uuid-security.md)後は1 high / 1 moderate（固有GHSA 2件）です。親の宣言範囲外の採用判断・互換性検証を別TDRに記録し、node-forgeとdecode-uri-componentの検査・失敗は維持します。
+
 ## 解消済み例外
 
 `image-size-2.0.3-release-wait`（期限2026-09-12）は、Expo/React Native CLIの両経路から脆弱な依存を除去したため削除しました。期限の延長はしていません。

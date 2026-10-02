@@ -6,7 +6,7 @@
 
 なし。`pnpm audit:dependencies` は実行時とビルド時の全依存を除外なしで検査し、high以上が残れば失敗します。例外がないことは、脆弱性がないことを意味しません。
 
-2026-10-02のMetro修正後も25 high / 10 moderateが残っています。残存advisory、対応条件、既存PRとの重複確認は[Issue #29](https://github.com/Y-Kanekoo/jstqb-study-app/issues/29)で追跡します。
+2026-10-02のMetro修正後は25 high / 10 moderate（固有GHSA 22件）、[互換範囲内の追加修正](tdr/002-residual-dependency-security.md)後は1 high / 2 moderate（固有GHSA 3件）が残っています。残存advisory、対応条件、既存PRとの重複確認は[Issue #29](https://github.com/Y-Kanekoo/jstqb-study-app/issues/29)で追跡します。
 
 ## 解消済み例外
 

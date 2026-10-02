@@ -1,5 +1,8 @@
 allowBuilds:
   unrs-resolver: false
+overrides:
+  # TDR-003: only xcode 3.0.1's CommonJS v4 consumer; not a global uuid override.
+  'xcode@3.0.1>uuid': 11.1.1
 minimumReleaseAgeExclude:
   - '@expo/cli@57.0.14'
   - '@expo/fingerprint@0.20.7'

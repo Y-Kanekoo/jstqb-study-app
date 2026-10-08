@@ -2,6 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { test, expect } from '@playwright/test';
 import fixtures from '../scripts/fixtures/uri-query-contract.json';
+import { appPath } from './helpers';
 
 test('Metro bundle preserves Router query contracts in the browser', async ({ page }, testInfo) => {
   test.setTimeout(120_000);
@@ -17,7 +18,7 @@ test('Metro bundle preserves Router query contracts in the browser', async ({ pa
   const result = await page.evaluate<string>('JSON.stringify(globalThis.__uriQueryResults)');
   expect(JSON.parse(result)).toEqual({
     parsed: fixtures.parse.filter(f => !f.options).map(f => ({ sessionId: 'synthetic', ...f.expected })),
-    generated: '/practice/synthetic?tag=a&tag=b&q=%E6%97%A5%E6%9C%AC%20%2B&empty=',
+    generated: appPath('/practice/synthetic?tag=a&tag=b&q=%E6%97%A5%E6%9C%AC%20%2B&empty='),
     coreGenerated: '/practice/synthetic?q=%E6%97%A5%E6%9C%AC%20%2B&empty=',
     withHash: '/practice/synthetic?q=a%2Bb#section',
     large: '%FE'.repeat(20000),

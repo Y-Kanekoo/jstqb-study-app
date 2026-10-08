@@ -30,7 +30,7 @@ query-string 7.1.3のparser/stringifierは保持し、そのdecoder依存だけ�
 
 Expo forkの入力解析は既にURLSearchParamsを使う。query-stringの寛容なdecoderと同じ期待値へ無理に統一しない。例えば`%E0%A4`はquery-string/coreでliteral保持、Expoではreplacement characterとなり、値なしはそれぞれnull/空文字になる。prototype名はquery-stringでnull-prototype objectのdataとして保持する一方、現行Expoのroute.paramsとの衝突判定で除外される。これは本変更前からの境界差を記録するもので、一般的な新仕様を承認するものではない。
 
-アプリの現利用は主に`router.push`のpractice/sessionIdと`useLocalSearchParams`。追加fixtureは将来利用も含む依存APIの回帰検査であり、認証・課金・実サービスへ接続しない。NodeのUI barrel置換だけではMetro互換を証明しないため、ブラウザテストでは置換しない実fork/coreを使用する。
+アプリの現利用は主に`router.push`のpractice/sessionIdと`useLocalSearchParams`。追加fixtureは将来利用も含む依存APIの回帰検査であり、認証・課金・実サービスへ接続しない。NodeのUI barrel置換だけではMetro互換を証明しないため、ブラウザテストでは置換しない実fork/coreを使用する。Expo forkの生成URLはPages環境で設定済みサブパスを含むため、ブラウザ期待値は既存E2Eと同じE2E_BASE_PATHを使う。core版はその設定を持たずroot pathのままである。
 
 ## 検証の限界と再現性
 

@@ -1,19 +1,15 @@
 # セキュリティ例外
 
-脆弱性検査の除外はGitHub Advisory IDごとに限定し、理由、影響範囲、期限、解除条件を記録します。包括的な脆弱性検査無効化は行いません。
+現在の例外はありません。`pnpm audit:dependencies`は実行時・ビルド時の全依存を除外なしで検査し、high以上が残れば失敗します。
 
-## image-size 2.0.3公開待ち
+## 解消済みのimage-size例外
 
-- 対象: `GHSA-w3rx-r6r6-pgpr`、`GHSA-5p2g-fcmc-qvqq`
-- 重大度: high
-- 影響: ICNS、JXL、HEIF解析時の無限ループによるDoS
-- 経路: ExpoのビルドツールであるMetroからの推移的依存`image-size@1.2.1`
-- 判断日: 2026-08-11
-- 解除条件: `image-size@2.0.3`以上、または修正済みMetro/Expoへ更新可能になった時
-- 次回確認: Dependabotの週次PRごと、遅くとも2026-09-12
+`image-size-2.0.3-release-wait`（期限2026-09-12）、`GHSA-w3rx-r6r6-pgpr`と`GHSA-5p2g-fcmc-qvqq`の除外を削除しました。期限延長やchecker変更は行いません。
 
-2026-08-11時点で監査情報は2.0.3以上を修正版としていますが、npm registryの最新公開版は2.0.2で、修正版へ更新できません。対象はアプリの実行時に利用者の画像を解析する経路ではなく、開発・Web/ネイティブバンドル時のMetro経路です。
+PR #33のhead `2fab1982c82db4526ce20209d9b224d64063f416`は既にimage-sizeをlock全体・frozen install後の依存グラフに含みません。Expo側はMetro 0.84.5、React Native CLI側はMetro 0.87.1で、両方の同梱parserに対して有効なPNGと不正ICNSの拒否を追加テストで確認します。
 
-`pnpm audit:dependencies`は実行時とビルド時の全依存を対象に、この2 IDだけを除外し、他のhigh以上を引き続き失敗させます。修正版公開後は除外を削除し、lockfile更新、`pnpm check`、E2E、実機ビルドを実行します。
+この修正は#33の22パッケージ更新を採否判断するものではなく、その系列の解消済み例外だけを除去します。PR #30/#31/#32の別系列を統合せず、既存branchと証跡を保持します。将来の統合時は依存版とテスト前提の再照合が必要です。
 
-`.github/security-exceptions.json`は例外ごとにAdvisory ID、理由、影響範囲、確認日、期限、解除方法を保持します。`pnpm check:security-exceptions`はpnpm設定・manifest・本文書のIDを照合し、各例外の期限を個別に比較します。期限を過ぎても例外が残っている場合はCIを失敗させ、根拠の再評価または例外削除を要求します。
+2026-10-08の除外なし監査はcritical 1 / high 6 / moderate 5（固有GHSA 11件）で、security gateは失敗のままです。image-sizeの2 advisoryは含まれません。node-forge、URI decoderおよび別の残存依存の修正は[Issue #29](https://github.com/Y-Kanekoo/jstqb-study-app/issues/29)とセキュリティ修正系列で追跡します。
+
+`.github/security-exceptions.json`、pnpm設定、本文書の整合と例外期限は既存`check:security-exceptions`で検査します。例外が空でも、依存に脆弱性がないことを意味しません。署名・認証設定、例外追加、監査重大度、既存機能テストの入力・期待値は変更しません。マージ・デプロイは対象外です。

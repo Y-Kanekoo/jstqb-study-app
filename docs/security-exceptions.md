@@ -13,3 +13,7 @@ PR #33のhead `2fab1982c82db4526ce20209d9b224d64063f416`は既にimage-sizeをlo
 2026-10-08の除外なし監査はcritical 1 / high 6 / moderate 5（固有GHSA 11件）で、security gateは失敗のままです。image-sizeの2 advisoryは含まれません。node-forge、URI decoderおよび別の残存依存の修正は[Issue #29](https://github.com/Y-Kanekoo/jstqb-study-app/issues/29)とセキュリティ修正系列で追跡します。
 
 `.github/security-exceptions.json`、pnpm設定、本文書の整合と例外期限は既存`check:security-exceptions`で検査します。例外が空でも、依存に脆弱性がないことを意味しません。署名・認証設定、例外追加、監査重大度、既存機能テストの入力・期待値は変更しません。マージ・デプロイは対象外です。
+
+## SDK整合後の追加修正
+
+#37でSDK57対応のReact/RN等へ整合した後、[公開済み修正の再評価](tdr/sdk57-security-followup.md)を行いました。現在はhigh 2 / moderate 1（固有GHSA 3件）で、forge・braces・URI decoderを検査対象のまま保留します。上のcritical1/high6/moderate5は#34時点の履歴です。例外は引き続き0件です。

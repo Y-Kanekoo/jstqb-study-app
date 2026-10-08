@@ -9,6 +9,7 @@
     {"name":"overlong UTF-8", "input":"q=%C0%AF", "expected":{"q":"%C0%AF"}, "expoExpected":{"q":"��"}},
     {"name":"legacy replacement", "input":"q=%C2", "expected":{"q":"�"}},
     {"name":"invalid BOM", "input":"q=%FE%FF", "expected":{"q":"��"}},
+    {"name":"malformed fallback does not recursively decode newly formed escapes", "input":"q=%25%34%31%FE%FD", "expected":{"q":"%41%FE%FD"}, "expoExpected":{"q":"%41��"}},
     {"name":"Unicode and lower hex", "input":"q=%e6%97%a5%E6%9C%AC&emoji=%F0%9F%98%80", "expected":{"emoji":"😀","q":"日本"}},
     {"name":"literal and encoded plus", "input":"q=a+b&plus=%2B&nested=%252B", "expected":{"nested":"%2B","plus":"+","q":"a b"}},
     {"name":"duplicate order", "input":"q=first&q=second&q=first", "expected":{"q":["first","second","first"]}},

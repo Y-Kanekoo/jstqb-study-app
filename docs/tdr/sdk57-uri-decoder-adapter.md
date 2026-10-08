@@ -21,7 +21,7 @@ query-string 7.1.3のparser/stringifierは保持し、そのdecoder依存だけ�
 
 | 境界 | 契約・リスク | 証拠 |
 |---|---|---|
-| query-string parse/stringify | 不正%、壊れた/正常UTF-8、大小hex、重複順序、配列、plus、null/空値、strict encode、fragment、decode:false | 22 parse + 5 stringify + 3 fragmentのliteral fixture。旧APIと候補双方を照合 |
+| query-string parse/stringify | 不正%、壊れた/正常UTF-8、大小hex、重複順序、配列、plus、null/空値、strict encode、fragment、decode:false | 23 parse + 5 stringify + 3 fragmentのliteral fixture。従来30件の契約と、下記1件の意図的な差を区別 |
 | Router同梱React Navigation core | 実parse、stringify、生成URLの往復 | 実モジュール・実consumerを呼ぶ。query parseのnullと不正UTF-8保持を検証 |
 | Expo fork | 実stringify→実URLSearchParams parser、配列/plus/空値の往復 | 実生成bytesを再解析。NodeではUI barrelへの1 edgeだけ同じ実validatorへ解決 |
 | Metro/ブラウザ | ESM defaultのbundle/runtime適応、全4 import経路 | Expo CLIがfixture entryをweb bundle化し、desktop/mobileブラウザで実行。parserをmockしない |
@@ -33,6 +33,14 @@ Expo forkの入力解析は既にURLSearchParamsを使う。query-stringの寛�
 アプリの現利用は主に`router.push`のpractice/sessionIdと`useLocalSearchParams`。追加fixtureは将来利用も含む依存APIの回帰検査であり、認証・課金・実サービスへ接続しない。NodeのUI barrel置換だけではMetro互換を証明しないため、ブラウザテストでは置換しない実fork/coreを使用する。Expo forkの生成URLはPages環境で設定済みサブパスを含むため、ブラウザ期待値は既存E2Eと同じE2E_BASE_PATHを使う。core版はその設定を持たずroot pathのままである。
 
 ## 検証の限界と再現性
+
+### 不正入力で許容する挙動差
+
+全ての不正入力について旧decoderとの互換性を保証しない。`query.parse('q=%25%34%31%FE%FD')`を実行比較した結果、旧0.2.2は`{q:'A%FE%FD'}`、公式0.5.0＋adapterは`{q:'%41%FE%FD'}`となった。旧fallbackは部分decode後に再tokenizeして生成された`%41`をもう一度decodeするが、新版はこの二重decodeを行わない。追加literal fixtureは新版の結果を明示し、実Router coreとMetroブラウザにも同じ入力を通す。Expo forkのURLSearchParamsでは`{q:'%41��'}`となり、その別契約も固定する。
+
+この差は不正UTF-8と二重に解釈可能なescapeが混在する入力で許容する安全側の移行判断であり、旧fallbackを復活させない。これはdecoderの当該fallbackに関する判断で、query-stringの全オプションでdecode回数を一回に制限する保証ではない。既存の正常系・配列・plus・fragment・Router生成URLの期待値は変更しない。
+
+現在のアプリは`src/state/learning-store.ts`で`randomUUID()`によりsession IDを生成し、画面からRouterへ渡し、practice画面で保存済みIDと完全一致で照合する。通常の生成URLはこの不正入力を作らず、現在の画面は`q`を利用しない。不正な外部URLや将来のquery consumerでは値が変わり得るため、旧fallbackの二重decodeに依存するリンクの互換性は保証しない。認証・認可や入力検証の安全性をこの差だけで証明するものでもない。既存fixtureの入力・期待値は保持し、親レビューから明示された1件を追加する。
 
 ローカルのpnpm取得はregistry503で停止した。連続retryは中止し、手元のquery-stringソースとintegrity確認済みのdecoder tarballへ同じpatchを適用した一時consumer配置で契約・ビルドを検証する。この配置は正式frozen installの成功とは扱わない。
 

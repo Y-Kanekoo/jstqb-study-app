@@ -10,6 +10,8 @@
 
 続く[xcode経路限定のuuid修正](tdr/003-xcode-uuid-security.md)後は1 high / 1 moderate（固有GHSA 2件）です。親の宣言範囲外の採用判断・互換性検証を別TDRに記録し、node-forgeとdecode-uri-componentの検査・失敗は維持します。
 
+2026-10-08の再監査では追加advisoryによりcritical 1 / high 4 / moderate 1となりました。[追加3依存の互換修正](tdr/004-october-security-refresh.md)後はhigh 2 / moderate 1（固有GHSA 3件）です。node-forge・bracesは公式修正版未公開、URI decoderは親のAPI移行が必要で、securityの失敗を保持します。
+
 ## 解消済み例外
 
 `image-size-2.0.3-release-wait`（期限2026-09-12）は、Expo/React Native CLIの両経路から脆弱な依存を除去したため削除しました。期限の延長はしていません。

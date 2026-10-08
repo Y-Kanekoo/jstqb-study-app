@@ -22,7 +22,11 @@ test('only the xcode 3.0.1 edge selects the fixed CommonJS uuid 11.1.1', () => {
   const parse = fromEslintrc('js-yaml').load;
   const settings = parse(readFileSync(new URL('../pnpm-workspace.yaml', import.meta.url), 'utf8'));
   const lock = parse(readFileSync(new URL('../pnpm-lock.yaml', import.meta.url), 'utf8'));
-  assert.deepEqual(settings.overrides, { 'xcode@3.0.1>uuid': '11.1.1' });
+  // Exact dependency-policy set; URI adapter runtime contracts have their own tests.
+  assert.deepEqual(settings.overrides, {
+    'xcode@3.0.1>uuid': '11.1.1',
+    'query-string@7.1.3>decode-uri-component': '0.5.0',
+  });
   assert.deepEqual(lock.overrides, settings.overrides);
   assert.equal(lock.snapshots['xcode@3.0.1'].dependencies.uuid, '11.1.1');
   assert.deepEqual(Object.keys(lock.packages).filter((key) => key.startsWith('uuid@')), ['uuid@11.1.1']);

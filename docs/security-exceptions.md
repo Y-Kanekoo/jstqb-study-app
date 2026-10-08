@@ -17,3 +17,5 @@ PR #33のhead `2fab1982c82db4526ce20209d9b224d64063f416`は既にimage-sizeをlo
 ## SDK整合後の追加修正
 
 #37でSDK57対応のReact/RN等へ整合した後、[公開済み修正の再評価](tdr/sdk57-security-followup.md)を行いました。現在はhigh 2 / moderate 1（固有GHSA 3件）で、forge・braces・URI decoderを検査対象のまま保留します。上のcritical1/high6/moderate5は#34時点の履歴です。例外は引き続き0件です。
+
+#38後の[URI decoder adapter候補](tdr/sdk57-uri-decoder-adapter.md)では公式decoder 0.5.0へ置換し、query-string 7の呼出契約を小さいpatchで保持します。high 2 / moderate 1は#38時点の履歴として残し、最終headの未抑制監査結果をPRで確認します。forge・bracesの保留や例外0件の方針は変えません。

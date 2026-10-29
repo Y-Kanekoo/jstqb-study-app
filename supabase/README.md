@@ -23,11 +23,13 @@ pnpm test:database
 
 `pnpm test:database`は共有排他lockを取得し、次の5 phaseを固定順で実行します。
 
-1. `fresh`: 空DBへ全production migrationを適用し、generic pgTAP全件＋`fresh-head` phase suiteを実行します。
-2. `origin-main-upgrade`: harness manifestに固定したbase commit `00411ef12777fdda151a66833598f6805fdfdf63`のmigration hashとsynthetic既存データから現在HEADへupgradeします。適用前base checkpointはgeneric全件＋旧base suite、適用後はgeneric全件＋`origin-main-upgrade-post` suiteです。moving `origin/main`は使用しません。
+1. `fresh`: 空DBへ全production migrationを適用し、generic pgTAP全件を実行します。`m1ScenarioState='registered'`ではさらに`fresh-head` phase suiteを実行します。
+2. `origin-main-upgrade`: harness manifestに固定したbase commit `00411ef12777fdda151a66833598f6805fdfdf63`のmigration hashとsynthetic既存データから現在HEADへupgradeします。適用前base checkpointはgeneric全件＋旧base suiteです。適用後はgeneric全件を実行し、`m1ScenarioState='registered'`ではさらに`m1-normal-post`と`origin-main-upgrade-post`の各checkpointのphase suiteを実行します。moving `origin/main`は使用しません。
 3. `combined-order`: fresh/upgradeのmigration履歴と最終schema・RPC署名が一致することを確認します。
 4. `atomic-failure`: 固定baseをcaseごとに再構築し、意図的な実migration失敗後にDDL、ACL、role、data、sequence、migration履歴が残らないことを確認します。
 5. `production-boundary`: `supabase/test-fixtures/database-harness/manifest.json`で完全列挙したtest fixtureのstable ID/canaryが、production migration・seed・content bundle・release artifact・public/private DBへ混入していないことを確認します。
+
+`m1ScenarioState='not-registered'`ではM1固有のv2 phase entryは0件で、`fresh-head`、`m1-normal-post`、`origin-main-upgrade-post`を含むM1固有suiteを実行したとは扱いません。
 
 security suiteはmanifest v2のphase-specific registryだけで実行します。既存`database_harness_security.test.sql`は固定base `00411ef12777fdda151a66833598f6805fdfdf63`のorigin-main-upgrade target適用前checkpoint専用、新規`database_harness_security_v2.test.sql`はregistered profileのfresh、M1 normal/race/upgrade post、atomic clean-reapply post、production boundary HEAD専用です。両fileをgeneric pgTAP discoveryから除外し、各checkpointでは除外後のgeneric全件＋当該phase suiteを実行します。本書の「全pgTAP」はこの和集合で、誤phase・同一context二重実行・skipを拒否します。runnerは同projectの既存containerがあればfail-closedで中止し、stop直前にlabel/nameが所有証跡と完全一致したcontainerだけを停止します。SIGINT/SIGTERMでは実行中commandを停止して所有確認付きcleanupへ移り、CIは独立した`always()` cleanupでも残留container/lock 0を検査します。接続URL、DBパスワード、service role keyをログ・ファイル・Gitへ保存しません。
 

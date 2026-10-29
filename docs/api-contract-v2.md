@@ -5759,7 +5759,8 @@ type LegacySessionCurrentMaterializationSourceV2 =
 // fixed-base snapshotだけに閉じ、post-M1 currentは明示SessionFact/Owned branchの3桁値へ移す。
 type LegacyBoundPostM1CurrentMaterializationSourceV2 = Exclude<
   ModernSessionCurrentMaterializationSourceV2,
-  { readonly materializationKind: 'creation' }
+  | { readonly materializationKind: 'creation' }
+  | { readonly materializationKind: 'restore'; readonly restoredMaterializationKind: 'creation' }
 > | M1ExpiredSessionCurrentMaterializationSourceV2 | M1ExpiredRestoreCurrentMaterializationSourceV2;
 type LegacyBoundSessionCurrentMaterializationSourceV2 =
   | LegacySessionCurrentMaterializationSourceV2

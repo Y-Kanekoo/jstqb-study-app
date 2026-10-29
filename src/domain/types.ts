@@ -111,7 +111,7 @@ export interface OutboxEvent {
     | 'issue.reported';
   entityId: string;
   occurredAt: string;
-  payload: Record<string, boolean | number | string | string[]>;
+  payload: Record<string, boolean | number | string | string[] | null>;
 }
 
 export interface LearningSnapshot {

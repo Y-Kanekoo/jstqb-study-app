@@ -57,6 +57,15 @@ describe('学習バックアップ', () => {
     expect(parseLearningBackup('{')).toBeNull();
   });
 
+  it('サーバーのcanonicalイベントに含まれるnull値を復元できる', () => {
+    const snapshot = parseLearningSnapshot({
+      ...emptySnapshot,
+      outbox: [{ id: 'event-1', kind: 'session.created', entityId: 'session-1',
+        occurredAt: '2026-08-12T00:00:00.000Z', payload: { durationMinutes: null, expiresAt: null } }],
+    });
+    expect(snapshot?.outbox[0]?.payload.durationMinutes).toBeNull();
+  });
+
   it('回答履歴をExcel互換のCSVへ出力する', () => {
     const csv = serializeAttemptsCsv({
       ...emptySnapshot,

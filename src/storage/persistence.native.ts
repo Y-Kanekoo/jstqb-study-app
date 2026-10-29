@@ -1,5 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
+import { StorageConflictError } from './persistence-conflict';
+
 const databasePromise = SQLite.openDatabaseAsync('jstqb-study.db');
 
 async function prepareDatabase(): Promise<SQLite.SQLiteDatabase> {
@@ -34,4 +36,20 @@ export async function setStoredValue(key: string, value: string): Promise<void> 
     value,
     new Date().toISOString(),
   );
+}
+
+export async function compareAndSetStoredValue(key: string, expected: string | null, value: string): Promise<void> {
+  const database = await prepareDatabase();
+  await database.withExclusiveTransactionAsync(async (transaction) => {
+    const result = expected === null
+      ? await transaction.runAsync(
+        'INSERT OR IGNORE INTO key_value_store (key, value, updated_at) VALUES (?, ?, ?)',
+        key, value, new Date().toISOString(),
+      )
+      : await transaction.runAsync(
+        'UPDATE key_value_store SET value = ?, updated_at = ? WHERE key = ? AND value = ?',
+        value, new Date().toISOString(), key, expected,
+      );
+    if (result.changes !== 1) throw new StorageConflictError();
+  });
 }

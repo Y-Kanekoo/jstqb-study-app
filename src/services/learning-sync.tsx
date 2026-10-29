@@ -20,7 +20,7 @@ const syncKinds: ReadonlySet<string> = new Set([
 
 function isPayload(value: unknown): value is OutboxEvent['payload'] {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  return Object.values(value).every((item) => typeof item === 'string'
+  return Object.values(value).every((item) => item === null || typeof item === 'string'
     || typeof item === 'number'
     || typeof item === 'boolean'
     || (Array.isArray(item) && item.every((entry) => typeof entry === 'string')));

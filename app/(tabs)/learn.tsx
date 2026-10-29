@@ -25,6 +25,7 @@ export default function LearnScreen() {
   const { width } = useWindowDimensions();
   const startSession = useLearningStore((state) => state.startSession);
   const startExam = useLearningStore((state) => state.startExam);
+  const storageError = useLearningStore((state) => state.storageError);
   const questionStates = useLearningStore((state) => state.questionStates);
   const bookmarks = useLearningStore((state) => state.bookmarks);
   const [questionCount, setQuestionCount] = useState<(typeof questionCountOptions)[number]>(10);
@@ -39,8 +40,13 @@ export default function LearnScreen() {
   const unansweredQuestionIds = questions.filter((question) => !questionStates[question.id]).map((question) => question.id);
 
   const beginQuestionSet = async (mode: SessionMode, title: string, questionIds: string[]) => {
-    const sessionId = await startSession(mode, title, questionIds);
-    router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+    setActionError(null);
+    try {
+      const sessionId = await startSession(mode, title, questionIds);
+      router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+    } catch {
+      setActionError('学習を端末へ保存できませんでした。空き容量を確認し、もう一度お試しください。');
+    }
   };
 
   const beginConfiguredPractice = async () => {
@@ -64,8 +70,12 @@ export default function LearnScreen() {
       setActionError(`模試には章構成を満たす${examConfig.questionCount}問が必要です。本番問題の同期後に開始できます。`);
       return;
     }
-    const sessionId = await startExam(questionIds);
-    router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+    try {
+      const sessionId = await startExam(questionIds);
+      router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+    } catch {
+      setActionError('模試を端末へ保存できませんでした。空き容量を確認し、もう一度お試しください。');
+    }
   };
 
   return (
@@ -124,7 +134,7 @@ export default function LearnScreen() {
         {questions.length < examConfig.questionCount && <Text style={styles.examNotice}>現在は開発用サンプル{questions.length}問です。章構成を満たす本番問題の同期後に利用できます。</Text>}
       </Card>
 
-      {actionError && <View accessibilityRole="alert" style={styles.errorBox}><Text style={styles.errorText}>{actionError}</Text></View>}
+      {(actionError || storageError) && <View accessibilityRole="alert" style={styles.errorBox}><Text style={styles.errorText}>{storageError ?? actionError}</Text></View>}
 
       <View style={[styles.quickGrid, wide && styles.quickGridWide]}>
         <Card style={styles.quickCard}>

@@ -44,7 +44,11 @@ export default function SettingsScreen() {
       <Card style={styles.goalCard}>
         <Text style={styles.cardTitle}>1日の目標</Text>
         <Text style={styles.cardDescription}>無理なく毎日続けられる問題数を選んでください。</Text>
-        <View style={styles.chips}>{goalOptions.map((goal) => <Chip key={goal} label={`${goal}問`} selected={dailyGoal === goal} onPress={() => void setDailyGoal(goal)} />)}</View>
+        <View style={styles.chips}>{goalOptions.map((goal) => <Chip key={goal} label={`${goal}問`} selected={dailyGoal === goal} onPress={() => {
+          void setDailyGoal(goal).catch(() => {
+            // 保存失敗は storageError と選択中の目標値に反映されます。
+          });
+        }} />)}</View>
       </Card>
 
       <Card style={styles.dataCard}>

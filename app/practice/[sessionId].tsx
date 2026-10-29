@@ -7,12 +7,19 @@ import { getQuestion } from '@/content/questions';
 import { Screen } from '@/components/screen';
 import { Button, Card, ProgressBar } from '@/components/ui';
 import { useLearningStore } from '@/state/learning-store';
+import { StorageConflictError } from '@/storage/persistence-conflict';
 import { colors, fonts, radii } from '@/theme/tokens';
 
 function formatRemainingTime(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function saveFailureMessage(error: unknown, fallback: string): string {
+  if (error instanceof StorageConflictError) return error.message;
+  if (error instanceof Error && error.message.includes('保存できなかった選択')) return error.message;
+  return fallback;
 }
 
 export default function PracticeScreen() {
@@ -22,6 +29,7 @@ export default function PracticeScreen() {
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [reviewExamResults, setReviewExamResults] = useState(false);
   const [secondsRemaining, setSecondsRemaining] = useState(examConfig.durationMinutes * 60);
+  const [localNotes, setLocalNotes] = useState<Record<string, string>>({});
   const autoSubmittingRef = useRef(false);
   const sessions = useLearningStore((state) => state.sessions);
   const drafts = useLearningStore((state) => state.drafts);
@@ -116,6 +124,7 @@ export default function PracticeScreen() {
   const attempt = sessionAttempts.find((item) => item.questionId === question.id);
   const bookmarked = bookmarks.includes(question.id);
   const note = notes[question.id]?.body ?? '';
+  const noteInput = Object.prototype.hasOwnProperty.call(localNotes, question.id) ? localNotes[question.id] ?? '' : note;
   const isExam = session.mode === 'exam';
   const isExamReview = isExam && session.status === 'completed';
   const reviewMarked = (session.reviewQuestionIds ?? []).includes(question.id);
@@ -130,8 +139,8 @@ export default function PracticeScreen() {
     setActionError(null);
     try {
       await selectChoice(session.id, question.id, choiceId);
-    } catch {
-      setActionError('選択を端末へ保存できませんでした。空き容量をご確認ください。');
+    } catch (error: unknown) {
+      setActionError(saveFailureMessage(error, '選択を端末へ保存できませんでした。空き容量をご確認ください。'));
     }
   };
 
@@ -139,8 +148,8 @@ export default function PracticeScreen() {
     setActionError(null);
     try {
       await submitAnswer(session.id, question.id);
-    } catch {
-      setActionError('回答を保存できませんでした。次の問題へは進めません。');
+    } catch (error: unknown) {
+      setActionError(saveFailureMessage(error, '回答を保存できませんでした。次の問題へは進めません。'));
     }
   };
 
@@ -148,8 +157,8 @@ export default function PracticeScreen() {
     setActionError(null);
     try {
       await moveToNext(session.id, question.id);
-    } catch {
-      setActionError('進捗を保存できませんでした。もう一度お試しください。');
+    } catch (error: unknown) {
+      setActionError(saveFailureMessage(error, '進捗を保存できませんでした。もう一度お試しください。'));
     }
   };
 
@@ -157,8 +166,8 @@ export default function PracticeScreen() {
     setActionError(null);
     try {
       await goToQuestion(session.id, index);
-    } catch {
-      setActionError('表示位置を保存できませんでした。もう一度お試しください。');
+    } catch (error: unknown) {
+      setActionError(saveFailureMessage(error, '表示位置を保存できませんでした。もう一度お試しください。'));
     }
   };
 
@@ -167,16 +176,23 @@ export default function PracticeScreen() {
     setActionError(null);
     try {
       await submitExam(session.id);
-    } catch {
-      setActionError('模試結果を保存できませんでした。空き容量をご確認ください。');
+    } catch (error: unknown) {
+      setActionError(saveFailureMessage(error, '模試結果を保存できませんでした。空き容量をご確認ください。'));
     }
   };
 
   const updateNote = async (body: string) => {
+    setLocalNotes((current) => ({ ...current, [question.id]: body }));
     try {
       await saveNote(question.id, question.versionId, body);
-    } catch {
-      setActionError('メモを保存できませんでした。空き容量をご確認ください。');
+      setLocalNotes((current) => {
+        if (current[question.id] !== body) return current;
+        const next = { ...current };
+        delete next[question.id];
+        return next;
+      });
+    } catch (error: unknown) {
+      setActionError(saveFailureMessage(error, 'メモを保存できませんでした。空き容量をご確認ください。'));
     }
   };
 
@@ -187,10 +203,12 @@ export default function PracticeScreen() {
         <View style={styles.headerCenter}>
           <Text numberOfLines={1} style={styles.sessionTitle}>{session.title}</Text>
           <Text style={isExam && session.status === 'active' ? styles.examTimer : styles.saveStatus}>
-            {isExam && session.status === 'active' ? `残り ${formatRemainingTime(secondsRemaining)}` : saving ? '端末へ保存中…' : 'この問題まで保存済み'}
+            {isExam && session.status === 'active' ? `残り ${formatRemainingTime(secondsRemaining)}` : storageError ? '端末への保存に失敗' : saving ? '端末へ保存中…' : 'この問題まで保存済み'}
           </Text>
         </View>
-        <Pressable accessibilityLabel={bookmarked ? 'ブックマークを解除' : 'ブックマークへ追加'} accessibilityRole="button" onPress={() => void toggleBookmark(question.id)} style={styles.bookmark}>
+        <Pressable accessibilityLabel={bookmarked ? 'ブックマークを解除' : 'ブックマークへ追加'} accessibilityRole="button" onPress={() => {
+          void toggleBookmark(question.id).catch((error: unknown) => setActionError(saveFailureMessage(error, 'ブックマークを保存できませんでした。')));
+        }} style={styles.bookmark}>
           <Text style={[styles.bookmarkText, bookmarked && styles.bookmarkActive]}>{bookmarked ? '★' : '☆'}</Text>
         </Pressable>
       </View>
@@ -207,7 +225,9 @@ export default function PracticeScreen() {
               label={reviewMarked ? '見直し印を外す' : 'あとで見直す'}
               variant={reviewMarked ? 'secondary' : 'quiet'}
               style={styles.examToolButton}
-              onPress={() => void toggleReviewMark(session.id, question.id)}
+              onPress={() => {
+                void toggleReviewMark(session.id, question.id).catch((error: unknown) => setActionError(saveFailureMessage(error, '見直し印を保存できませんでした。')));
+              }}
             />
             {session.status === 'active' && <Button label="問題一覧・提出" variant="quiet" style={styles.examToolButton} onPress={() => setShowSubmitConfirm(true)} />}
           </View>
@@ -269,7 +289,7 @@ export default function PracticeScreen() {
       <Card style={styles.noteCard}>
         <View style={styles.noteHeader}>
           <Text style={styles.noteTitle}>自分用メモ</Text>
-          <Text style={styles.noteStatus}>{saving ? '保存中' : '自動保存'}</Text>
+        <Text style={styles.noteStatus}>{storageError ? '保存失敗' : saving ? '保存中' : '自動保存'}</Text>
         </View>
         <TextInput
           accessibilityLabel="この問題の自分用メモ"
@@ -279,7 +299,7 @@ export default function PracticeScreen() {
           placeholderTextColor={colors.inkMuted}
           style={styles.noteInput}
           textAlignVertical="top"
-          value={note}
+          value={noteInput}
         />
         <Text style={styles.notePrivacy}>このメモは自分のアカウントだけに保存されます。</Text>
       </Card>

@@ -7,6 +7,7 @@ const payloadValueSchema = z.union([
   z.number(),
   z.boolean(),
   z.array(z.string()),
+  z.null(),
 ]);
 
 const sessionSchema = z.object({

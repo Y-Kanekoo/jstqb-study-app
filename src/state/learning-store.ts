@@ -16,7 +16,7 @@ import type {
   SessionMode,
   SubmitAnswerResult,
 } from '@/domain/types';
-import { getStoredValue, setStoredValue } from '@/storage/persistence';
+import { compareAndSetStoredValue, getStoredValue } from '@/storage/persistence';
 
 const snapshotKey = 'learning-snapshot-v1';
 
@@ -73,11 +73,44 @@ function extractSnapshot(store: LearningStore): LearningSnapshot {
   };
 }
 
-let persistenceChain = Promise.resolve();
+let persistenceChain: Promise<unknown> = Promise.resolve();
+let storedSnapshot: string | null = null;
+let pendingWrites = 0;
+let storageLoaded = false;
+const failedDrafts = new Set<string>();
 
-function queueSnapshot(snapshot: LearningSnapshot): Promise<void> {
-  persistenceChain = persistenceChain.then(() => setStoredValue(snapshotKey, JSON.stringify(snapshot)));
-  return persistenceChain;
+function commitSnapshot<T>(
+  get: () => LearningStore,
+  set: (partial: Partial<LearningStore>) => void,
+  update: (current: LearningSnapshot) => { snapshot: LearningSnapshot; result: T },
+  failureMessage: string,
+  afterWrite?: { success?: () => void; failure?: () => void; preserveError?: boolean },
+): Promise<T> {
+  pendingWrites += 1;
+  set({ saving: true });
+  const task = persistenceChain.then(async () => {
+    if (!storageLoaded) throw new Error('端末の学習データを読み込めませんでした。再読み込みしてください。');
+    const current = extractSnapshot(get());
+    const { snapshot, result } = update(current);
+    if (snapshot === current) return result;
+    const serialized = JSON.stringify(snapshot);
+    try {
+      await compareAndSetStoredValue(snapshotKey, storedSnapshot, serialized);
+    } catch (error: unknown) {
+      afterWrite?.failure?.();
+      set({ storageError: error instanceof Error ? error.message : failureMessage });
+      throw error;
+    }
+    storedSnapshot = serialized;
+    afterWrite?.success?.();
+    set({ ...snapshot, storageError: afterWrite?.preserveError ? get().storageError : null });
+    return result;
+  });
+  persistenceChain = task.catch(() => undefined);
+  return task.finally(() => {
+    pendingWrites -= 1;
+    set({ saving: pendingWrites > 0 });
+  });
 }
 
 function createOutboxEvent(
@@ -97,17 +130,26 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
 
   initialize: async () => {
     try {
+      await persistenceChain;
       const stored = await getStoredValue(snapshotKey);
       if (stored !== null) {
         const parsed: unknown = JSON.parse(stored);
         const snapshot = parseLearningSnapshot(parsed);
         if (snapshot) {
+          storedSnapshot = stored;
+          storageLoaded = true;
+          failedDrafts.clear();
           set({ ...snapshot, hydrated: true, storageError: null });
           return;
         }
+        throw new Error('保存データの形式を読み込めませんでした。');
       }
-      set({ hydrated: true, storageError: null });
+      storedSnapshot = null;
+      storageLoaded = true;
+      failedDrafts.clear();
+      set({ ...initialSnapshot, hydrated: true, storageError: null });
     } catch (error: unknown) {
+      storageLoaded = false;
       const message = error instanceof Error ? error.message : '保存データを読み込めませんでした。';
       set({ hydrated: true, storageError: message });
     }
@@ -140,16 +182,10 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       questionIds,
       createdAt: now,
     });
-    set((state) => ({ sessions: [session, ...state.sessions], outbox: [...state.outbox, event], saving: true, storageError: null }));
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-      return session.id;
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'セッションを保存できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+    return commitSnapshot(get, set, (state) => ({
+      snapshot: { ...state, sessions: [session, ...state.sessions], outbox: [...state.outbox, event] },
+      result: session.id,
+    }), 'セッションを保存できませんでした。');
   },
 
   startExam: async (questionIds) => {
@@ -183,28 +219,24 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       expiresAt,
       createdAt: now,
     });
-    set((state) => ({
-      sessions: [session, ...state.sessions],
-      outbox: [...state.outbox, event],
-      saving: true,
-      storageError: null,
-    }));
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-      return session.id;
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '模試を保存できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+    return commitSnapshot(get, set, (state) => ({
+      snapshot: { ...state, sessions: [session, ...state.sessions], outbox: [...state.outbox, event] },
+      result: session.id,
+    }), '模試を保存できませんでした。');
   },
 
   selectChoice: async (sessionId, questionId, choiceId) => {
     const now = new Date().toISOString();
     const key = `${sessionId}:${questionId}`;
     const selectionType = getQuestion(questionId)?.selectionType ?? 'single';
-    set((state) => {
+    return commitSnapshot(get, set, (state) => {
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session || session.status !== 'active' || !session.questionIds.includes(questionId)) {
+        throw new Error('選択できるセッションがありません。');
+      }
+      if (state.attempts.some((attempt) => attempt.sessionId === sessionId && attempt.questionId === questionId)) {
+        return { snapshot: state, result: undefined };
+      }
       const previous = state.drafts[key];
       const isSelected = previous?.selectedChoiceIds.includes(choiceId) ?? false;
       const selectedChoiceIds = selectionType === 'multiple'
@@ -216,203 +248,158 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       const event = createOutboxEvent('draft.saved', key, now, { sessionId, questionId, selectedChoiceIds });
       const otherDraftEvents = state.outbox.filter((item) => !(item.kind === 'draft.saved' && item.entityId === key));
       return {
-        drafts: { ...state.drafts, [key]: draft },
-        outbox: [...otherDraftEvents, event],
-        saving: true,
-        storageError: null,
+        snapshot: { ...state, drafts: { ...state.drafts, [key]: draft }, outbox: [...otherDraftEvents, event] },
+        result: undefined,
       };
+    }, '回答の選択を保存できませんでした。', {
+      success: () => failedDrafts.delete(key),
+      failure: () => failedDrafts.add(key),
     });
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '回答の選択を保存できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
   },
 
   submitAnswer: async (sessionId, questionId) => {
-    const question = getQuestion(questionId);
-    const draft = get().drafts[`${sessionId}:${questionId}`];
-    const requiredChoiceCount = question?.requiredChoiceCount ?? 1;
-    if (!question || !draft || draft.selectedChoiceIds.length !== requiredChoiceCount) {
-      throw new Error(`${requiredChoiceCount}つの選択肢を選んでください。`);
-    }
-    const existing = get().attempts.find((item) => item.sessionId === sessionId && item.questionId === questionId);
-    if (existing) {
-      const existingState = get().questionStates[questionId];
-      if (!existingState) {
-        throw new Error('学習状態を復元できませんでした。');
+    return commitSnapshot(get, set, (state) => {
+      const question = getQuestion(questionId);
+      const draft = state.drafts[`${sessionId}:${questionId}`];
+      const requiredChoiceCount = question?.requiredChoiceCount ?? 1;
+      if (!question || !draft || draft.selectedChoiceIds.length !== requiredChoiceCount) {
+        throw new Error(`${requiredChoiceCount}つの選択肢を選んでください。`);
       }
-      return { attempt: existing, questionState: existingState };
-    }
-
-    const now = new Date().toISOString();
-    const attempt: AnswerAttempt = {
-      id: randomUUID(),
-      sessionId,
-      questionId,
-      questionVersionId: question.versionId,
-      selectedChoiceIds: draft.selectedChoiceIds,
-      isCorrect: scoreAnswer(question, draft.selectedChoiceIds),
-      answeredAt: now,
-    };
-    const questionState = updateQuestionState(get().questionStates[questionId], attempt);
-    const event = createOutboxEvent('answer.submitted', attempt.id, now, {
-      sessionId,
-      questionId,
-      questionVersionId: question.versionId,
-      selectedChoiceIds: draft.selectedChoiceIds,
-      isCorrect: attempt.isCorrect,
-      answeredAt: now,
-    });
-    set((state) => ({
-      attempts: [...state.attempts, attempt],
-      questionStates: { ...state.questionStates, [questionId]: questionState },
-      sessions: state.sessions.map((session) => session.id === sessionId
-        ? {
-          ...session,
-          answeredQuestionIds: session.answeredQuestionIds.includes(questionId)
-            ? session.answeredQuestionIds
-            : [...session.answeredQuestionIds, questionId],
-          updatedAt: now,
-        }
-        : session),
-      outbox: [...state.outbox, event],
-      saving: true,
-      storageError: null,
-    }));
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-      return { attempt, questionState };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '回答を保存できませんでした。次の問題へは進めません。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session || session.status !== 'active' || !session.questionIds.includes(questionId)) {
+        throw new Error('回答できるセッションがありません。');
+      }
+      const existing = state.attempts.find((item) => item.sessionId === sessionId && item.questionId === questionId);
+      if (existing) {
+        const existingState = state.questionStates[questionId];
+        if (!existingState) throw new Error('学習状態を復元できませんでした。');
+        return { snapshot: state, result: { attempt: existing, questionState: existingState } };
+      }
+      const now = new Date().toISOString();
+      const attempt: AnswerAttempt = {
+        id: randomUUID(), sessionId, questionId, questionVersionId: question.versionId,
+        selectedChoiceIds: draft.selectedChoiceIds, isCorrect: scoreAnswer(question, draft.selectedChoiceIds), answeredAt: now,
+      };
+      const questionState = updateQuestionState(state.questionStates[questionId], attempt);
+      const event = createOutboxEvent('answer.submitted', attempt.id, now, {
+        sessionId, questionId, questionVersionId: question.versionId,
+        selectedChoiceIds: draft.selectedChoiceIds, isCorrect: attempt.isCorrect, answeredAt: now,
+      });
+      return {
+        snapshot: {
+          ...state,
+          attempts: [...state.attempts, attempt],
+          questionStates: { ...state.questionStates, [questionId]: questionState },
+          sessions: state.sessions.map((item) => item.id === sessionId
+            ? { ...item, answeredQuestionIds: [...new Set([...item.answeredQuestionIds, questionId])], updatedAt: now }
+            : item),
+          outbox: [...state.outbox, event],
+        },
+        result: { attempt, questionState },
+      };
+    }, '回答を保存できませんでした。次の問題へは進めません。');
   },
 
   submitExam: async (sessionId) => {
-    const session = get().sessions.find((item) => item.id === sessionId);
-    if (!session || session.mode !== 'exam') {
-      throw new Error('模試セッションが見つかりません。');
-    }
-    const existingAttempts = get().attempts.filter((attempt) => attempt.sessionId === sessionId);
-    if (session.status === 'completed') {
-      const correctCount = existingAttempts.filter((attempt) => attempt.isCorrect).length;
-      return { correctCount, totalCount: session.questionIds.length, passed: correctCount >= examConfig.passScore };
-    }
-
-    const now = new Date().toISOString();
-    const existingQuestionIds = new Set(existingAttempts.map((attempt) => attempt.questionId));
-    const newAttempts: AnswerAttempt[] = [];
-    for (const questionId of session.questionIds) {
-      const question = getQuestion(questionId);
-      const draft = get().drafts[`${sessionId}:${questionId}`];
-      const requiredChoiceCount = question?.requiredChoiceCount ?? 1;
-      if (!question || !draft || draft.selectedChoiceIds.length !== requiredChoiceCount || existingQuestionIds.has(questionId)) {
-        continue;
+    return commitSnapshot(get, set, (state) => {
+      if ([...failedDrafts].some((key) => key.startsWith(`${sessionId}:`))) {
+        throw new Error('保存できなかった選択を再度選んでから提出してください。');
       }
-      newAttempts.push({
-        id: randomUUID(),
-        sessionId,
-        questionId,
-        questionVersionId: question.versionId,
-        selectedChoiceIds: draft.selectedChoiceIds,
-        isCorrect: scoreAnswer(question, draft.selectedChoiceIds),
-        answeredAt: now,
-      });
-    }
-
-    const questionStates = { ...get().questionStates };
-    for (const attempt of newAttempts) {
-      questionStates[attempt.questionId] = updateQuestionState(questionStates[attempt.questionId], attempt);
-    }
-    const answeredQuestionIds = [...new Set([
-      ...existingAttempts.map((attempt) => attempt.questionId),
-      ...newAttempts.map((attempt) => attempt.questionId),
-    ])];
-    const answerEvents = newAttempts.map((attempt) => createOutboxEvent('answer.submitted', attempt.id, now, {
-      sessionId,
-      questionId: attempt.questionId,
-      questionVersionId: attempt.questionVersionId,
-      selectedChoiceIds: attempt.selectedChoiceIds,
-      isCorrect: attempt.isCorrect,
-      answeredAt: attempt.answeredAt,
-    }));
-    const submittedEvent = createOutboxEvent('session.submitted', sessionId, now, {
-      sessionId,
-      submittedAt: now,
-      answeredQuestionIds,
-    });
-    set((state) => ({
-      attempts: [...state.attempts, ...newAttempts],
-      questionStates,
-      sessions: state.sessions.map((item) => item.id === sessionId
-        ? {
-          ...item,
-          answeredQuestionIds,
-          status: 'completed',
-          submittedAt: now,
-          updatedAt: now,
-        }
-        : item),
-      outbox: [...state.outbox, ...answerEvents, submittedEvent],
-      saving: true,
-      storageError: null,
-    }));
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '模試結果を保存できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
-
-    const allAttempts = [...existingAttempts, ...newAttempts];
-    const correctCount = allAttempts.filter((attempt) => attempt.isCorrect).length;
-    return { correctCount, totalCount: session.questionIds.length, passed: correctCount >= examConfig.passScore };
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session || session.mode !== 'exam') throw new Error('模試セッションが見つかりません。');
+      const existingAttempts = state.attempts.filter((attempt) => attempt.sessionId === sessionId);
+      if (session.status === 'completed') {
+        const correctCount = existingAttempts.filter((attempt) => attempt.isCorrect).length;
+        return { snapshot: state, result: { correctCount, totalCount: session.questionIds.length, passed: correctCount >= examConfig.passScore } };
+      }
+      const now = new Date().toISOString();
+      const existingQuestionIds = new Set(existingAttempts.map((attempt) => attempt.questionId));
+      const newAttempts: AnswerAttempt[] = [];
+      for (const questionId of session.questionIds) {
+        const question = getQuestion(questionId);
+        const draft = state.drafts[`${sessionId}:${questionId}`];
+        const requiredChoiceCount = question?.requiredChoiceCount ?? 1;
+        if (!question || !draft || draft.selectedChoiceIds.length !== requiredChoiceCount || existingQuestionIds.has(questionId)) continue;
+        newAttempts.push({
+          id: randomUUID(), sessionId, questionId, questionVersionId: question.versionId,
+          selectedChoiceIds: draft.selectedChoiceIds, isCorrect: scoreAnswer(question, draft.selectedChoiceIds), answeredAt: now,
+        });
+      }
+      const questionStates = { ...state.questionStates };
+      for (const attempt of newAttempts) questionStates[attempt.questionId] = updateQuestionState(questionStates[attempt.questionId], attempt);
+      const answeredQuestionIds = [...new Set([...existingAttempts, ...newAttempts].map((attempt) => attempt.questionId))];
+      const answerEvents = newAttempts.map((attempt) => createOutboxEvent('answer.submitted', attempt.id, now, {
+        sessionId, questionId: attempt.questionId, questionVersionId: attempt.questionVersionId,
+        selectedChoiceIds: attempt.selectedChoiceIds, isCorrect: attempt.isCorrect, answeredAt: now,
+      }));
+      const submittedEvent = createOutboxEvent('session.submitted', sessionId, now, { sessionId, submittedAt: now, answeredQuestionIds });
+      const allAttempts = [...existingAttempts, ...newAttempts];
+      const correctCount = allAttempts.filter((attempt) => attempt.isCorrect).length;
+      return {
+        snapshot: {
+          ...state, attempts: [...state.attempts, ...newAttempts], questionStates,
+          sessions: state.sessions.map((item) => item.id === sessionId
+            ? { ...item, answeredQuestionIds, status: 'completed', submittedAt: now, updatedAt: now }
+            : item),
+          outbox: [...state.outbox, ...answerEvents, submittedEvent],
+        },
+        result: { correctCount, totalCount: session.questionIds.length, passed: correctCount >= examConfig.passScore },
+      };
+    }, '模試結果を保存できませんでした。');
   },
 
   moveToNext: async (sessionId, questionId) => {
-    const now = new Date().toISOString();
-    set((state) => ({
-      sessions: state.sessions.map((session) => session.id === sessionId
-        ? advanceSession(session, questionId, now)
-        : session),
-      outbox: [...state.outbox, createOutboxEvent('session.advanced', sessionId, now, { sessionId, questionId })],
-      saving: true,
-      storageError: null,
-    }));
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '進捗を保存できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+    return commitSnapshot(get, set, (state) => {
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session || session.status !== 'active' || session.questionIds[session.currentIndex] !== questionId
+        || (session.mode !== 'exam' && !state.attempts.some((attempt) => attempt.sessionId === sessionId && attempt.questionId === questionId))) {
+        throw new Error('回答を端末へ保存してから次の問題へ進んでください。');
+      }
+      const now = new Date().toISOString();
+      const nextSession = advanceSession(session, questionId, now);
+      const destinationQuestionId = nextSession.questionIds[nextSession.currentIndex] ?? questionId;
+      return {
+        snapshot: {
+          ...state,
+          sessions: state.sessions.map((item) => item.id === sessionId ? nextSession : item),
+          outbox: [...state.outbox, createOutboxEvent('session.advanced', sessionId, now, { sessionId, questionId: destinationQuestionId })],
+        },
+        result: undefined,
+      };
+    }, '進捗を保存できませんでした。');
   },
 
   goToQuestion: async (sessionId, index) => {
-    const now = new Date().toISOString();
-    set((state) => ({
-      sessions: state.sessions.map((session) => session.id === sessionId
-        ? { ...session, currentIndex: Math.max(0, Math.min(index, session.questionIds.length - 1)), updatedAt: now }
-        : session),
-      saving: true,
-    }));
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    return commitSnapshot(get, set, (state) => {
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (session && session.status === 'active' && [...failedDrafts].some((key) => key.startsWith(`${sessionId}:`))) {
+        throw new Error('保存できなかった選択を再度選んでから移動してください。');
+      }
+      if (!session || session.questionIds.length === 0) throw new Error('移動先のセッションがありません。');
+      const targetIndex = Math.max(0, Math.min(index, session.questionIds.length - 1));
+      if (targetIndex === session.currentIndex) return { snapshot: state, result: undefined };
+      const now = new Date().toISOString();
+      const destinationQuestionId = session.questionIds[targetIndex];
+      if (!destinationQuestionId) throw new Error('移動先の問題がありません。');
+      return {
+        snapshot: {
+          ...state,
+          sessions: state.sessions.map((item) => item.id === sessionId
+            ? { ...item, currentIndex: targetIndex, updatedAt: now }
+            : item),
+          outbox: session.status === 'active'
+            ? [...state.outbox, createOutboxEvent('session.advanced', sessionId, now, { sessionId, questionId: destinationQuestionId })]
+            : state.outbox,
+        },
+        result: undefined,
+      };
+    }, '表示位置を保存できませんでした。');
   },
 
   toggleReviewMark: async (sessionId, questionId) => {
     const now = new Date().toISOString();
     let marked = false;
-    set((state) => ({
+    return commitSnapshot(get, set, (state) => ({ snapshot: { ...state,
       sessions: state.sessions.map((session) => {
         if (session.id !== sessionId) return session;
         const reviewQuestionIds = session.reviewQuestionIds ?? [];
@@ -429,38 +416,26 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         ...state.outbox.filter((event) => !(event.kind === 'session.review-marked' && event.entityId === `${sessionId}:${questionId}`)),
         createOutboxEvent('session.review-marked', `${sessionId}:${questionId}`, now, { sessionId, questionId, marked }),
       ],
-      saving: true,
-      storageError: null,
-    }));
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '見直し印を保存できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+    }, result: undefined }), '見直し印を保存できませんでした。');
   },
 
   toggleBookmark: async (questionId) => {
     const now = new Date().toISOString();
-    set((state) => {
+    return commitSnapshot(get, set, (state) => {
       const enabled = !state.bookmarks.includes(questionId);
       return {
-        bookmarks: enabled
-          ? [...state.bookmarks, questionId]
-          : state.bookmarks.filter((id) => id !== questionId),
-        outbox: [...state.outbox, createOutboxEvent('bookmark.changed', questionId, now, { questionId, enabled })],
-        saving: true,
+        snapshot: { ...state,
+          bookmarks: enabled ? [...state.bookmarks, questionId] : state.bookmarks.filter((id) => id !== questionId),
+          outbox: [...state.outbox, createOutboxEvent('bookmark.changed', questionId, now, { questionId, enabled })],
+        },
+        result: undefined,
       };
-    });
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    }, 'ブックマークを保存できませんでした。');
   },
 
   saveNote: async (questionId, questionVersionId, body) => {
     const now = new Date().toISOString();
-    set((state) => {
+    return commitSnapshot(get, set, (state) => {
       const previous = state.notes[questionId];
       const note = {
         questionId,
@@ -477,23 +452,13 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         updatedAt: now,
       });
       return {
-        notes: { ...state.notes, [questionId]: note },
-        outbox: [
-          ...state.outbox.filter((item) => !(item.kind === 'note.saved' && item.entityId === questionId)),
-          event,
-        ],
-        saving: true,
-        storageError: null,
+        snapshot: { ...state,
+          notes: { ...state.notes, [questionId]: note },
+          outbox: [...state.outbox.filter((item) => !(item.kind === 'note.saved' && item.entityId === questionId)), event],
+        },
+        result: undefined,
       };
-    });
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'メモを保存できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+    }, 'メモを保存できませんでした。');
   },
 
   reportIssue: async (questionId, questionVersionId, category, description) => {
@@ -511,8 +476,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       description: normalizedDescription,
       createdAt: now,
     });
-    set((state) => ({
-      issues: [...state.issues, {
+    return commitSnapshot(get, set, (state) => ({
+      snapshot: { ...state, issues: [...state.issues, {
         id: issueId,
         eventId: event.id,
         questionId,
@@ -522,66 +487,44 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         createdAt: now,
         syncStatus: 'queued',
       }],
-      outbox: [...state.outbox, event],
-      saving: true,
-      storageError: null,
-    }));
-    try {
-      await queueSnapshot(extractSnapshot(get()));
-      set({ saving: false });
-      return issueId;
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '問題報告を保存できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+      outbox: [...state.outbox, event] },
+      result: issueId,
+    }), '問題報告を保存できませんでした。');
   },
 
   setDailyGoal: async (goal) => {
-    set({ dailyGoal: Math.max(1, Math.min(100, goal)), saving: true });
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    return commitSnapshot(get, set, (state) => ({
+      snapshot: { ...state, dailyGoal: Math.max(1, Math.min(100, goal)) }, result: undefined,
+    }), '目標を保存できませんでした。');
   },
 
   restoreSnapshot: async (snapshot) => {
-    set({ ...snapshot, saving: true, storageError: null });
-    try {
-      await queueSnapshot(snapshot);
-      set({ saving: false });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'バックアップを復元できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+    return commitSnapshot(get, set, () => ({ snapshot, result: undefined }), 'バックアップを復元できませんでした。', {
+      success: () => failedDrafts.clear(),
+    });
   },
 
   clearLearningData: async () => {
-    set({ ...initialSnapshot, saving: true, storageError: null });
-    try {
-      await queueSnapshot(initialSnapshot);
-      set({ saving: false });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '端末の学習データを削除できませんでした。';
-      set({ saving: false, storageError: message });
-      throw error;
-    }
+    return commitSnapshot(get, set, () => ({ snapshot: initialSnapshot, result: undefined }), '端末の学習データを削除できませんでした。', {
+      success: () => failedDrafts.clear(),
+    });
   },
 
   markOutboxSynced: async (eventIds) => {
     const eventIdSet = new Set(eventIds);
-    set((state) => ({
-      outbox: state.outbox.filter((event) => !eventIdSet.has(event.id)),
-      issues: state.issues.map((issue) => eventIdSet.has(issue.eventId) ? { ...issue, syncStatus: 'synced' } : issue),
-      saving: true,
-    }));
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    return commitSnapshot(get, set, (state) => ({
+      snapshot: { ...state,
+        outbox: state.outbox.filter((event) => !eventIdSet.has(event.id)),
+        issues: state.issues.map((issue) => eventIdSet.has(issue.eventId) ? { ...issue, syncStatus: 'synced' } : issue),
+      },
+      result: undefined,
+    }), '同期状態を保存できませんでした。', { preserveError: true });
   },
 
   applyRemoteEvents: async (events) => {
     if (events.length === 0) return;
     const sortedEvents = [...events].sort((left, right) => left.sequence - right.sequence);
-    set((state) => {
+    return commitSnapshot(get, set, (state) => {
       let sessions = [...state.sessions];
       let drafts = { ...state.drafts };
       let attempts = [...state.attempts];
@@ -625,7 +568,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
           if (typeof sessionId === 'string' && typeof questionId === 'string' && Array.isArray(selectedChoiceIds)) {
             const key = `${sessionId}:${questionId}`;
             const current = drafts[key];
-            if (!current || current.updatedAt <= event.occurredAt) {
+            const hasPendingDraft = state.outbox.some((item) => item.kind === 'draft.saved' && item.entityId === key);
+            if (!hasPendingDraft && (!current || current.updatedAt <= event.occurredAt)) {
               drafts[key] = { sessionId, questionId, selectedChoiceIds, updatedAt: event.occurredAt };
             }
           }
@@ -665,16 +609,24 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         if (event.kind === 'session.advanced') {
           const questionId = payload.questionId;
           if (typeof questionId === 'string') {
-            sessions = sessions.map((session) => session.id === event.entityId
-              ? advanceSession(session, questionId, event.occurredAt)
-              : session);
+            const hasPendingDraft = state.outbox.some((item) => item.kind === 'draft.saved' && item.entityId.startsWith(`${event.entityId}:`));
+            const hasPendingNavigation = state.outbox.some((item) => item.kind === 'session.advanced' && item.entityId === event.entityId);
+            sessions = sessions.map((session) => {
+              if (session.id !== event.entityId || session.status !== 'active' || hasPendingDraft || hasPendingNavigation) return session;
+              const targetIndex = typeof payload.currentIndex === 'number'
+                ? payload.currentIndex : session.questionIds.indexOf(questionId);
+              if (targetIndex < 0 || targetIndex >= session.questionIds.length
+                || session.questionIds[targetIndex] !== questionId || event.occurredAt < session.updatedAt) return session;
+              return { ...session, currentIndex: targetIndex, updatedAt: event.occurredAt };
+            });
           }
         }
 
         if (event.kind === 'session.submitted') {
           const submittedAt = payload.submittedAt;
           const answeredQuestionIds = payload.answeredQuestionIds;
-          if (typeof submittedAt === 'string' && Array.isArray(answeredQuestionIds)) {
+          const hasPendingDraft = state.outbox.some((item) => item.kind === 'draft.saved' && item.entityId.startsWith(`${event.entityId}:`));
+          if (typeof submittedAt === 'string' && Array.isArray(answeredQuestionIds) && !hasPendingDraft) {
             sessions = sessions.map((session) => session.id === event.entityId
               ? {
                 ...session,
@@ -706,7 +658,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
 
         if (event.kind === 'bookmark.changed') {
           const enabled = payload.enabled;
-          if (typeof enabled === 'boolean') {
+          const hasPendingBookmark = state.outbox.some((item) => item.kind === 'bookmark.changed' && item.entityId === event.entityId);
+          if (typeof enabled === 'boolean' && !hasPendingBookmark) {
             bookmarks = enabled
               ? [...new Set([...bookmarks, event.entityId])]
               : bookmarks.filter((questionId) => questionId !== event.entityId);
@@ -723,7 +676,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
           if (typeof questionId === 'string' && typeof questionVersionId === 'string' && typeof body === 'string'
             && typeof revision === 'number' && typeof updatedAt === 'string') {
             const current = notes[questionId];
-            if (!current || current.updatedAt <= updatedAt) {
+            const hasPendingNote = state.outbox.some((item) => item.kind === 'note.saved' && item.entityId === questionId);
+            if (!hasPendingNote && (!current || current.updatedAt <= updatedAt)) {
               notes[questionId] = { questionId, questionVersionId, body, revision, updatedAt };
             }
           }
@@ -761,19 +715,11 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       }
 
       return {
-        sessions,
-        drafts,
-        attempts,
-        questionStates,
-        bookmarks,
-        notes,
-        issues,
-        syncCursor: sortedEvents.at(-1)?.sequence ?? state.syncCursor,
-        saving: true,
+        snapshot: { ...state, sessions, drafts, attempts, questionStates, bookmarks, notes, issues,
+          syncCursor: Math.max(state.syncCursor, sortedEvents.at(-1)?.sequence ?? state.syncCursor) },
+        result: undefined,
       };
-    });
-    await queueSnapshot(extractSnapshot(get()));
-    set({ saving: false });
+    }, '受信した学習履歴を保存できませんでした。', { preserveError: true });
   },
 }));
 

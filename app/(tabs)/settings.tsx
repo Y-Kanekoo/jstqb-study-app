@@ -19,6 +19,7 @@ export default function SettingsScreen() {
   const setDailyGoal = useLearningStore((state) => state.setDailyGoal);
   const outboxCount = useLearningStore((state) => state.outbox.length);
   const storageError = useLearningStore((state) => state.storageError);
+  const syncError = useLearningStore((state) => state.syncError);
 
   return (
     <Screen title="設定" description="アカウント、同期、毎日の学習量を管理します。">
@@ -39,6 +40,7 @@ export default function SettingsScreen() {
         <View style={styles.rowBetween}><Text style={styles.cardTitle}>保存と同期</Text><View style={styles.syncBadge}><Text style={styles.syncBadgeText}>{outboxCount === 0 ? '保存済み' : `未同期 ${outboxCount}件`}</Text></View></View>
         <Text style={styles.cardDescription}>選択は端末へ即時保存し、回答確定後は同期キューへ追加します。オフラインでも学習できます。</Text>
         {storageError && <View style={styles.errorBox}><Text style={styles.errorText}>{storageError}</Text></View>}
+        {syncError && <View style={styles.errorBox}><Text style={styles.errorText}>{syncError}</Text></View>}
       </Card>
 
       <Card style={styles.goalCard}>

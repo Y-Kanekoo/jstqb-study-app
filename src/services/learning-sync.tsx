@@ -68,6 +68,7 @@ async function runSync(userId: string): Promise<void> {
 
   let cursor = useLearningStore.getState().syncCursor;
   let hasMore = true;
+  let blocked = false;
   while (hasMore) {
     const { data, error } = await supabase
       .from('sync_events')
@@ -78,22 +79,29 @@ async function runSync(userId: string): Promise<void> {
       .limit(500);
     if (error) throw new Error('学習履歴の受信に失敗しました。', { cause: error });
     const rawRows: unknown = data;
-    const events = Array.isArray(rawRows)
-      ? rawRows.map(parseRemoteEvent).filter((event): event is RemoteSyncEvent => event !== null)
-      : [];
+    if (!Array.isArray(rawRows)) throw new Error('受信した学習履歴の形式が不正です。');
+    const parsedRows = rawRows.map(parseRemoteEvent);
+    if (parsedRows.some((event) => event === null)) throw new Error('受信した学習履歴に不正なイベントがあります。');
+    const events = parsedRows.filter((event): event is RemoteSyncEvent => event !== null);
     if (events.length > 0) {
       await useLearningStore.getState().applyRemoteEvents(events);
-      cursor = events.at(-1)?.sequence ?? cursor;
+      const nextCursor = useLearningStore.getState().syncCursor;
+      if (nextCursor < (events.at(-1)?.sequence ?? nextCursor)) {
+        blocked = true;
+        break;
+      }
+      cursor = nextCursor;
     }
     hasMore = events.length === 500;
   }
+  if (!blocked) useLearningStore.getState().setSyncError(null);
 }
 
 function scheduleSync(userId: string): void {
   if (syncPromise) return;
   syncPromise = runSync(userId)
-    .catch(() => {
-      // 同期失敗時もローカル学習を継続し、次回の自動同期で再試行します。
+    .catch((error: unknown) => {
+      useLearningStore.getState().setSyncError(error instanceof Error ? error.message : '同期に失敗しました。');
     })
     .finally(() => { syncPromise = null; });
 }

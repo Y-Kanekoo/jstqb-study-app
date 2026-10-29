@@ -29,13 +29,13 @@ export default function PracticeScreen() {
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [reviewExamResults, setReviewExamResults] = useState(false);
   const [secondsRemaining, setSecondsRemaining] = useState(examConfig.durationMinutes * 60);
-  const [localNotes, setLocalNotes] = useState<Record<string, string>>({});
   const autoSubmittingRef = useRef(false);
   const sessions = useLearningStore((state) => state.sessions);
   const drafts = useLearningStore((state) => state.drafts);
   const attempts = useLearningStore((state) => state.attempts);
   const bookmarks = useLearningStore((state) => state.bookmarks);
   const notes = useLearningStore((state) => state.notes);
+  const unsavedNotes = useLearningStore((state) => state.unsavedNotes);
   const saving = useLearningStore((state) => state.saving);
   const storageError = useLearningStore((state) => state.storageError);
   const selectChoice = useLearningStore((state) => state.selectChoice);
@@ -124,7 +124,8 @@ export default function PracticeScreen() {
   const attempt = sessionAttempts.find((item) => item.questionId === question.id);
   const bookmarked = bookmarks.includes(question.id);
   const note = notes[question.id]?.body ?? '';
-  const noteInput = Object.prototype.hasOwnProperty.call(localNotes, question.id) ? localNotes[question.id] ?? '' : note;
+  const hasUnsavedNote = Object.prototype.hasOwnProperty.call(unsavedNotes, question.id);
+  const noteInput = hasUnsavedNote ? unsavedNotes[question.id] ?? '' : note;
   const isExam = session.mode === 'exam';
   const isExamReview = isExam && session.status === 'completed';
   const reviewMarked = (session.reviewQuestionIds ?? []).includes(question.id);
@@ -182,15 +183,8 @@ export default function PracticeScreen() {
   };
 
   const updateNote = async (body: string) => {
-    setLocalNotes((current) => ({ ...current, [question.id]: body }));
     try {
       await saveNote(question.id, question.versionId, body);
-      setLocalNotes((current) => {
-        if (current[question.id] !== body) return current;
-        const next = { ...current };
-        delete next[question.id];
-        return next;
-      });
     } catch (error: unknown) {
       setActionError(saveFailureMessage(error, 'メモを保存できませんでした。空き容量をご確認ください。'));
     }
@@ -302,6 +296,7 @@ export default function PracticeScreen() {
           value={noteInput}
         />
         <Text style={styles.notePrivacy}>このメモは自分のアカウントだけに保存されます。</Text>
+        {hasUnsavedNote && storageError && !saving && <Button label="メモを再保存" variant="secondary" onPress={() => void updateNote(noteInput)} />}
       </Card>
 
       {visibleError && <View accessibilityRole="alert" style={styles.errorBox}><Text style={styles.errorText}>{visibleError}</Text></View>}

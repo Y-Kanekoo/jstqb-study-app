@@ -38,6 +38,8 @@ interface LearningStore extends LearningSnapshot {
   hydrated: boolean;
   saving: boolean;
   storageError: string | null;
+  syncError: string | null;
+  unsavedNotes: Record<string, string>;
   initialize: () => Promise<void>;
   startSession: (mode: SessionMode, title: string, questionIds: string[]) => Promise<string>;
   startExam: (questionIds: string[]) => Promise<string>;
@@ -55,6 +57,25 @@ interface LearningStore extends LearningSnapshot {
   clearLearningData: () => Promise<void>;
   markOutboxSynced: (eventIds: string[]) => Promise<void>;
   applyRemoteEvents: (events: RemoteSyncEvent[]) => Promise<void>;
+  setSyncError: (message: string | null) => void;
+}
+
+function blocksRemoteEvent(event: RemoteSyncEvent, snapshot: LearningSnapshot): boolean {
+  const pending = snapshot.outbox;
+  if (event.kind === 'draft.saved' || event.kind === 'note.saved'
+    || event.kind === 'bookmark.changed' || event.kind === 'session.review-marked') {
+    return pending.some((item) => item.kind === event.kind && item.entityId === event.entityId);
+  }
+  if (event.kind === 'answer.submitted') {
+    return pending.some((item) => item.kind === 'answer.submitted'
+      && item.payload.sessionId === event.payload.sessionId && item.payload.questionId === event.payload.questionId);
+  }
+  if (event.kind === 'session.advanced' || event.kind === 'session.submitted') {
+    return pending.some((item) =>
+      (item.kind === 'session.advanced' || item.kind === 'session.submitted') && item.entityId === event.entityId
+      || (item.kind === 'draft.saved' || item.kind === 'answer.submitted') && item.payload.sessionId === event.entityId);
+  }
+  return false;
 }
 
 function extractSnapshot(store: LearningStore): LearningSnapshot {
@@ -103,7 +124,7 @@ function commitSnapshot<T>(
     }
     storedSnapshot = serialized;
     afterWrite?.success?.();
-    set({ ...snapshot, storageError: afterWrite?.preserveError ? get().storageError : null });
+    set({ ...snapshot, storageError: afterWrite?.preserveError || failedDrafts.size > 0 ? get().storageError : null });
     return result;
   });
   persistenceChain = task.catch(() => undefined);
@@ -127,6 +148,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
   hydrated: false,
   saving: false,
   storageError: null,
+  syncError: null,
+  unsavedNotes: {},
 
   initialize: async () => {
     try {
@@ -139,7 +162,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
           storedSnapshot = stored;
           storageLoaded = true;
           failedDrafts.clear();
-          set({ ...snapshot, hydrated: true, storageError: null });
+          set({ ...snapshot, hydrated: true, storageError: null, syncError: null, unsavedNotes: {} });
           return;
         }
         throw new Error('保存データの形式を読み込めませんでした。');
@@ -147,7 +170,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       storedSnapshot = null;
       storageLoaded = true;
       failedDrafts.clear();
-      set({ ...initialSnapshot, hydrated: true, storageError: null });
+      set({ ...initialSnapshot, hydrated: true, storageError: null, syncError: null, unsavedNotes: {} });
     } catch (error: unknown) {
       storageLoaded = false;
       const message = error instanceof Error ? error.message : '保存データを読み込めませんでした。';
@@ -435,6 +458,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
 
   saveNote: async (questionId, questionVersionId, body) => {
     const now = new Date().toISOString();
+    set((state) => ({ unsavedNotes: { ...state.unsavedNotes, [questionId]: body } }));
     return commitSnapshot(get, set, (state) => {
       const previous = state.notes[questionId];
       const note = {
@@ -458,7 +482,16 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         },
         result: undefined,
       };
-    }, 'メモを保存できませんでした。');
+    }, 'メモを保存できませんでした。', {
+      success: () => {
+        const unsavedNotes = get().unsavedNotes;
+        if (unsavedNotes[questionId] === body) {
+          const remaining = { ...unsavedNotes };
+          delete remaining[questionId];
+          set({ unsavedNotes: remaining });
+        }
+      },
+    });
   },
 
   reportIssue: async (questionId, questionVersionId, category, description) => {
@@ -500,13 +533,13 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
 
   restoreSnapshot: async (snapshot) => {
     return commitSnapshot(get, set, () => ({ snapshot, result: undefined }), 'バックアップを復元できませんでした。', {
-      success: () => failedDrafts.clear(),
+      success: () => { failedDrafts.clear(); set({ unsavedNotes: {} }); },
     });
   },
 
   clearLearningData: async () => {
     return commitSnapshot(get, set, () => ({ snapshot: initialSnapshot, result: undefined }), '端末の学習データを削除できませんでした。', {
-      success: () => failedDrafts.clear(),
+      success: () => { failedDrafts.clear(); set({ unsavedNotes: {} }); },
     });
   },
 
@@ -524,15 +557,22 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
   applyRemoteEvents: async (events) => {
     if (events.length === 0) return;
     const sortedEvents = [...events].sort((left, right) => left.sequence - right.sequence);
-    return commitSnapshot(get, set, (state) => {
+    const blocked = await commitSnapshot(get, set, (state) => {
       let sessions = [...state.sessions];
       let drafts = { ...state.drafts };
       let attempts = [...state.attempts];
       let bookmarks = [...state.bookmarks];
       let notes = { ...state.notes };
       let issues = [...state.issues];
+      const processedEvents: RemoteSyncEvent[] = [];
+      let hasConflict = false;
 
       for (const event of sortedEvents) {
+        if (blocksRemoteEvent(event, state)) {
+          hasConflict = true;
+          break;
+        }
+        processedEvents.push(event);
         const payload = event.payload;
         if (event.kind === 'session.created' && !sessions.some((session) => session.id === event.entityId)) {
           const mode = payload.mode;
@@ -568,8 +608,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
           if (typeof sessionId === 'string' && typeof questionId === 'string' && Array.isArray(selectedChoiceIds)) {
             const key = `${sessionId}:${questionId}`;
             const current = drafts[key];
-            const hasPendingDraft = state.outbox.some((item) => item.kind === 'draft.saved' && item.entityId === key);
-            if (!hasPendingDraft && (!current || current.updatedAt <= event.occurredAt)) {
+            if (!current || current.updatedAt <= event.occurredAt) {
               drafts[key] = { sessionId, questionId, selectedChoiceIds, updatedAt: event.occurredAt };
             }
           }
@@ -609,10 +648,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         if (event.kind === 'session.advanced') {
           const questionId = payload.questionId;
           if (typeof questionId === 'string') {
-            const hasPendingDraft = state.outbox.some((item) => item.kind === 'draft.saved' && item.entityId.startsWith(`${event.entityId}:`));
-            const hasPendingNavigation = state.outbox.some((item) => item.kind === 'session.advanced' && item.entityId === event.entityId);
             sessions = sessions.map((session) => {
-              if (session.id !== event.entityId || session.status !== 'active' || hasPendingDraft || hasPendingNavigation) return session;
+              if (session.id !== event.entityId || session.status !== 'active') return session;
               const targetIndex = typeof payload.currentIndex === 'number'
                 ? payload.currentIndex : session.questionIds.indexOf(questionId);
               if (targetIndex < 0 || targetIndex >= session.questionIds.length
@@ -625,8 +662,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         if (event.kind === 'session.submitted') {
           const submittedAt = payload.submittedAt;
           const answeredQuestionIds = payload.answeredQuestionIds;
-          const hasPendingDraft = state.outbox.some((item) => item.kind === 'draft.saved' && item.entityId.startsWith(`${event.entityId}:`));
-          if (typeof submittedAt === 'string' && Array.isArray(answeredQuestionIds) && !hasPendingDraft) {
+          if (typeof submittedAt === 'string' && Array.isArray(answeredQuestionIds)) {
             sessions = sessions.map((session) => session.id === event.entityId
               ? {
                 ...session,
@@ -658,8 +694,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
 
         if (event.kind === 'bookmark.changed') {
           const enabled = payload.enabled;
-          const hasPendingBookmark = state.outbox.some((item) => item.kind === 'bookmark.changed' && item.entityId === event.entityId);
-          if (typeof enabled === 'boolean' && !hasPendingBookmark) {
+          if (typeof enabled === 'boolean') {
             bookmarks = enabled
               ? [...new Set([...bookmarks, event.entityId])]
               : bookmarks.filter((questionId) => questionId !== event.entityId);
@@ -676,8 +711,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
           if (typeof questionId === 'string' && typeof questionVersionId === 'string' && typeof body === 'string'
             && typeof revision === 'number' && typeof updatedAt === 'string') {
             const current = notes[questionId];
-            const hasPendingNote = state.outbox.some((item) => item.kind === 'note.saved' && item.entityId === questionId);
-            if (!hasPendingNote && (!current || current.updatedAt <= updatedAt)) {
+            if (!current || current.updatedAt <= updatedAt) {
               notes[questionId] = { questionId, questionVersionId, body, revision, updatedAt };
             }
           }
@@ -714,13 +748,17 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
         questionStates[attempt.questionId] = updateQuestionState(questionStates[attempt.questionId], attempt);
       }
 
+      if (processedEvents.length === 0) return { snapshot: state, result: hasConflict };
       return {
         snapshot: { ...state, sessions, drafts, attempts, questionStates, bookmarks, notes, issues,
-          syncCursor: Math.max(state.syncCursor, sortedEvents.at(-1)?.sequence ?? state.syncCursor) },
-        result: undefined,
+          syncCursor: Math.max(state.syncCursor, processedEvents.at(-1)?.sequence ?? state.syncCursor) },
+        result: hasConflict,
       };
     }, '受信した学習履歴を保存できませんでした。', { preserveError: true });
+    set({ syncError: blocked ? '別端末の変更と未送信の学習データが競合しています。未同期データを確認してください。' : null });
   },
+
+  setSyncError: (message) => set({ syncError: message }),
 }));
 
 export function getCurrentLearningSnapshot(): LearningSnapshot {

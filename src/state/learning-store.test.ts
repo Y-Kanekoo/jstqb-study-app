@@ -30,7 +30,7 @@ describe('端末保存の原子性', () => {
     useLearningStore.setState({
       sessions: [], drafts: {}, attempts: [], questionStates: {}, bookmarks: [], notes: {},
       issues: [], outbox: [], syncCursor: 0, dailyGoal: 10, hydrated: false,
-      saving: false, storageError: null,
+      saving: false, storageError: null, syncError: null, unsavedNotes: {},
     });
     await useLearningStore.getState().initialize();
   });
@@ -89,7 +89,12 @@ describe('端末保存の原子性', () => {
     await useLearningStore.getState().applyRemoteEvents([remote]);
     expect(useLearningStore.getState().drafts[`${sessionId}:fl-001`]?.selectedChoiceIds).toEqual([secondChoice]);
     expect(persistedSnapshot().outbox.some((event) => event.id === newer?.id)).toBe(true);
+    expect(persistedSnapshot().syncCursor).toBe(0);
+    expect(useLearningStore.getState().syncError).toContain('競合');
+    if (newer) await useLearningStore.getState().markOutboxSynced([newer.id]);
+    await useLearningStore.getState().applyRemoteEvents([remote]);
     expect(persistedSnapshot().syncCursor).toBe(1);
+    expect(useLearningStore.getState().syncError).toBeNull();
   });
 
   it('送信済み進捗の受信で二重に次問へ進まず、復元失敗でも元データを保つ', async () => {
@@ -134,6 +139,8 @@ describe('端末保存の原子性', () => {
     await expect(move).rejects.toThrow('保存できなかった選択');
     await expect(submit).rejects.toThrow('保存できなかった選択');
     expect(useLearningStore.getState().sessions[0]?.currentIndex).toBe(0);
+    await useLearningStore.getState().toggleBookmark('fl-001');
+    expect(useLearningStore.getState().storageError).toBe('disk full');
     await useLearningStore.getState().selectChoice(sessionId, 'fl-001', choiceId);
     await useLearningStore.getState().goToQuestion(sessionId, 1);
     expect(persistedSnapshot().sessions[0]?.currentIndex).toBe(1);
@@ -156,6 +163,29 @@ describe('端末保存の原子性', () => {
     expect(persistedSnapshot().drafts[`${sessionId}:fl-001`]?.selectedChoiceIds).toEqual([choiceId]);
   });
 
+  it('受信途中の競合でカーソルを止め、後続イベントを後で再取得できる', async () => {
+    const sessionId = await useLearningStore.getState().startSession('random', '練習', ['fl-001']);
+    const choiceId = getQuestion('fl-001')?.choices[0]?.id ?? '';
+    await useLearningStore.getState().selectChoice(sessionId, 'fl-001', choiceId);
+    const draftEvent = useLearningStore.getState().outbox.find((event) => event.kind === 'draft.saved');
+    if (!draftEvent) throw new Error('draft event is missing');
+    const events: RemoteSyncEvent[] = [
+      { id: crypto.randomUUID(), kind: 'bookmark.changed', entityId: 'fl-001',
+        occurredAt: '2099-01-01T00:00:00.000Z', sequence: 1, payload: { questionId: 'fl-001', enabled: true } },
+      { ...draftEvent, id: crypto.randomUUID(), occurredAt: '2099-01-01T00:00:01.000Z', sequence: 2,
+        payload: { sessionId, questionId: 'fl-001', selectedChoiceIds: [choiceId] } },
+      { id: crypto.randomUUID(), kind: 'bookmark.changed', entityId: 'fl-002',
+        occurredAt: '2099-01-01T00:00:02.000Z', sequence: 3, payload: { questionId: 'fl-002', enabled: true } },
+    ];
+    await useLearningStore.getState().applyRemoteEvents(events);
+    expect(useLearningStore.getState().syncCursor).toBe(1);
+    expect(useLearningStore.getState().bookmarks).toEqual(['fl-001']);
+    await useLearningStore.getState().markOutboxSynced([draftEvent.id]);
+    await useLearningStore.getState().applyRemoteEvents(events.slice(1));
+    expect(useLearningStore.getState().syncCursor).toBe(3);
+    expect(useLearningStore.getState().bookmarks).toEqual(['fl-001', 'fl-002']);
+  });
+
   it('開始と復元に失敗しても永続化前の状態を表示しない', async () => {
     vi.mocked(compareAndSetStoredValue).mockRejectedValueOnce(new Error('disk full'));
     await expect(useLearningStore.getState().startSession('random', '練習', ['fl-001'])).rejects.toThrow('disk full');
@@ -165,5 +195,15 @@ describe('端末保存の原子性', () => {
     vi.mocked(compareAndSetStoredValue).mockRejectedValueOnce(new Error('disk full'));
     await expect(useLearningStore.getState().restoreSnapshot({ ...persistedSnapshot(), sessions: [] })).rejects.toThrow('disk full');
     expect(useLearningStore.getState().sessions[0]?.id).toBe(sessionId);
+  });
+
+  it('メモ保存失敗時は未保存文を画面をまたぐ一時状態に保ち、再試行で解消する', async () => {
+    vi.mocked(compareAndSetStoredValue).mockRejectedValueOnce(new Error('disk full'));
+    await expect(useLearningStore.getState().saveNote('fl-001', 'fl-001-v1', '再確認する')).rejects.toThrow('disk full');
+    expect(useLearningStore.getState().notes).toEqual({});
+    expect(useLearningStore.getState().unsavedNotes['fl-001']).toBe('再確認する');
+    await useLearningStore.getState().saveNote('fl-001', 'fl-001-v1', '再確認する');
+    expect(useLearningStore.getState().unsavedNotes).toEqual({});
+    expect(persistedSnapshot().notes['fl-001']?.body).toBe('再確認する');
   });
 });

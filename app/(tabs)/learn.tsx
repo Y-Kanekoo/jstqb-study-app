@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 import { examConfig } from '@/config/exam';
@@ -13,6 +13,7 @@ import { useLearningStore } from '@/state/learning-store';
 import { colors, fonts } from '@/theme/tokens';
 
 const chapterTitles = [...new Map(questions.map((question) => [question.chapterNumber, question.chapterTitle])).entries()];
+const knownQuestionIds = new Set(questions.map((question) => question.id));
 const questionCountOptions = [10, 20, 30, 40] as const;
 const strategyOptions: { value: PracticeStrategy; label: string }[] = [
   { value: 'random', label: 'ランダム' },
@@ -40,17 +41,19 @@ export default function LearnScreen() {
   const [strategy, setStrategy] = useState<PracticeStrategy>('random');
   const [nowIso, setNowIso] = useState(() => new Date().toISOString());
   const [actionError, setActionError] = useState<string | null>(null);
+  const [startingSession, setStartingSession] = useState(false);
+  const startingRef = useRef(false);
   const wide = width >= 760;
 
   useEffect(() => {
-    if (pool !== 'review-due') return;
     const timer = setInterval(() => setNowIso(new Date().toISOString()), 60_000);
     return () => clearInterval(timer);
-  }, [pool]);
+  }, []);
 
   const dueQuestionIds = Object.values(questionStates)
-    .filter((state) => isReviewDue(state, new Date().toISOString()))
+    .filter((state) => knownQuestionIds.has(state.questionId) && isReviewDue(state, nowIso))
     .map((state) => state.questionId);
+  const bookmarkedQuestionIds = bookmarks.filter((id) => knownQuestionIds.has(id));
   const unansweredQuestionIds = questions.filter((question) => !questionStates[question.id]).map((question) => question.id);
   const sectionCodes = [...new Set(questions
     .filter((question) => question.chapterNumber === chapterNumber)
@@ -62,10 +65,24 @@ export default function LearnScreen() {
   const selectionOptions = { count: questionCount, chapterNumber, sectionCode, objectiveCode, pool, strategy, bookmarkedQuestionIds: bookmarks, nowIso };
   const availableCount = getPracticeCandidates(questions, questionStates, selectionOptions).length;
 
-  const beginQuestionSet = async (mode: SessionMode, title: string, questionIds: string[]) => {
-    const sessionId = await startSession(mode, title, questionIds);
-    router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+  const runStart = async (createSession: () => Promise<string>) => {
+    if (startingRef.current) return;
+    startingRef.current = true;
+    setStartingSession(true);
+    setActionError(null);
+    try {
+      const sessionId = await createSession();
+      router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : '演習を保存できませんでした。');
+    } finally {
+      startingRef.current = false;
+      setStartingSession(false);
+    }
   };
+
+  const beginQuestionSet = (mode: SessionMode, title: string, questionIds: string[]) =>
+    runStart(() => startSession(mode, title, questionIds));
 
   const beginConfiguredPractice = async () => {
     setActionError(null);
@@ -79,11 +96,7 @@ export default function LearnScreen() {
       : `第${chapterNumber}章 ${chapterTitles.find(([number]) => number === chapterNumber)?.[1] ?? ''}`);
     const strategyLabel = strategyOptions.find((item) => item.value === strategy)?.label ?? '演習';
     const poolLabel = poolOptions.find((item) => item.value === pool)?.label ?? 'すべて';
-    try {
-      await beginQuestionSet(chapterNumber === null ? 'random' : 'chapter', `${chapterTitle}・${poolLabel}・${strategyLabel} ${questionIds.length}問`, questionIds);
-    } catch (error: unknown) {
-      setActionError(error instanceof Error ? error.message : '演習を保存できませんでした。');
-    }
+    await beginQuestionSet(chapterNumber === null ? 'random' : 'chapter', `${chapterTitle}・${poolLabel}・${strategyLabel} ${questionIds.length}問`, questionIds);
   };
 
   const beginMockExam = async () => {
@@ -93,8 +106,7 @@ export default function LearnScreen() {
       setActionError(`模試には章構成を満たす${examConfig.questionCount}問が必要です。本番問題の同期後に開始できます。`);
       return;
     }
-    const sessionId = await startExam(questionIds);
-    router.push({ pathname: '/practice/[sessionId]', params: { sessionId } });
+    await runStart(() => startExam(questionIds));
   };
 
   return (
@@ -158,7 +170,7 @@ export default function LearnScreen() {
           ))}</View>
         </View>
         <Text style={styles.candidateCount} accessibilityLiveRegion="polite">候補 {availableCount}問 · 開始時 {Math.min(questionCount, availableCount)}問</Text>
-        <Button label="この条件で始める" disabled={availableCount === 0} onPress={() => void beginConfiguredPractice()} />
+        <Button label="この条件で始める" disabled={availableCount === 0 || startingSession} loading={startingSession} onPress={() => void beginConfiguredPractice()} />
       </Card>
 
       <Card style={styles.examCard}>
@@ -170,7 +182,7 @@ export default function LearnScreen() {
             <Text style={styles.quickDescription}>回答は1問ごとに保存します。提出するまで正誤と解説は表示せず、{examConfig.passScore}点以上で合格です。</Text>
           </View>
         </View>
-        <Button label="模擬試験を始める" variant="secondary" disabled={selectExamQuestionIds(questions, () => 0.5).length !== examConfig.questionCount} onPress={() => void beginMockExam()} />
+        <Button label="模擬試験を始める" variant="secondary" disabled={startingSession || selectExamQuestionIds(questions, () => 0.5).length !== examConfig.questionCount} onPress={() => void beginMockExam()} />
         {questions.length < examConfig.questionCount && <Text style={styles.examNotice}>現在は開発用サンプル{questions.length}問です。章構成を満たす本番問題の同期後に利用できます。</Text>}
       </Card>
 
@@ -182,21 +194,21 @@ export default function LearnScreen() {
           <Text style={styles.quickTitle}>今日の復習</Text>
           <Text style={styles.quickCount}>{dueQuestionIds.length}<Text style={styles.quickUnit}> 問</Text></Text>
           <Text style={styles.quickDescription}>1・3・7・14・30・90日の間隔で、忘れる前に確認します。</Text>
-          <Button label={dueQuestionIds.length > 0 ? '復習をはじめる' : '今日は復習済み'} disabled={dueQuestionIds.length === 0} onPress={() => void beginQuestionSet('review', '今日の復習', dueQuestionIds)} />
+          <Button label={dueQuestionIds.length > 0 ? '復習をはじめる' : '今日は復習済み'} disabled={startingSession || dueQuestionIds.length === 0} onPress={() => void beginQuestionSet('review', '今日の復習', Object.values(questionStates).filter((state) => knownQuestionIds.has(state.questionId) && isReviewDue(state, new Date().toISOString())).map((state) => state.questionId))} />
         </Card>
         <Card style={styles.quickCard}>
           <Text style={styles.quickLabel}>COVERAGE</Text>
           <Text style={styles.quickTitle}>まだ解いていない問題</Text>
           <Text style={styles.quickCount}>{unansweredQuestionIds.length}<Text style={styles.quickUnit}> 問</Text></Text>
           <Text style={styles.quickDescription}>未学習の範囲から最大10問を選び、全体の穴を減らします。</Text>
-          <Button label="未回答から10問" variant="secondary" disabled={unansweredQuestionIds.length === 0} onPress={() => void beginQuestionSet('random', '未回答から10問', unansweredQuestionIds.slice(0, 10))} />
+          <Button label="未回答から10問" variant="secondary" disabled={startingSession || unansweredQuestionIds.length === 0} onPress={() => void beginQuestionSet('random', '未回答から10問', unansweredQuestionIds.slice(0, 10))} />
         </Card>
         <Card style={styles.quickCard}>
           <Text style={styles.quickLabel}>BOOKMARK</Text>
           <Text style={styles.quickTitle}>保存した問題</Text>
-          <Text style={styles.quickCount}>{bookmarks.length}<Text style={styles.quickUnit}> 問</Text></Text>
+          <Text style={styles.quickCount}>{bookmarkedQuestionIds.length}<Text style={styles.quickUnit}> 問</Text></Text>
           <Text style={styles.quickDescription}>気になった問題だけをまとめて、あとから解き直せます。</Text>
-          <Button label="保存問題を解く" variant="secondary" disabled={bookmarks.length === 0} onPress={() => void beginQuestionSet('review', '保存した問題', bookmarks)} />
+          <Button label="保存問題を解く" variant="secondary" disabled={startingSession || bookmarkedQuestionIds.length === 0} onPress={() => void beginQuestionSet('review', '保存した問題', bookmarkedQuestionIds)} />
         </Card>
       </View>
 

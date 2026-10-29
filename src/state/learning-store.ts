@@ -124,7 +124,8 @@ function commitSnapshot<T>(
     }
     storedSnapshot = serialized;
     afterWrite?.success?.();
-    set({ ...snapshot, storageError: afterWrite?.preserveError || failedDrafts.size > 0 ? get().storageError : null });
+    set({ ...snapshot, storageError: afterWrite?.preserveError || failedDrafts.size > 0
+      || Object.keys(get().unsavedNotes).length > 0 ? get().storageError : null });
     return result;
   });
   persistenceChain = task.catch(() => undefined);

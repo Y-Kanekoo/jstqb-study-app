@@ -202,6 +202,8 @@ describe('端末保存の原子性', () => {
     await expect(useLearningStore.getState().saveNote('fl-001', 'fl-001-v1', '再確認する')).rejects.toThrow('disk full');
     expect(useLearningStore.getState().notes).toEqual({});
     expect(useLearningStore.getState().unsavedNotes['fl-001']).toBe('再確認する');
+    await useLearningStore.getState().toggleBookmark('fl-001');
+    expect(useLearningStore.getState().storageError).toBe('disk full');
     await useLearningStore.getState().saveNote('fl-001', 'fl-001-v1', '再確認する');
     expect(useLearningStore.getState().unsavedNotes).toEqual({});
     expect(persistedSnapshot().notes['fl-001']?.body).toBe('再確認する');

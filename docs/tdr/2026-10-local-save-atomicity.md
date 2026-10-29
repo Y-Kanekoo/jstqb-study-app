@@ -20,4 +20,4 @@ PR #7 の `2cde48d` を基点に、F-02・F-05 の端末保存失敗と、同期
 
 ## 残る同期契約の不一致
 
-`src/services/learning-sync.tsx` は `sync_events` に直接 upsert しているが、サーバー migration はこの書込み権限を撤回し、`ingest_learning_sync_events` RPC を要求する。現行のドラフトとメモのイベントにも、RPC が要求する `expectedRevision` がない。これらの送信経路と、サーバーの採点・日時・revision を反映する処理は別途修正と DB 統合試験が必要であり、F-02 の複数端末同期全体はまだ受入済みではない。
+`src/services/learning-sync.tsx` は `sync_events` に直接 upsert しているが、サーバー migration はこの書込み権限を撤回し、`ingest_learning_sync_events` RPC を要求する。現行のドラフトとメモのイベントにも、RPC が要求する `expectedRevision` がない。模試のローカル確定時に作る `answer.submitted` イベントは、サーバーが模試用として拒否する。サーバーの採点・日時・revision をローカル回答へ反映せず、模試の canonical 回答を受信すると二重計上する可能性もある。Outbox の同一対象イベントをまとめる処理は、送信中イベントとの順序管理を必要とする。これらの送信・照合経路は別途修正と DB 統合試験が必要であり、F-02 の複数端末同期全体はまだ受入済みではない。

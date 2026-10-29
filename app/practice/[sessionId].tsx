@@ -185,8 +185,11 @@ export default function PracticeScreen() {
   const updateNote = async (body: string) => {
     try {
       await saveNote(question.id, question.versionId, body);
+      setActionError(null);
     } catch (error: unknown) {
-      setActionError(saveFailureMessage(error, 'メモを保存できませんでした。空き容量をご確認ください。'));
+      setActionError(error instanceof StorageConflictError
+        ? '別のタブで保存データが更新されました。メモ本文をコピーしてから画面を再読み込みしてください。'
+        : 'メモを保存できませんでした。空き容量をご確認ください。');
     }
   };
 

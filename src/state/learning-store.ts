@@ -17,7 +17,6 @@ import type {
   SubmitAnswerResult,
 } from '@/domain/types';
 import { getStoredValue, setStoredValue } from '@/storage/persistence';
-import { createWriteQueue } from '@/storage/write-queue';
 
 const snapshotKey = 'learning-snapshot-v1';
 
@@ -74,8 +73,12 @@ function extractSnapshot(store: LearningStore): LearningSnapshot {
   };
 }
 
-const queueSnapshot = createWriteQueue((snapshot: LearningSnapshot) =>
-  setStoredValue(snapshotKey, JSON.stringify(snapshot)));
+let persistenceChain = Promise.resolve();
+
+function queueSnapshot(snapshot: LearningSnapshot): Promise<void> {
+  persistenceChain = persistenceChain.then(() => setStoredValue(snapshotKey, JSON.stringify(snapshot)));
+  return persistenceChain;
+}
 
 function createOutboxEvent(
   kind: OutboxEvent['kind'],
@@ -144,12 +147,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       return session.id;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'セッションを保存できませんでした。';
-      set((state) => ({
-        sessions: state.sessions.filter((item) => item.id !== session.id),
-        outbox: state.outbox.filter((item) => item.id !== event.id),
-        saving: false,
-        storageError: message,
-      }));
+      set({ saving: false, storageError: message });
       throw error;
     }
   },
@@ -197,12 +195,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       return session.id;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '模試を保存できませんでした。';
-      set((state) => ({
-        sessions: state.sessions.filter((item) => item.id !== session.id),
-        outbox: state.outbox.filter((item) => item.id !== event.id),
-        saving: false,
-        storageError: message,
-      }));
+      set({ saving: false, storageError: message });
       throw error;
     }
   },

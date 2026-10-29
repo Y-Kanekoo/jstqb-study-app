@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Question, UserQuestionState } from './types';
-import { selectExamQuestionIds, selectPracticeQuestionIds } from './session-selection';
+import { getPracticeCandidates, sectionCodeFor, selectExamQuestionIds, selectPracticeQuestionIds } from './session-selection';
 
 function createQuestion(id: string, chapterNumber: number, kLevel: 1 | 2 | 3 = 1): Question {
   return {
@@ -65,6 +65,38 @@ describe('出題選択', () => {
     }, random);
 
     expect(selected).toContain('q-1');
+  });
+
+  it('章、節、学習目標を正確に絞り、選択後に範囲外へ漏れない', () => {
+    const catalog = [
+      createQuestion('a', 1),
+      { ...createQuestion('b', 1), objectiveCode: 'FL-1.1.2' },
+      { ...createQuestion('c', 1), objectiveCode: 'FL-1.2.1' },
+      { ...createQuestion('d', 2), objectiveCode: 'FL-2.1.1' },
+    ];
+    const options = { count: 10 as const, chapterNumber: 1, sectionCode: 'FL-1.1', objectiveCode: 'FL-1.1.2', strategy: 'random' as const };
+    expect(getPracticeCandidates(catalog, {}, options).map((item) => item.id)).toEqual(['b']);
+    expect(selectPracticeQuestionIds(catalog, {}, options, random)).toEqual(['b']);
+    expect(sectionCodeFor({ ...catalog[0]!, objectiveCode: 'FL-2.1.1' })).toBeNull();
+  });
+
+  it('ブックマークと未回答の積集合だけを選び、候補不足でも水増ししない', () => {
+    const catalog = [createQuestion('a', 1), createQuestion('b', 1), createQuestion('c', 1), createQuestion('b', 1)];
+    const options = { count: 20 as const, chapterNumber: null, pool: 'bookmarked' as const, bookmarkedQuestionIds: ['a', 'b', 'missing'], strategy: 'unanswered' as const };
+    const states = { a: createState('a', 1, 1) };
+    expect(getPracticeCandidates(catalog, states, options).map((item) => item.id)).toEqual(['b']);
+    expect(selectPracticeQuestionIds(catalog, states, options, random)).toEqual(['b']);
+  });
+
+  it('復習期限の同時刻を含み、未来・未回答・日時未指定を除外する', () => {
+    const catalog = [createQuestion('due', 1), createQuestion('future', 1), createQuestion('unanswered', 1)];
+    const states = {
+      due: { ...createState('due', 1, 1), nextReviewAt: '2026-10-29T10:00:00.000Z' },
+      future: { ...createState('future', 1, 1), nextReviewAt: '2026-10-29T10:00:00.001Z' },
+    };
+    const options = { count: 10 as const, chapterNumber: null, pool: 'review-due' as const, strategy: 'random' as const, nowIso: '2026-10-29T10:00:00.000Z' };
+    expect(selectPracticeQuestionIds(catalog, states, options, random)).toEqual(['due']);
+    expect(selectPracticeQuestionIds(catalog, states, { count: 10, chapterNumber: null, pool: 'review-due', strategy: 'random' }, random)).toEqual([]);
   });
 
   it('模試は章構成を満たす40問が揃った場合だけ作る', () => {

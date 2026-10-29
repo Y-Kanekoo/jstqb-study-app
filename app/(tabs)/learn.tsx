@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 import { examConfig } from '@/config/exam';
@@ -7,7 +7,7 @@ import { getQuestionsByChapter, questions } from '@/content/questions';
 import { Screen } from '@/components/screen';
 import { Button, Card, Chip, Eyebrow } from '@/components/ui';
 import { isReviewDue } from '@/domain/learning';
-import { selectExamQuestionIds, selectPracticeQuestionIds, type PracticeStrategy } from '@/domain/session-selection';
+import { getPracticeCandidates, sectionCodeFor, selectExamQuestionIds, selectPracticeQuestionIds, type PracticePool, type PracticeStrategy } from '@/domain/session-selection';
 import type { SessionMode } from '@/domain/types';
 import { useLearningStore } from '@/state/learning-store';
 import { colors, fonts } from '@/theme/tokens';
@@ -19,6 +19,11 @@ const strategyOptions: { value: PracticeStrategy; label: string }[] = [
   { value: 'unanswered', label: '未回答' },
   { value: 'weak', label: '弱点優先' },
 ];
+const poolOptions: { value: PracticePool; label: string }[] = [
+  { value: 'all', label: 'すべて' },
+  { value: 'bookmarked', label: 'ブックマーク' },
+  { value: 'review-due', label: '復習期限' },
+];
 
 export default function LearnScreen() {
   const router = useRouter();
@@ -29,14 +34,34 @@ export default function LearnScreen() {
   const bookmarks = useLearningStore((state) => state.bookmarks);
   const [questionCount, setQuestionCount] = useState<(typeof questionCountOptions)[number]>(10);
   const [chapterNumber, setChapterNumber] = useState<number | null>(null);
+  const [sectionCode, setSectionCode] = useState<string | null>(null);
+  const [objectiveCode, setObjectiveCode] = useState<string | null>(null);
+  const [pool, setPool] = useState<PracticePool>('all');
   const [strategy, setStrategy] = useState<PracticeStrategy>('random');
+  const [nowIso, setNowIso] = useState(() => new Date().toISOString());
   const [actionError, setActionError] = useState<string | null>(null);
   const wide = width >= 760;
+
+  useEffect(() => {
+    if (pool !== 'review-due') return;
+    setNowIso(new Date().toISOString());
+    const timer = setInterval(() => setNowIso(new Date().toISOString()), 60_000);
+    return () => clearInterval(timer);
+  }, [pool]);
 
   const dueQuestionIds = Object.values(questionStates)
     .filter((state) => isReviewDue(state, new Date().toISOString()))
     .map((state) => state.questionId);
   const unansweredQuestionIds = questions.filter((question) => !questionStates[question.id]).map((question) => question.id);
+  const sectionCodes = [...new Set(questions
+    .filter((question) => question.chapterNumber === chapterNumber)
+    .map(sectionCodeFor)
+    .filter((code): code is string => code !== null))].sort();
+  const objectiveCodes = [...new Set(questions
+    .filter((question) => sectionCodeFor(question) === sectionCode)
+    .map((question) => question.objectiveCode))].sort();
+  const selectionOptions = { count: questionCount, chapterNumber, sectionCode, objectiveCode, pool, strategy, bookmarkedQuestionIds: bookmarks, nowIso };
+  const availableCount = getPracticeCandidates(questions, questionStates, selectionOptions).length;
 
   const beginQuestionSet = async (mode: SessionMode, title: string, questionIds: string[]) => {
     const sessionId = await startSession(mode, title, questionIds);
@@ -45,16 +70,21 @@ export default function LearnScreen() {
 
   const beginConfiguredPractice = async () => {
     setActionError(null);
-    const questionIds = selectPracticeQuestionIds(questions, questionStates, { count: questionCount, chapterNumber, strategy });
+    const questionIds = selectPracticeQuestionIds(questions, questionStates, { ...selectionOptions, nowIso: new Date().toISOString() });
     if (questionIds.length === 0) {
       setActionError('条件に合う問題がありません。範囲または出題方法を変更してください。');
       return;
     }
-    const chapterTitle = chapterNumber === null
+    const chapterTitle = objectiveCode ?? sectionCode ?? (chapterNumber === null
       ? '全範囲'
-      : `第${chapterNumber}章 ${chapterTitles.find(([number]) => number === chapterNumber)?.[1] ?? ''}`;
+      : `第${chapterNumber}章 ${chapterTitles.find(([number]) => number === chapterNumber)?.[1] ?? ''}`);
     const strategyLabel = strategyOptions.find((item) => item.value === strategy)?.label ?? '演習';
-    await beginQuestionSet(chapterNumber === null ? 'random' : 'chapter', `${chapterTitle}・${strategyLabel} ${questionIds.length}問`, questionIds);
+    const poolLabel = poolOptions.find((item) => item.value === pool)?.label ?? 'すべて';
+    try {
+      await beginQuestionSet(chapterNumber === null ? 'random' : 'chapter', `${chapterTitle}・${poolLabel}・${strategyLabel} ${questionIds.length}問`, questionIds);
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : '演習を保存できませんでした。');
+    }
   };
 
   const beginMockExam = async () => {
@@ -84,7 +114,7 @@ export default function LearnScreen() {
           <View style={styles.builderCopy}>
             <Eyebrow>PRACTICE</Eyebrow>
             <Text style={styles.builderTitle}>今日の演習を組み立てる</Text>
-            <Text style={styles.builderDescription}>問数・範囲・出題方法を選びます。候補が少ない場合は重複させず、実数で開始します。</Text>
+            <Text style={styles.builderDescription}>問数・範囲・対象・出題方法を選びます。候補が少ない場合は重複させず、実数で開始します。</Text>
           </View>
           <View style={styles.bookmarkShape}><Text style={styles.bookmarkShapeText}>{questionCount}</Text></View>
         </View>
@@ -98,9 +128,29 @@ export default function LearnScreen() {
         <View style={styles.optionGroup}>
           <Text style={styles.optionLabel}>範囲</Text>
           <View style={styles.chips}>
-            <Chip label="全範囲" selected={chapterNumber === null} onPress={() => setChapterNumber(null)} />
-            {chapterTitles.map(([number]) => <Chip key={number} label={`第${number}章`} selected={chapterNumber === number} onPress={() => setChapterNumber(number)} />)}
+            <Chip label="全範囲" selected={chapterNumber === null} onPress={() => { setChapterNumber(null); setSectionCode(null); setObjectiveCode(null); }} />
+            {chapterTitles.map(([number]) => <Chip key={number} label={`第${number}章`} selected={chapterNumber === number} onPress={() => { setChapterNumber(number); setSectionCode(null); setObjectiveCode(null); }} />)}
           </View>
+        </View>
+        {chapterNumber !== null && <View style={styles.optionGroup}>
+          <Text style={styles.optionLabel}>節</Text>
+          <View style={styles.chips}>
+            <Chip label="章全体" selected={sectionCode === null} onPress={() => { setSectionCode(null); setObjectiveCode(null); }} />
+            {sectionCodes.map((code) => <Chip key={code} label={code} selected={sectionCode === code} onPress={() => { setSectionCode(code); setObjectiveCode(null); }} />)}
+          </View>
+        </View>}
+        {sectionCode !== null && <View style={styles.optionGroup}>
+          <Text style={styles.optionLabel}>学習目標</Text>
+          <View style={styles.chips}>
+            <Chip label="節全体" selected={objectiveCode === null} onPress={() => setObjectiveCode(null)} />
+            {objectiveCodes.map((code) => <Chip key={code} label={code} selected={objectiveCode === code} onPress={() => setObjectiveCode(code)} />)}
+          </View>
+        </View>}
+        <View style={styles.optionGroup}>
+          <Text style={styles.optionLabel}>対象</Text>
+          <View style={styles.chips}>{poolOptions.map((option) => (
+            <Chip key={option.value} label={option.label} selected={pool === option.value} onPress={() => setPool(option.value)} />
+          ))}</View>
         </View>
         <View style={styles.optionGroup}>
           <Text style={styles.optionLabel}>出題方法</Text>
@@ -108,7 +158,8 @@ export default function LearnScreen() {
             <Chip key={option.value} label={option.label} selected={strategy === option.value} onPress={() => setStrategy(option.value)} />
           ))}</View>
         </View>
-        <Button label="この条件で始める" onPress={() => void beginConfiguredPractice()} />
+        <Text style={styles.candidateCount} accessibilityLiveRegion="polite">候補 {availableCount}問 · 開始時 {Math.min(questionCount, availableCount)}問</Text>
+        <Button label="この条件で始める" disabled={availableCount === 0} onPress={() => void beginConfiguredPractice()} />
       </Card>
 
       <Card style={styles.examCard}>
@@ -163,7 +214,7 @@ export default function LearnScreen() {
               </View>
               <Text style={styles.chapterTitle}>{chapterTitle}</Text>
               <Text style={styles.chapterMeta}>第{chapterNumber}章 · {chapterQuestions.length}問</Text>
-              <Button label="この章を条件に設定" variant="secondary" onPress={() => setChapterNumber(chapterNumber)} />
+              <Button label="この章を条件に設定" variant="secondary" onPress={() => { setChapterNumber(chapterNumber); setSectionCode(null); setObjectiveCode(null); }} />
             </Card>
           );
         })}
@@ -188,6 +239,7 @@ const styles = StyleSheet.create({
   bookmarkShapeText: { color: colors.surface, fontFamily: fonts.display, fontSize: 23 },
   optionGroup: { gap: 9 },
   optionLabel: { color: colors.ink, fontFamily: fonts.bodyBold, fontSize: 12 },
+  candidateCount: { color: colors.inkMuted, fontFamily: fonts.bodyMedium, fontSize: 12 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   examCard: { backgroundColor: colors.brandSoft, borderColor: '#C7DDF8', gap: 15, shadowOpacity: 0 },
   examHeader: { flexDirection: 'row', alignItems: 'center', gap: 16 },

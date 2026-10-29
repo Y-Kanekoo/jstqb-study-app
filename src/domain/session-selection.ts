@@ -1,12 +1,19 @@
 import { examConfig } from '@/config/exam';
 
+import { isReviewDue } from './learning';
 import type { Question, UserQuestionState } from './types';
 
 export type PracticeStrategy = 'random' | 'unanswered' | 'weak';
+export type PracticePool = 'all' | 'bookmarked' | 'review-due';
 
-interface PracticeSelectionOptions {
+export interface PracticeSelectionOptions {
   count: 10 | 20 | 30 | 40;
   chapterNumber: number | null;
+  sectionCode?: string | null;
+  objectiveCode?: string | null;
+  pool?: PracticePool;
+  bookmarkedQuestionIds?: readonly string[];
+  nowIso?: string;
   strategy: PracticeStrategy;
 }
 
@@ -34,18 +41,42 @@ function weaknessScore(questionId: string, states: Record<string, UserQuestionSt
   return 1 + state.correctCount / state.attemptCount;
 }
 
+export function sectionCodeFor(question: Question): string | null {
+  const match = /^FL-(\d+)\.(\d+)\.\d+$/.exec(question.objectiveCode);
+  return match && Number(match[1]) === question.chapterNumber ? `FL-${match[1]}.${match[2]}` : null;
+}
+
+export function getPracticeCandidates(
+  allQuestions: Question[],
+  states: Record<string, UserQuestionState>,
+  options: PracticeSelectionOptions,
+): Question[] {
+  const bookmarked = new Set(options.bookmarkedQuestionIds ?? []);
+  const seen = new Set<string>();
+  return allQuestions.filter((question) => {
+    if (seen.has(question.id)) return false;
+    seen.add(question.id);
+    if (options.chapterNumber !== null && question.chapterNumber !== options.chapterNumber) return false;
+    if (options.sectionCode && sectionCodeFor(question) !== options.sectionCode) return false;
+    if (options.objectiveCode && question.objectiveCode !== options.objectiveCode) return false;
+    if (options.pool === 'bookmarked' && !bookmarked.has(question.id)) return false;
+    const state = states[question.id];
+    if (options.pool === 'review-due' && (!options.nowIso || !state || !isReviewDue(state, options.nowIso))) return false;
+    if (options.strategy === 'unanswered' && states[question.id]) return false;
+    return true;
+  });
+}
+
 export function selectPracticeQuestionIds(
   allQuestions: Question[],
   states: Record<string, UserQuestionState>,
   options: PracticeSelectionOptions,
   random: RandomSource = Math.random,
 ): string[] {
-  const inRange = options.chapterNumber === null
-    ? allQuestions
-    : allQuestions.filter((question) => question.chapterNumber === options.chapterNumber);
+  const inRange = getPracticeCandidates(allQuestions, states, options);
 
   if (options.strategy === 'unanswered') {
-    return shuffle(inRange.filter((question) => !states[question.id]), random)
+    return shuffle(inRange, random)
       .slice(0, options.count)
       .map((question) => question.id);
   }

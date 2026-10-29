@@ -1,14 +1,28 @@
 import { useRouter } from 'expo-router';
+import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { Screen } from '@/components/screen';
 import { Button, Card, Chip } from '@/components/ui';
+import { getQuestion } from '@/content/questions';
+import type { OutboxEvent } from '@/domain/types';
 import { isSupabaseConfigured } from '@/services/supabase';
 import { useAuthStore } from '@/state/auth-store';
-import { useLearningStore } from '@/state/learning-store';
+import { hasLearningData, useLearningStore } from '@/state/learning-store';
+import { findLocalConflictEvent } from '@/sync/protocol';
 import { colors, fonts } from '@/theme/tokens';
 
 const goalOptions = [5, 10, 20, 40];
+
+function conflictContent(kind: 'draft.saved' | 'note.saved' | 'answer.submitted' | 'session.submitted', payload: OutboxEvent['payload']): string {
+  if (kind === 'note.saved') return typeof payload.body === 'string' ? payload.body : '';
+  if (kind === 'session.submitted') return '模試の提出と採点結果';
+  const questionId = payload.questionId;
+  const selectedIds = payload.selectedChoiceIds;
+  if (typeof questionId !== 'string' || !Array.isArray(selectedIds)) return '選択内容を読み込めませんでした。';
+  const question = getQuestion(questionId);
+  return selectedIds.map((id) => question?.choices.find((choice) => choice.id === id)?.body ?? id).join('\n') || '未選択';
+}
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -18,8 +32,30 @@ export default function SettingsScreen() {
   const dailyGoal = useLearningStore((state) => state.dailyGoal);
   const setDailyGoal = useLearningStore((state) => state.setDailyGoal);
   const outboxCount = useLearningStore((state) => state.outbox.length);
+  const bufferedNoteCount = useLearningStore((state) => Object.keys(state.noteBuffer).length);
+  const syncOwnerId = useLearningStore((state) => state.syncOwnerId);
+  const syncCursor = useLearningStore((state) => state.syncCursor);
+  const hasLocalData = useLearningStore((state) => hasLearningData(state));
+  const claimSyncOwner = useLearningStore((state) => state.claimSyncOwner);
   const storageError = useLearningStore((state) => state.storageError);
   const syncError = useLearningStore((state) => state.syncError);
+  const syncConflict = useLearningStore((state) => state.syncConflict);
+  const outbox = useLearningStore((state) => state.outbox);
+  const saving = useLearningStore((state) => state.saving);
+  const resolveSyncConflict = useLearningStore((state) => state.resolveSyncConflict);
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const localConflictEvent = syncConflict
+    ? findLocalConflictEvent(outbox, syncConflict)
+    : undefined;
+
+  const resolve = async (decision: 'local' | 'remote') => {
+    setResolutionError(null);
+    try {
+      await resolveSyncConflict(decision);
+    } catch (error: unknown) {
+      setResolutionError(error instanceof Error ? error.message : '競合を解決できませんでした。');
+    }
+  };
 
   return (
     <Screen title="設定" description="アカウント、同期、毎日の学習量を管理します。">
@@ -36,9 +72,31 @@ export default function SettingsScreen() {
           : <Button label="ログイン" variant="secondary" disabled={!isSupabaseConfigured} onPress={() => router.push('/sign-in')} />}
       </Card>
 
+      {syncConflict && localConflictEvent && <Card style={styles.syncCard}>
+        <Text style={styles.cardTitle}>未確定データの競合</Text>
+        <Text style={styles.cardDescription}>同じ{syncConflict.kind === 'note.saved' ? 'メモ' : syncConflict.kind === 'session.submitted' ? '模試' : '問題の回答'}が別端末でも変更されました。内容を確認してください。採用しない内容も端末のバックアップに記録します。</Text>
+        <Text style={styles.conflictLabel}>この端末</Text>
+        <Text selectable style={styles.conflictContent}>{conflictContent(syncConflict.kind, localConflictEvent.payload)}</Text>
+        <Text style={styles.conflictLabel}>別端末</Text>
+        <Text selectable style={styles.conflictContent}>{conflictContent(syncConflict.kind, syncConflict.remote.payload)}</Text>
+        {resolutionError && <Text accessibilityRole="alert" style={styles.errorText}>{resolutionError}</Text>}
+        <View style={styles.dataActions}>
+          {(syncConflict.kind === 'draft.saved' || syncConflict.kind === 'note.saved')
+            && <Button label="この端末を採用" disabled={saving} style={styles.dataAction} onPress={() => void resolve('local')} />}
+          <Button label={syncConflict.kind === 'answer.submitted' || syncConflict.kind === 'session.submitted' ? 'サーバー確定結果を採用' : '別端末を採用'}
+            disabled={saving} variant="secondary" style={styles.dataAction} onPress={() => void resolve('remote')} />
+        </View>
+      </Card>}
+
       <Card style={styles.syncCard}>
-        <View style={styles.rowBetween}><Text style={styles.cardTitle}>保存と同期</Text><View style={styles.syncBadge}><Text style={styles.syncBadgeText}>{outboxCount === 0 ? '保存済み' : `未同期 ${outboxCount}件`}</Text></View></View>
+        <View style={styles.rowBetween}><Text style={styles.cardTitle}>保存と同期</Text><View style={styles.syncBadge}><Text style={styles.syncBadgeText}>{outboxCount + bufferedNoteCount === 0 ? '保存済み' : `未同期 ${outboxCount + bufferedNoteCount}件`}</Text></View></View>
         <Text style={styles.cardDescription}>選択は端末へ即時保存し、回答確定後は同期キューへ追加します。オフラインでも学習できます。</Text>
+        {session && !syncOwnerId && hasLocalData && <>
+          <Text style={styles.cardDescription}>端末データの同期先を確認してください。過去に別のアカウントで使ったデータは同期できません。</Text>
+          <Button label="このアカウントに端末データを同期" disabled={saving || syncCursor > 0}
+            onPress={() => void claimSyncOwner(session.user.id).catch((error: unknown) => setResolutionError(error instanceof Error ? error.message : '同期先を設定できませんでした。'))} />
+          {resolutionError && <Text accessibilityRole="alert" style={styles.errorText}>{resolutionError}</Text>}
+        </>}
         {storageError && <View style={styles.errorBox}><Text style={styles.errorText}>{storageError}</Text></View>}
         {syncError && <View style={styles.errorBox}><Text style={styles.errorText}>{syncError}</Text></View>}
       </Card>
@@ -87,6 +145,8 @@ const styles = StyleSheet.create({
   syncBadgeText: { color: colors.brand, fontFamily: fonts.bodyBold, fontSize: 11 },
   errorBox: { backgroundColor: colors.dangerSoft, borderRadius: 10, padding: 12 },
   errorText: { color: colors.danger, fontFamily: fonts.body, fontSize: 12 },
+  conflictLabel: { color: colors.inkMuted, fontFamily: fonts.bodyBold, fontSize: 12 },
+  conflictContent: { color: colors.ink, fontFamily: fonts.body, fontSize: 13, lineHeight: 21, padding: 12, borderRadius: 10, backgroundColor: colors.paper },
   goalCard: { gap: 12 },
   dataCard: { gap: 12 },
   dataActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },

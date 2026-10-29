@@ -35,6 +35,7 @@ export interface LearningSession {
   mode: SessionMode;
   title: string;
   questionIds: string[];
+  questionVersionIds?: string[] | undefined;
   currentIndex: number;
   answeredQuestionIds: string[];
   status: SessionStatus;
@@ -42,6 +43,7 @@ export interface LearningSession {
   durationMinutes?: number | null;
   expiresAt?: string | null;
   submittedAt?: string | null;
+  serverConfirmed?: boolean | undefined;
   createdAt: string;
   updatedAt: string;
 }
@@ -61,6 +63,8 @@ export interface AnswerAttempt {
   selectedChoiceIds: string[];
   isCorrect: boolean;
   answeredAt: string;
+  provisional?: boolean | undefined;
+  invalidated?: boolean | undefined;
 }
 
 export interface UserQuestionState {
@@ -116,12 +120,17 @@ export interface OutboxEvent {
 
 export interface LearningSnapshot {
   schemaVersion: 2;
+  deviceId: string;
+  syncRevisions: Record<string, number>;
+  syncOwnerId: string | null;
+  syncConflictHistory: SyncConflictRecord[];
   sessions: LearningSession[];
   drafts: Record<string, AnswerDraft>;
   attempts: AnswerAttempt[];
   questionStates: Record<string, UserQuestionState>;
   bookmarks: string[];
   notes: Record<string, QuestionNote>;
+  noteBuffer: Record<string, string>;
   issues: ContentIssue[];
   outbox: OutboxEvent[];
   syncCursor: number;
@@ -130,6 +139,18 @@ export interface LearningSnapshot {
 
 export interface RemoteSyncEvent extends OutboxEvent {
   sequence: number;
+}
+
+export interface SyncConflictRecord {
+  id: string;
+  kind: 'draft.saved' | 'note.saved' | 'answer.submitted' | 'session.submitted';
+  entityId: string;
+  localEventIds: string[];
+  localPayload: OutboxEvent['payload'];
+  remoteEventId: string;
+  remotePayload: OutboxEvent['payload'];
+  decision: 'local' | 'remote';
+  resolvedAt: string;
 }
 
 export interface SubmitAnswerResult {

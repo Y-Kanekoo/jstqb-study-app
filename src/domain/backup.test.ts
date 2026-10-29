@@ -5,12 +5,17 @@ import { parseLearningBackup, parseLearningSnapshot, serializeAttemptsCsv, seria
 
 const emptySnapshot: LearningSnapshot = {
   schemaVersion: 2,
+  deviceId: 'test-device',
+  syncRevisions: {},
+  syncOwnerId: null,
+  syncConflictHistory: [],
   sessions: [],
   drafts: {},
   attempts: [],
   questionStates: {},
   bookmarks: [],
   notes: {},
+  noteBuffer: {},
   issues: [],
   outbox: [],
   syncCursor: 0,

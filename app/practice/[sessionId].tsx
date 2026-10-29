@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AppState, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { examConfig } from '@/config/exam';
 import { getQuestion } from '@/content/questions';
@@ -30,6 +30,8 @@ export default function PracticeScreen() {
   const [reviewExamResults, setReviewExamResults] = useState(false);
   const [secondsRemaining, setSecondsRemaining] = useState(examConfig.durationMinutes * 60);
   const autoSubmittingRef = useRef(false);
+  const noteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingNoteRef = useRef<{ questionId: string; questionVersionId: string; body: string } | null>(null);
   const sessions = useLearningStore((state) => state.sessions);
   const drafts = useLearningStore((state) => state.drafts);
   const attempts = useLearningStore((state) => state.attempts);
@@ -45,7 +47,20 @@ export default function PracticeScreen() {
   const toggleReviewMark = useLearningStore((state) => state.toggleReviewMark);
   const toggleBookmark = useLearningStore((state) => state.toggleBookmark);
   const saveNote = useLearningStore((state) => state.saveNote);
+  const stageNote = useLearningStore((state) => state.stageNote);
   const submitExam = useLearningStore((state) => state.submitExam);
+
+  useEffect(() => {
+    const flush = () => {
+      if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+      noteTimerRef.current = null;
+      const pending = pendingNoteRef.current;
+      pendingNoteRef.current = null;
+      if (pending) void useLearningStore.getState().saveNote(pending.questionId, pending.questionVersionId, pending.body).catch(() => undefined);
+    };
+    const subscription = AppState.addEventListener('change', (state) => { if (state !== 'active') flush(); });
+    return () => { flush(); subscription.remove(); };
+  }, []);
 
   const session = sessions.find((item) => item.id === sessionId);
 
@@ -77,21 +92,26 @@ export default function PracticeScreen() {
 
   const sessionAttempts = attempts.filter((attempt) => attempt.sessionId === session.id);
   if (session.status === 'completed' && !(session.mode === 'exam' && reviewExamResults)) {
-    const correctCount = sessionAttempts.filter((attempt) => attempt.isCorrect).length;
+    const validAttempts = sessionAttempts.filter((attempt) => !attempt.invalidated);
+    const correctCount = validAttempts.filter((attempt) => attempt.isCorrect).length;
     const denominator = session.mode === 'exam' ? session.questionIds.length : sessionAttempts.length;
     const accuracy = denominator === 0 ? 0 : Math.round((correctCount / denominator) * 100);
     const passed = session.mode === 'exam' && correctCount >= examConfig.passScore;
+    const provisional = session.mode === 'exam' && session.serverConfirmed !== true;
     return (
       <Screen
-        title={session.mode === 'exam' ? (passed ? '合格です' : 'あと一歩です') : 'おつかれさまでした'}
-        description={session.mode === 'exam' ? `模擬試験 ${examConfig.syllabusVersion} の結果を保存しました。` : '1問ごとの結果は保存済みです。'}
+        title={session.mode === 'exam' ? (provisional ? '暫定結果' : passed ? '合格です' : 'あと一歩です') : 'おつかれさまでした'}
+        description={session.mode === 'exam'
+          ? provisional ? `模擬試験 ${examConfig.syllabusVersion} の端末上の暫定結果です。同期後に確定します。`
+            : `模擬試験 ${examConfig.syllabusVersion} の結果を保存しました。`
+          : '1問ごとの結果は保存済みです。'}
       >
         <Card style={styles.resultSummary}>
           <View style={styles.resultSeal}><Text style={styles.resultSealText}>{accuracy}%</Text></View>
           <Text style={styles.resultTitle}>{correctCount} / {denominator}問 正解</Text>
           <Text style={styles.resultCopy}>
             {session.mode === 'exam'
-              ? `${examConfig.passScore}点以上で合格です。未回答は${Math.max(0, denominator - sessionAttempts.length)}問でした。正誤と解説は「解答を見直す」から確認できます。`
+              ? `${examConfig.passScore}点以上で合格です。未回答は${Math.max(0, denominator - validAttempts.length)}問でした。正誤と解説は「解答を見直す」から確認できます。`
               : '間違えた問題は「誤答」へ追加されました。別セッションで2回続けて正解すると克服になります。'}
           </Text>
         </Card>
@@ -118,7 +138,6 @@ export default function PracticeScreen() {
   }
 
   const draft = drafts[`${session.id}:${question.id}`];
-  const selectedChoiceIds = draft?.selectedChoiceIds ?? [];
   const selectionType = question.selectionType ?? 'single';
   const requiredChoiceCount = question.requiredChoiceCount ?? 1;
   const attempt = sessionAttempts.find((item) => item.questionId === question.id);
@@ -128,6 +147,7 @@ export default function PracticeScreen() {
   const noteInput = hasUnsavedNote ? unsavedNotes[question.id] ?? '' : note;
   const isExam = session.mode === 'exam';
   const isExamReview = isExam && session.status === 'completed';
+  const selectedChoiceIds = attempt?.selectedChoiceIds ?? draft?.selectedChoiceIds ?? [];
   const reviewMarked = (session.reviewQuestionIds ?? []).includes(question.id);
   const answeredDraftCount = session.questionIds.filter((id) => {
     const targetQuestion = getQuestion(id);
@@ -157,6 +177,7 @@ export default function PracticeScreen() {
   const next = async () => {
     setActionError(null);
     try {
+      await flushNote();
       await moveToNext(session.id, question.id);
     } catch (error: unknown) {
       setActionError(saveFailureMessage(error, '進捗を保存できませんでした。もう一度お試しください。'));
@@ -166,6 +187,7 @@ export default function PracticeScreen() {
   const navigateExam = async (index: number) => {
     setActionError(null);
     try {
+      await flushNote();
       await goToQuestion(session.id, index);
     } catch (error: unknown) {
       setActionError(saveFailureMessage(error, '表示位置を保存できませんでした。もう一度お試しください。'));
@@ -176,15 +198,16 @@ export default function PracticeScreen() {
     setShowSubmitConfirm(false);
     setActionError(null);
     try {
+      await flushNote();
       await submitExam(session.id);
     } catch (error: unknown) {
       setActionError(saveFailureMessage(error, '模試結果を保存できませんでした。空き容量をご確認ください。'));
     }
   };
 
-  const updateNote = async (body: string) => {
+  const updateNote = async (body: string, noteQuestionId = question.id, noteVersionId = question.versionId) => {
     try {
-      await saveNote(question.id, question.versionId, body);
+      await saveNote(noteQuestionId, noteVersionId, body);
       setActionError(null);
     } catch (error: unknown) {
       setActionError(error instanceof StorageConflictError
@@ -193,10 +216,35 @@ export default function PracticeScreen() {
     }
   };
 
+  const queueNote = (body: string) => {
+    const previous = pendingNoteRef.current;
+    if (previous && previous.questionId !== question.id) {
+      void useLearningStore.getState().saveNote(previous.questionId, previous.questionVersionId, previous.body).catch(() => undefined);
+    }
+    void stageNote(question.id, body).catch(() => undefined);
+    pendingNoteRef.current = { questionId: question.id, questionVersionId: question.versionId, body };
+    if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+    noteTimerRef.current = setTimeout(() => {
+      const pending = pendingNoteRef.current;
+      pendingNoteRef.current = null;
+      noteTimerRef.current = null;
+      if (pending) void updateNote(pending.body, pending.questionId, pending.questionVersionId);
+    }, 600);
+  };
+  const flushNote = async () => {
+    if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+    noteTimerRef.current = null;
+    const pending = pendingNoteRef.current;
+    pendingNoteRef.current = null;
+    if (pending) await useLearningStore.getState().saveNote(pending.questionId, pending.questionVersionId, pending.body);
+  };
+
   return (
     <Screen>
       <View style={styles.practiceHeader}>
-        <Button label="終了" variant="quiet" style={styles.headerButton} onPress={() => router.back()} />
+        <Button label="終了" variant="quiet" style={styles.headerButton} onPress={() => {
+          void flushNote().then(() => router.back()).catch(() => setActionError('メモを保存できませんでした。'));
+        }} />
         <View style={styles.headerCenter}>
           <Text numberOfLines={1} style={styles.sessionTitle}>{session.title}</Text>
           <Text style={isExam && session.status === 'active' ? styles.examTimer : styles.saveStatus}>
@@ -286,12 +334,13 @@ export default function PracticeScreen() {
       <Card style={styles.noteCard}>
         <View style={styles.noteHeader}>
           <Text style={styles.noteTitle}>自分用メモ</Text>
-        <Text style={styles.noteStatus}>{storageError ? '保存失敗' : saving ? '保存中' : '自動保存'}</Text>
+        <Text style={styles.noteStatus}>{storageError ? '保存失敗' : hasUnsavedNote ? '入力中・保存待ち' : saving ? '保存中' : '自動保存'}</Text>
         </View>
         <TextInput
           accessibilityLabel="この問題の自分用メモ"
           multiline
-          onChangeText={(body) => void updateNote(body)}
+          onChangeText={queueNote}
+          onBlur={() => void flushNote().catch(() => undefined)}
           placeholder="覚え方や、間違えた理由を書いておけます。"
           placeholderTextColor={colors.inkMuted}
           style={styles.noteInput}

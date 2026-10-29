@@ -15,6 +15,7 @@ const sessionSchema = z.object({
   mode: z.enum(['chapter', 'random', 'wrong', 'review', 'exam']),
   title: z.string(),
   questionIds: z.array(z.string()),
+  questionVersionIds: z.array(z.string()).optional(),
   currentIndex: z.number().int().nonnegative(),
   answeredQuestionIds: z.array(z.string()),
   status: z.enum(['active', 'completed']),
@@ -22,6 +23,7 @@ const sessionSchema = z.object({
   durationMinutes: z.number().positive().nullable().default(null),
   expiresAt: z.string().nullable().default(null),
   submittedAt: z.string().nullable().default(null),
+  serverConfirmed: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -41,6 +43,8 @@ const attemptSchema = z.object({
   selectedChoiceIds: z.array(z.string()),
   isCorrect: z.boolean(),
   answeredAt: z.string(),
+  provisional: z.boolean().optional(),
+  invalidated: z.boolean().optional(),
 });
 
 const questionStateSchema = z.object({
@@ -95,14 +99,31 @@ const outboxEventSchema = z.object({
   payload: z.record(z.string(), payloadValueSchema),
 });
 
+const syncConflictRecordSchema = z.object({
+  id: z.string(),
+  kind: z.enum(['draft.saved', 'note.saved', 'answer.submitted', 'session.submitted']),
+  entityId: z.string(),
+  localEventIds: z.array(z.string()),
+  localPayload: z.record(z.string(), payloadValueSchema),
+  remoteEventId: z.string(),
+  remotePayload: z.record(z.string(), payloadValueSchema),
+  decision: z.enum(['local', 'remote']),
+  resolvedAt: z.string(),
+});
+
 const snapshotSchema = z.object({
   schemaVersion: z.union([z.literal(1), z.literal(2)]),
+  deviceId: z.string().default(''),
+  syncRevisions: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  syncOwnerId: z.string().nullable().default(null),
+  syncConflictHistory: z.array(syncConflictRecordSchema).default([]),
   sessions: z.array(sessionSchema),
   drafts: z.record(z.string(), draftSchema),
   attempts: z.array(attemptSchema),
   questionStates: z.record(z.string(), questionStateSchema),
   bookmarks: z.array(z.string()),
   notes: z.record(z.string(), noteSchema).default({}),
+  noteBuffer: z.record(z.string(), z.string()).default({}),
   issues: z.array(issueSchema).default([]),
   outbox: z.array(outboxEventSchema),
   syncCursor: z.number().int().nonnegative().default(0),
@@ -126,12 +147,17 @@ export interface LearningBackup {
 function normalizeSnapshot(value: z.output<typeof snapshotSchema>): LearningSnapshot {
   return {
     schemaVersion: 2,
+    deviceId: value.deviceId,
+    syncRevisions: value.syncRevisions,
+    syncOwnerId: value.syncOwnerId,
+    syncConflictHistory: value.syncConflictHistory,
     sessions: value.sessions,
     drafts: value.drafts,
     attempts: value.attempts,
     questionStates: value.questionStates,
     bookmarks: value.bookmarks,
     notes: value.notes,
+    noteBuffer: value.noteBuffer,
     issues: value.issues,
     outbox: value.outbox,
     syncCursor: value.syncCursor,

@@ -18,6 +18,6 @@ PR #7 の `2cde48d` を基点に、F-02・F-05 の端末保存失敗と、同期
 - 別タブ書込みの拒否と再読込、バックアップ復元失敗
 - `pnpm check:any`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、Web export
 
-## 残る同期契約の不一致
+## 後続の同期実装
 
-`src/services/learning-sync.tsx` は `sync_events` に直接 upsert しているが、サーバー migration はこの書込み権限を撤回し、`ingest_learning_sync_events` RPC を要求する。現行のドラフトとメモのイベントにも、RPC が要求する `expectedRevision` がない。模試のローカル確定時に作る `answer.submitted` イベントは、サーバーが模試用として拒否する。サーバーの採点・日時・revision をローカル回答へ反映せず、模試の canonical 回答を受信すると二重計上する可能性もある。Outbox の同一対象イベントをまとめる処理は、送信中イベントとの順序管理を必要とする。これらの送信・照合経路は別途修正と DB 統合試験が必要であり、F-02 の複数端末同期全体はまだ受入済みではない。
+RPC 送信、revision 付きドラフトとメモ、模試提出イベント、サーバー確定回答の照合については [RPC 同期契約](./2026-10-rpc-sync-contract.md) に記録した。DB を使う実端末間の統合検証は引き続き必要であり、F-02 の複数端末同期全体はまだ受入済みではない。

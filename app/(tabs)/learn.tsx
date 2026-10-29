@@ -155,8 +155,8 @@ export default function LearnScreen() {
           <Text style={styles.quickLabel}>BOOKMARK</Text>
           <Text style={styles.quickTitle}>保存した問題</Text>
           <Text style={styles.quickCount}>{bookmarks.length}<Text style={styles.quickUnit}> 問</Text></Text>
-          <Text style={styles.quickDescription}>気になった問題だけをまとめて、あとから解き直せます。</Text>
-          <Button label="保存問題を解く" variant="secondary" disabled={bookmarks.length === 0} onPress={() => void beginQuestionSet('review', '保存した問題', bookmarks)} />
+          <Text style={styles.quickDescription}>気になった問題から最大40問を、あとから解き直せます。</Text>
+          <Button label="保存問題を解く" variant="secondary" disabled={bookmarks.length === 0} onPress={() => void beginQuestionSet('review', '保存した問題', bookmarks.slice(0, 40))} />
         </Card>
       </View>
 

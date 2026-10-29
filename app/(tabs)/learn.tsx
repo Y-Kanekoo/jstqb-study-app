@@ -44,7 +44,6 @@ export default function LearnScreen() {
 
   useEffect(() => {
     if (pool !== 'review-due') return;
-    setNowIso(new Date().toISOString());
     const timer = setInterval(() => setNowIso(new Date().toISOString()), 60_000);
     return () => clearInterval(timer);
   }, [pool]);
@@ -149,7 +148,7 @@ export default function LearnScreen() {
         <View style={styles.optionGroup}>
           <Text style={styles.optionLabel}>対象</Text>
           <View style={styles.chips}>{poolOptions.map((option) => (
-            <Chip key={option.value} label={option.label} selected={pool === option.value} onPress={() => setPool(option.value)} />
+            <Chip key={option.value} label={option.label} selected={pool === option.value} onPress={() => { setPool(option.value); setNowIso(new Date().toISOString()); }} />
           ))}</View>
         </View>
         <View style={styles.optionGroup}>

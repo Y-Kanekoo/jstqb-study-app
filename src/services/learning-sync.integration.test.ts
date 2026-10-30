@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getQuestion } from '@/content/questions';
+import { scoreAnswer } from '@/domain/learning';
 import type { LearningSnapshot, OutboxEvent } from '@/domain/types';
 import { useLearningStore } from '@/state/learning-store';
 
@@ -57,24 +58,36 @@ function serverAccept(event: RpcInput): ServerRow {
     payload = { ...payload, isCorrect: false, answeredAt: now };
   }
   if (event.kind === 'session.submitted') {
-    const drafts = fixture.serverRows.filter((row) => row.kind === 'draft.saved' && row.payload.sessionId === event.payload.sessionId);
-    for (const draft of drafts) {
+    const created = fixture.serverRows.find((row) => row.kind === 'session.created' && row.entity_id === event.entityId);
+    const questionIds = created?.payload.questionIds;
+    if (!Array.isArray(questionIds)) throw new Error('missing exam session fixture');
+    const latestDrafts = new Map<string, ServerRow>();
+    for (const row of fixture.serverRows) {
+      if (row.kind === 'draft.saved' && row.payload.sessionId === event.payload.sessionId
+        && typeof row.payload.questionId === 'string') latestDrafts.set(row.payload.questionId, row);
+    }
+    const answeredQuestionIds: string[] = [];
+    for (const questionId of questionIds) {
+      const draft = latestDrafts.get(questionId);
+      if (!draft) continue;
       const sessionId = draft.payload.sessionId;
-      const questionId = draft.payload.questionId;
       const selectedChoiceIds = draft.payload.selectedChoiceIds;
-      if (typeof sessionId !== 'string' || typeof questionId !== 'string' || !Array.isArray(selectedChoiceIds)) {
+      const question = getQuestion(questionId);
+      if (typeof sessionId !== 'string' || !Array.isArray(selectedChoiceIds) || !question) {
         throw new Error('invalid draft fixture');
       }
+      if (selectedChoiceIds.length !== (question.requiredChoiceCount ?? 1)) continue;
+      answeredQuestionIds.push(questionId);
       const id = crypto.randomUUID();
       fixture.serverRows.push({ sequence: fixture.serverRows.length + 1, event_id: id,
         kind: 'answer.submitted', entity_id: id, occurred_at: now, payload: {
           sessionId, questionId,
-          questionVersionId: getQuestion(questionId)?.versionId ?? '',
-          selectedChoiceIds, isCorrect: false,
+          questionVersionId: question.versionId,
+          selectedChoiceIds, isCorrect: scoreAnswer(question, selectedChoiceIds),
           answeredAt: now, invalidated: false,
         } });
     }
-    payload = { ...payload, submittedAt: now, answeredQuestionIds: drafts.map((row) => String(row.payload.questionId)) };
+    payload = { ...payload, submittedAt: now, answeredQuestionIds };
   }
   const row: ServerRow = { sequence: fixture.serverRows.length + 1, event_id: event.eventId, kind: event.kind,
     entity_id: event.entityId, occurred_at: now, payload };
@@ -165,10 +178,11 @@ describe('端末保存とRPCの結合', () => {
     expect(persisted().outbox).toHaveLength(0);
   });
 
-  it('模試提出後の応答消失でもサーバー生成回答を一度だけ取り込み再送できる', async () => {
+  it('同じ設問を編集した模試の応答消失でも最終ドラフトだけを採点し再送できる', async () => {
     const questionIds = Array.from({ length: 40 }, (_, index) => `fl-${String(index + 1).padStart(3, '0')}`);
     const sessionId = await useLearningStore.getState().startExam(questionIds);
     await useLearningStore.getState().selectChoice(sessionId, 'fl-001', 'fl-001-A');
+    await useLearningStore.getState().selectChoice(sessionId, 'fl-001', 'fl-001-B');
     await useLearningStore.getState().submitExam(sessionId);
     fixture.loseReplyOnce = true;
 
@@ -176,11 +190,14 @@ describe('端末保存とRPCの結合', () => {
     expect(useLearningStore.getState().syncConflict).toBeNull();
     expect(persisted().attempts).toHaveLength(1);
     expect(persisted().attempts[0]?.provisional).toBe(false);
+    expect(persisted().attempts[0]?.selectedChoiceIds).toEqual(['fl-001-B']);
     await useLearningStore.getState().initialize();
     await runSync('account-a');
 
+    expect(fixture.serverRows.filter((row) => row.kind === 'draft.saved')).toHaveLength(2);
     expect(fixture.serverRows.filter((row) => row.kind === 'answer.submitted')).toHaveLength(1);
     expect(persisted().attempts).toHaveLength(1);
+    expect(persisted().attempts[0]?.selectedChoiceIds).toEqual(['fl-001-B']);
     expect(persisted().outbox).toHaveLength(0);
     expect(persisted().sessions[0]?.serverConfirmed).toBe(true);
   });

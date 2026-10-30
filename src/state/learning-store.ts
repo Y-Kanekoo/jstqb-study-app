@@ -107,10 +107,12 @@ function blocksRemoteEvent(event: RemoteSyncEvent, snapshot: LearningSnapshot): 
   }
   if (event.kind === 'answer.submitted') {
     if (snapshot.sessions.some((session) => session.id === event.payload.sessionId && session.mode === 'exam')) return false;
+    if (pending.some((item) => item.kind === 'answer.submitted' && item.id === event.id)) return false;
     return pending.some((item) => (item.kind === 'answer.submitted' || item.kind === 'draft.saved') && item.id !== event.id
       && item.payload.sessionId === event.payload.sessionId && item.payload.questionId === event.payload.questionId);
   }
   if (event.kind === 'session.submitted') {
+    if (pending.some((item) => item.kind === 'session.submitted' && item.id === event.id)) return false;
     return pending.some((item) =>
       item.id !== event.id && item.payload.sessionId === event.entityId);
   }

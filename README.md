@@ -1,5 +1,15 @@
 # JSTQB Study App
 
+> [!IMPORTANT]
+> **このリポジトリの開発は終了し、JSTQB学習は [cert-study](https://github.com/Y-Kanekoo/cert-study) へ統合しました。**
+> 利用中のJSTQBアプリ: https://jstqb-study.ykanekoo.workers.dev
+>
+> - 本リポジトリの問題（公開サンプル18問）は cert-study 既存問題と論点が重複するため移植していません。
+> - 本リポジトリ由来の機能案のうち、期間別の誤答演習（直近誤答・7/30/90日・未克服のみ）、学習履歴のCSV出力、選択肢の解答手がかり検査は cert-study に移植済みです（cert-study #23, #24, #25）。
+> - Expo / Supabase による端末間同期基盤は cert-study では採用していません。
+>
+> 以下は開発終了時点の記録です。
+
 JSTQB Foundation LevelをiOS、Android、Webで学習するための個人向けアプリです。
 
 ## 方針

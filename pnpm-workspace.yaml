@@ -1,9 +1,8 @@
 allowBuilds:
   unrs-resolver: false
-auditConfig:
-  ignoreGhsas:
-    - GHSA-w3rx-r6r6-pgpr
-    - GHSA-5p2g-fcmc-qvqq
+overrides:
+  image-size: '>=2.0.3'
+  vite: '^8.2.4'
 minimumReleaseAgeExclude:
   - '@expo/cli@57.0.14'
   - '@expo/fingerprint@0.20.7'

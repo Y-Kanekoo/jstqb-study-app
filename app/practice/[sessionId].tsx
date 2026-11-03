@@ -156,7 +156,7 @@ export default function PracticeScreen() {
 
       {visibleError && <View accessibilityRole="alert" style={styles.errorBox}><Text style={styles.errorText}>{visibleError}</Text></View>}
 
-      {attempt ? (
+      {attempt && !saving ? (
         <Card style={[styles.feedbackCard, attempt.isCorrect ? styles.feedbackCorrect : styles.feedbackWrong]}>
           <Text style={[styles.feedbackResult, attempt.isCorrect ? styles.correctText : styles.wrongText]}>{attempt.isCorrect ? '正解です' : 'もう一度、整理しましょう'}</Text>
           <Text style={styles.feedbackExplanation}>{question.explanation}</Text>

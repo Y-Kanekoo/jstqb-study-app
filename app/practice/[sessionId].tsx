@@ -12,6 +12,7 @@ export default function PracticeScreen() {
   const router = useRouter();
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [answerPending, setAnswerPending] = useState(false);
   const sessions = useLearningStore((state) => state.sessions);
   const drafts = useLearningStore((state) => state.drafts);
   const attempts = useLearningStore((state) => state.attempts);
@@ -80,10 +81,14 @@ export default function PracticeScreen() {
 
   const submit = async () => {
     setActionError(null);
+    setAnswerPending(true);
     try {
       await submitAnswer(session.id, question.id);
     } catch {
+      // TODO(autonomous): 保存失敗時に楽観更新された回答状態を戻し、再試行を可能にする。
       setActionError('回答を保存できませんでした。次の問題へは進めません。');
+    } finally {
+      setAnswerPending(false);
     }
   };
 
@@ -156,7 +161,7 @@ export default function PracticeScreen() {
 
       {visibleError && <View accessibilityRole="alert" style={styles.errorBox}><Text style={styles.errorText}>{visibleError}</Text></View>}
 
-      {attempt && !saving ? (
+      {attempt && !answerPending ? (
         <Card style={[styles.feedbackCard, attempt.isCorrect ? styles.feedbackCorrect : styles.feedbackWrong]}>
           <Text style={[styles.feedbackResult, attempt.isCorrect ? styles.correctText : styles.wrongText]}>{attempt.isCorrect ? '正解です' : 'もう一度、整理しましょう'}</Text>
           <Text style={styles.feedbackExplanation}>{question.explanation}</Text>

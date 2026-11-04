@@ -12,6 +12,7 @@ export default function PracticeScreen() {
   const router = useRouter();
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [answerPending, setAnswerPending] = useState(false);
   const sessions = useLearningStore((state) => state.sessions);
   const drafts = useLearningStore((state) => state.drafts);
   const attempts = useLearningStore((state) => state.attempts);
@@ -80,10 +81,13 @@ export default function PracticeScreen() {
 
   const submit = async () => {
     setActionError(null);
+    setAnswerPending(true);
     try {
       await submitAnswer(session.id, question.id);
     } catch {
       setActionError('回答を保存できませんでした。次の問題へは進めません。');
+    } finally {
+      setAnswerPending(false);
     }
   };
 
@@ -102,7 +106,7 @@ export default function PracticeScreen() {
         <Button label="終了" variant="quiet" style={styles.headerButton} onPress={() => router.back()} />
         <View style={styles.headerCenter}>
           <Text numberOfLines={1} style={styles.sessionTitle}>{session.title}</Text>
-          <Text style={styles.saveStatus}>{saving ? '端末へ保存中…' : 'この問題まで保存済み'}</Text>
+          <Text style={styles.saveStatus}>{saving ? '端末へ保存中…' : storageError ? '端末へ保存できませんでした' : 'この問題まで保存済み'}</Text>
         </View>
         <Pressable accessibilityLabel={bookmarked ? 'ブックマークを解除' : 'ブックマークへ追加'} accessibilityRole="button" onPress={() => void toggleBookmark(question.id)} style={styles.bookmark}>
           <Text style={[styles.bookmarkText, bookmarked && styles.bookmarkActive]}>{bookmarked ? '★' : '☆'}</Text>
@@ -156,7 +160,7 @@ export default function PracticeScreen() {
 
       {visibleError && <View accessibilityRole="alert" style={styles.errorBox}><Text style={styles.errorText}>{visibleError}</Text></View>}
 
-      {attempt ? (
+      {attempt && !answerPending ? (
         <Card style={[styles.feedbackCard, attempt.isCorrect ? styles.feedbackCorrect : styles.feedbackWrong]}>
           <Text style={[styles.feedbackResult, attempt.isCorrect ? styles.correctText : styles.wrongText]}>{attempt.isCorrect ? '正解です' : 'もう一度、整理しましょう'}</Text>
           <Text style={styles.feedbackExplanation}>{question.explanation}</Text>

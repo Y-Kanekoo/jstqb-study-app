@@ -76,7 +76,7 @@ function extractSnapshot(store: LearningStore): LearningSnapshot {
 let persistenceChain = Promise.resolve();
 
 function queueSnapshot(snapshot: LearningSnapshot): Promise<void> {
-  persistenceChain = persistenceChain.then(() => setStoredValue(snapshotKey, JSON.stringify(snapshot)));
+  persistenceChain = persistenceChain.catch(() => undefined).then(() => setStoredValue(snapshotKey, JSON.stringify(snapshot)));
   return persistenceChain;
 }
 
@@ -189,6 +189,8 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       return { attempt: existing, questionState: existingState };
     }
 
+    const previousSession = get().sessions.find((session) => session.id === sessionId);
+
     const now = new Date().toISOString();
     const attempt: AnswerAttempt = {
       id: randomUUID(),
@@ -230,7 +232,44 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
       return { attempt, questionState };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '回答を保存できませんでした。次の問題へは進めません。';
-      set({ saving: false, storageError: message });
+      set((state) => {
+        const attempts = state.attempts.filter((item) => item.id !== attempt.id);
+        const remainingQuestionAttempts = attempts
+          .filter((item) => item.questionId === questionId)
+          .sort((left, right) => left.answeredAt.localeCompare(right.answeredAt));
+        const questionStates = { ...state.questionStates };
+        const [firstAttempt, ...laterAttempts] = remainingQuestionAttempts;
+        if (firstAttempt) {
+          let restoredState = updateQuestionState(undefined, firstAttempt);
+          for (const remainingAttempt of laterAttempts) {
+            restoredState = updateQuestionState(restoredState, remainingAttempt);
+          }
+          questionStates[questionId] = restoredState;
+        } else {
+          delete questionStates[questionId];
+        }
+        return {
+          attempts,
+          questionStates,
+          sessions: state.sessions.map((session) => session.id === sessionId
+            ? {
+              ...session,
+              answeredQuestionIds: previousSession?.answeredQuestionIds.includes(questionId)
+                ? session.answeredQuestionIds
+                : session.answeredQuestionIds.filter((id) => id !== questionId),
+              updatedAt: previousSession && session.updatedAt === now ? previousSession.updatedAt : session.updatedAt,
+            }
+            : session),
+          outbox: state.outbox.filter((item) => item.id !== event.id),
+          saving: false,
+          storageError: message,
+        };
+      });
+      try {
+        await queueSnapshot(extractSnapshot(get()));
+      } catch {
+        // 復旧用の保存も失敗した場合は、最初の保存エラーを呼び出し元へ返す。
+      }
       throw error;
     }
   },

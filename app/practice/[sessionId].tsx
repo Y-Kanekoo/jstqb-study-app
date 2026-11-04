@@ -85,7 +85,6 @@ export default function PracticeScreen() {
     try {
       await submitAnswer(session.id, question.id);
     } catch {
-      // TODO(autonomous): 保存失敗時に楽観更新された回答状態を戻し、再試行を可能にする。
       setActionError('回答を保存できませんでした。次の問題へは進めません。');
     } finally {
       setAnswerPending(false);
@@ -107,7 +106,7 @@ export default function PracticeScreen() {
         <Button label="終了" variant="quiet" style={styles.headerButton} onPress={() => router.back()} />
         <View style={styles.headerCenter}>
           <Text numberOfLines={1} style={styles.sessionTitle}>{session.title}</Text>
-          <Text style={styles.saveStatus}>{saving ? '端末へ保存中…' : 'この問題まで保存済み'}</Text>
+          <Text style={styles.saveStatus}>{saving ? '端末へ保存中…' : storageError ? '端末へ保存できませんでした' : 'この問題まで保存済み'}</Text>
         </View>
         <Pressable accessibilityLabel={bookmarked ? 'ブックマークを解除' : 'ブックマークへ追加'} accessibilityRole="button" onPress={() => void toggleBookmark(question.id)} style={styles.bookmark}>
           <Text style={[styles.bookmarkText, bookmarked && styles.bookmarkActive]}>{bookmarked ? '★' : '☆'}</Text>
